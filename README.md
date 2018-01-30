@@ -58,3 +58,5 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 - [ ] Letsencypt SSL termination
 
 - [ ] Handle `stale-while-revalidate` and `stale-if-error` Cache-Control extensions
+
+- [ ] Web UI to configure / clear cache and view metrics
