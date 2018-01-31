@@ -167,9 +167,11 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	r.Body.Close()
 	r.Body = ioutil.NopCloser(bytes.NewReader(resp.body))
 	hasher.Write(resp.body)
-	etag := `"` + base64.StdEncoding.EncodeToString(hasher.Sum(nil)) + `"`
-	resp.Header().Set("Etag", etag)
-	r.Header.Set("Etag", etag)
+	if !strings.Contains(cc, "no-store") {
+		etag := `"` + base64.StdEncoding.EncodeToString(hasher.Sum(nil)) + `"`
+		resp.Header().Set("Etag", etag)
+		r.Header.Set("Etag", etag)
+	}
 	return &resp
 }
 

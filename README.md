@@ -62,3 +62,15 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 - [ ] Handle `stale-while-revalidate` and `stale-if-error` Cache-Control extensions
 
 - [ ] Web UI to configure / clear cache and view metrics
+
+- [ ] Minify html, js, css before cacheing
+
+- [ ] [Canonicalize](https://www.modpagespeed.com/doc/filter-canonicalize-js#sample)  popular JavaScript libraries that can be replaced with ones hosted for free by a JavaScript library hosting service
+
+- [ ] Brotli compress if requester supports it
+
+- [ ] Implement [offline cache](https://developers.google.com/web/fundamentals/instant-and-offline/offline-cookbook/)
+
+- [ ] Automatically fix mixed-content https issues
+
+- [ ] Prevent hotlinking of images
