@@ -38,6 +38,8 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 
 - [x] If cache miss, but after refresh Etag matches, send 304 Response
 
+- [ ] If cache miss, but after refresh Validate matches, send 304 Response
+
 - [x] Handle `only-if-cached` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) 
 
 - [x] Validate response or send to backend if `must-revalidate` or `proxy-revalidate` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control)
