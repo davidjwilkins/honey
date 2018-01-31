@@ -107,6 +107,7 @@ func TestFlushMultiplexer(t *testing.T) {
 	multiplexers.Store(actualHash, multiplexer)
 	defer multiplexers.Delete(actualHash)
 	FlushMultiplexer(cacher)(resp)
+	multiplexer.Wait()
 	if rw1.Body.String() != rw2.Body.String() || rw2.Body.String() != rw3.Body.String() {
 		t.Error("Multiplexer should return the same body to all ResponseWriters")
 	}

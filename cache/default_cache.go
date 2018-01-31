@@ -99,6 +99,12 @@ func (c *defaultCacher) AddAllowedCookie(name string) {
 	c.allowedCookies[name] = true
 }
 
+var replacer = strings.NewReplacer(`no-cache="set-cookie"`, "", ",,", "", "public", "")
+
+func ccReplacer(cc string) string {
+	return strings.Trim(replacer.Replace(cc), ",")
+}
+
 // Standardize removes set-cookie headers unless they are listed
 // in the allowed cookies, reads the response, and saves it to
 // a Response interface.
@@ -126,20 +132,44 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 		response: r,
 	}
 	copyHeader(resp.headers, r.Header)
-	if strings.Contains(r.Header.Get("Cache-Control"), `no-cache="set-cookie"`) {
+
+	cc := resp.headers.Get("Cache-Control")
+
+	if strings.Contains(cc, `no-cache="set-cookie"`) {
 		resp.headers.Del("Set-Cookie")
-		resp.headers.Del("Cache-Control")
+		resp.headers.Set("Cache-Control", ccReplacer(cc))
 	}
+
+	if !strings.Contains(r.Header.Get("Cache-Control"), "private") {
+		cc = ccReplacer(cc + ",public")
+		resp.headers.Set("Cache-Control", cc)
+	}
+
+	if !strings.Contains(cc, "no-cache") && !strings.Contains(cc, "max-age") {
+		cc = ccReplacer(cc + ",max-age=300")
+		resp.headers.Set("Cache-Control", cc)
+	}
+
+	if len(c.allowedCookies) > 0 && !strings.Contains(r.Header.Get("Vary"), "cookie") {
+		resp.headers.Set("Vary", ccReplacer(resp.headers.Get("Vary")+",cookie"))
+	}
+
+	if r.Header.Get("Last-Modified") == "" {
+		r.Header.Set("Last-Modified", time.Now().Format(time.RFC1123))
+	}
+
+	if r.Header.Get("Expires") == "" {
+		r.Header.Set("Expires", time.Now().Add(time.Hour*1).Format(time.RFC1123))
+	}
+
 	resp.response = r
 	resp.body, _ = ioutil.ReadAll(r.Body)
 	r.Body.Close()
 	r.Body = ioutil.NopCloser(bytes.NewReader(resp.body))
 	hasher.Write(resp.body)
-	etag := base64.StdEncoding.EncodeToString(hasher.Sum(nil))
+	etag := `"` + base64.StdEncoding.EncodeToString(hasher.Sum(nil)) + `"`
 	resp.Header().Set("Etag", etag)
-	if !strings.Contains(resp.Header().Get("Cache-Control"), "no-cache") {
-		resp.Header().Add("Cache-Control", "max-age=300") // 5 minutes
-	}
+	r.Header.Set("Etag", etag)
 	return &resp
 }
 

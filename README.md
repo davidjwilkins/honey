@@ -32,26 +32,26 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 
 - [ ] Send cached response with a [`Warning`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Warning) header if the backend gives an error after clearing  the cache. 
 
-- [ ] Set [`Last-Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Last-Modified) header on response to the cached time if it is not already on the backend response. 
+- [x] Set [`Last-Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Last-Modified) header on response to the cached time if it is not already on the backend response. 
 
-- [ ] Handle [`If-Modified-Since`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-Modified-Since]) and [`If-Unmodified-Since`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-Unmodified-Since)
+- [x] Handle [`If-Modified-Since`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-Modified-Since]) and [`If-Unmodified-Since`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-Unmodified-Since)
 
-- [ ] If cache miss, but after refresh Etag matches, send 304 Response
+- [x] If cache miss, but after refresh Etag matches, send 304 Response
 
-- [ ] Handle `only-if-cached` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) 
+- [x] Handle `only-if-cached` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) 
 
-- [ ] Always check backend if `must-revalidate` or `proxy-revalidate` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control)
+- [x] Validate response or send to backend if `must-revalidate` or `proxy-revalidate` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control)
 
 - [ ] Come up with a way to mark certain routes/files as [`immutable`](https://hacks.mozilla.org/2017/01/using-immutable-caching-to-speed-up-the-web/)
 
-- [ ] Add the `public` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) unless `private` is received from backend.
+- [X] Add the `public` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) unless `private` is received from backend.
 
-- [ ] Add [`Expires`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Expires) header to responses if not in response from backend.
-	- Configurable Cache TTL
-	- Configurable whether to overwrite backend Expires
-	- Configure whether to serve stale content while refreshing, or multiplex requests into a single request and serve new content to all of them
+- [x] Add [`Expires`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Expires) header to responses if not in response from backend.
+	- [ ] Configurable Cache TTL
+	- [ ] Configurable whether to overwrite backend Expires
+	- [ ] Configure whether to serve stale content while refreshing, or multiplex requests into a single request and serve new content to all of them
 
-- [ ] Add `cookie` to [`Vary`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Vary) header if the site has any `AllowedCookies`
+- [x] Add `cookie` to [`Vary`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Vary) header if the site has any `AllowedCookies`
 
 - [ ] Add ability to configure which headers to include in the Request hash (e.g. Accept-Language)
 

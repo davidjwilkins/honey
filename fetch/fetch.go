@@ -3,6 +3,7 @@ package fetch
 import (
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/vulcand/oxy/forward"
@@ -22,6 +23,13 @@ func Fetch(c cache.Cacher, backend *url.URL) http.HandlerFunc {
 			if responded {
 				return
 			}
+
+			// https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9.4
+			if strings.Contains(r.Header.Get("Cache-Control"), "only-if-cached") {
+				w.WriteHeader(http.StatusGatewayTimeout)
+				return
+			}
+
 			responded = RespondFromMultiplexer(hash, c, w, r)
 			if responded {
 				return

@@ -1,6 +1,8 @@
 package fetch
 
 import (
+	"bytes"
+	"io/ioutil"
 	"net/http"
 	"strings"
 	"sync"
@@ -25,10 +27,14 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 		return hash, false
 	}
 	resp, found := c.Load(hash)
-	responded = found
-	if found {
-		if r.Header.Get("If-None-Match") != "" &&
-			r.Header.Get("If-None-Match") == resp.Header().Get("Etag") {
+	if strings.Contains(r.Header.Get("Cache-Control"), "must-revalidate") ||
+		strings.Contains(r.Header.Get("Cache-Control"), "proxy-revalidate") {
+		responded = resp.Validate(r)
+	} else {
+		responded = found
+	}
+	if responded {
+		if isNotModified(r, resp) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
@@ -61,8 +67,14 @@ func FlushMultiplexer(c cache.Cacher) func(*http.Response) error {
 		if !strings.Contains(response.Header().Get("Cache-Control"), "no-store") {
 			c.Cache(hash, response)
 		}
-		multi.Write(response)
-		multiplexers.Delete(hash)
+		go func() {
+			multi.Write(response)
+			multiplexers.Delete(hash)
+		}()
+		if isNotModified(r.Request, response) {
+			r.StatusCode = http.StatusNotModified
+			r.Body = ioutil.NopCloser(bytes.NewReader([]byte{}))
+		}
 		return nil
 	}
 }
@@ -85,6 +97,11 @@ func RespondFromMultiplexer(hash string, c cache.Cacher, w http.ResponseWriter, 
 		return true
 	}
 	return false
+}
+
+func isNotModified(r *http.Request, resp cache.Response) bool {
+	return r.Header.Get("If-None-Match") != "" &&
+		r.Header.Get("If-None-Match") == resp.Header().Get("Etag")
 }
 
 // for testing - lets us flush multiplexer once it is waiting

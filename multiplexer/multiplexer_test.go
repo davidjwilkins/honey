@@ -51,6 +51,7 @@ func newTestMultiplexer(withWriter bool) Multiplexer {
 	}
 	return multiplexer
 }
+
 func TestAddWriter(t *testing.T) {
 	multiplexer := newTestMultiplexer(false).(*multiplexer)
 	if len(multiplexer.requests) != 0 {

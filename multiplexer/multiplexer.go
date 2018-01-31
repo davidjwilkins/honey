@@ -111,11 +111,21 @@ func (m *multiplexer) Write(r cache.Response) bool {
 				}
 			}
 			req.writer.Header().Set("X-Honey-Cache", "MISS (MULTIPLEXED)")
-			req.writer.WriteHeader(r.StatusCode())
-			req.writer.Write(r.Body())
+			req.writer.Header().Set("Age", r.Age())
+			if isNotModified(req.request, r) {
+				req.writer.WriteHeader(http.StatusNotModified)
+			} else {
+				req.writer.WriteHeader(r.StatusCode())
+				req.writer.Write(r.Body())
+			}
 			m.Done()
 		}(req)
 	}
 	m.Wait()
 	return true
+}
+
+func isNotModified(r *http.Request, resp cache.Response) bool {
+	return r.Header.Get("If-None-Match") != "" &&
+		r.Header.Get("If-None-Match") == resp.Header().Get("Etag")
 }
