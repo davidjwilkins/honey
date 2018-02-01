@@ -58,6 +58,9 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 // multiplexer list (because responses can now be handled from the cache).
 func FlushMultiplexer(c cache.Cacher) func(*http.Response) error {
 	return func(r *http.Response) error {
+		if r.Request == nil {
+			return nil
+		}
 		r.Header.Set("X-Honey-Cache", "MISS")
 		hash := c.Hash(r.Request)
 		m, _ := multiplexers.Load(hash)
