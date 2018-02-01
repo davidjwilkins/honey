@@ -38,13 +38,13 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
+		w.WriteHeader(resp.StatusCode())
 		for key, values := range resp.Header() {
 			for _, value := range values {
 				w.Header().Add(key, value)
 			}
 		}
 		w.Header().Set("X-Honey-Cache", "HIT")
-		w.WriteHeader(resp.StatusCode())
 		w.Write(resp.Body())
 	}
 	return
@@ -63,8 +63,11 @@ func FlushMultiplexer(c cache.Cacher) func(*http.Response) error {
 		}
 		r.Header.Set("X-Honey-Cache", "MISS")
 		hash := c.Hash(r.Request)
-		m, _ := multiplexers.Load(hash)
-		// TODO: handle this error
+		m, found := multiplexers.Load(hash)
+		if !found {
+			// TODO: handle this as it would be a serious error
+			return nil
+		}
 		multi := m.(multiplexer.Multiplexer)
 		response := c.Standardize(r)
 		if !strings.Contains(response.Header().Get("Cache-Control"), "no-store") {
