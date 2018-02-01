@@ -45,7 +45,7 @@ func Fetch(c cache.Cacher, backend *url.URL) http.HandlerFunc {
 // into cache.Cacher c.  It panics if it cannot create the forwarder.
 func GetForwarder(c cache.Cacher) *forward.Forwarder {
 	forwarder, err := forward.New(
-		forward.ResponseModifier(FlushMultiplexer(c)),
+		forward.ResponseModifier(FlushMultiplexer(c, nil)),
 	)
 	if err != nil {
 		panic(err)

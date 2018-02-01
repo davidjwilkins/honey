@@ -1,14 +1,15 @@
 package fetch
 
 import (
+	"bytes"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 
 	"github.com/davidjwilkins/honey/cache"
-	"github.com/davidjwilkins/honey/multiplexer"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 )
@@ -92,12 +93,54 @@ func (t *testResponse) Age() string {
 	return args.String(0)
 }
 
+type testMultiplexer struct {
+	mock.Mock
+}
+
+func (t *testMultiplexer) AddWriter(w http.ResponseWriter, r *http.Request) {
+	t.Called(w, r)
+}
+
+func (t *testMultiplexer) Write(r cache.Response) bool {
+	args := t.Called(r)
+	return args.Bool(0)
+}
+
+func (t *testMultiplexer) Cacheable() (bool, error) {
+	args := t.Called()
+	return args.Bool(0), args.Error(1)
+}
+func (t *testMultiplexer) Wait() {
+	t.Called()
+}
+
 type ResponderTestSuite struct {
 	suite.Suite
-	cacher   *testCacher
-	response *testResponse
-	request  *http.Request
-	writer   *httptest.ResponseRecorder
+	cacher       *testCacher
+	response     *testResponse
+	request      *http.Request
+	writer       *httptest.ResponseRecorder
+	multiplexer  *testMultiplexer
+	httpResponse *http.Response
+}
+
+func newResponse() *http.Response {
+	return &http.Response{
+		Status:           "200 OK",
+		StatusCode:       http.StatusOK,
+		Proto:            "HTTP/1.0",
+		ProtoMajor:       1,
+		ProtoMinor:       0,
+		Header:           http.Header{},
+		Body:             ioutil.NopCloser(bytes.NewReader([]byte("Example Response Body"))),
+		ContentLength:    int64(len([]byte("Example Response Body"))),
+		TransferEncoding: nil,
+		Close:            true,
+		Uncompressed:     true,
+		Trailer:          http.Header{},
+		Request:          nil,
+		TLS:              nil,
+	}
 }
 
 // Make sure that VariableThatShouldStartAtFive is set to five
@@ -109,7 +152,13 @@ func (suite *ResponderTestSuite) SetupTest() {
 	suite.cacher.On("Hash", suite.request).Return("test-hash")
 	suite.response.On("Body").Return([]byte("Test Response"))
 	suite.writer = httptest.NewRecorder()
+	suite.multiplexer = &testMultiplexer{}
+	suite.multiplexer.On("Lock")
+	suite.multiplexer.On("Unlock")
+	suite.multiplexer.On("Done")
+	suite.multiplexer.On("Wait")
 	suite.response.On("Header").Return(suite.writer.Header())
+	suite.httpResponse = newResponse()
 }
 
 // In order for 'go test' to run this suite, we need to create
@@ -195,83 +244,38 @@ func (suite *ResponderTestSuite) TestRespondFromCacheCopiesStatusCode() {
 	suite.Assert().Equal(http.StatusVariantAlsoNegotiates, suite.writer.Code, "RespondFromCache should copy status code from remote to response")
 }
 
-func TestFlushMultiplexer(t *testing.T) {
-	server := testServer()
-	cacher := cache.NewDefaultCacher()
-	request := newTestValidRequest()
-	resp, err := http.Get(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Request = request
-	actualResponse := cacher.Standardize(resp)
-	actualHash := cacher.Hash(request)
-
-	rw1 := httptest.NewRecorder()
-	rw2 := httptest.NewRecorder()
-	rw3 := httptest.NewRecorder()
-	multiplexer := multiplexer.NewMultiplexer(cacher, newTestValidRequest())
-	multiplexer.AddWriter(rw1, newTestValidRequest())
-	multiplexer.AddWriter(rw2, newTestValidRequest())
-	multiplexer.AddWriter(rw3, newTestValidRequest())
-	multiplexers.Store(actualHash, multiplexer)
-	defer multiplexers.Delete(actualHash)
-	FlushMultiplexer(cacher)(resp)
-	multiplexer.Wait()
-	if rw1.Body.String() != rw2.Body.String() || rw2.Body.String() != rw3.Body.String() {
-		t.Error("Multiplexer should return the same body to all ResponseWriters")
-	}
-	if rw1.Code != rw2.Code || rw2.Code != rw3.Code {
-		t.Error("Multiplexer should return the same status code to all ResponseWriters")
-	}
-	if rw1.Header().Get("X-Honey-Cache") != rw2.Header().Get("X-Honey-Cache") ||
-		rw3.Header().Get("X-Honey-Cache") != rw2.Header().Get("X-Honey-Cache") ||
-		rw1.Header().Get("X-Honey-Cache") != "MISS (MULTIPLEXED)" {
-		t.Error("Multiplexer should set X-Honey-Cache: MISS (MULTIPLEXED) header")
-	}
-	cachedResponse, found := cacher.Load(actualHash)
-	if !found {
-		t.Error("Flushing multiplexer should add response to cache")
-	}
-	if string(cachedResponse.Body()) != string(actualResponse.Body()) {
-		t.Error("Cached Response should be the actual Response")
-	}
-	if _, found := multiplexers.Load(actualHash); found {
-		t.Error("Multiplexer should be removed after flushing")
-	}
+func (suite *ResponderTestSuite) TestFlushMultiplexerMiss() {
+	multiplexers.Store("test-hash", suite.multiplexer)
+	defer multiplexers.Delete("test-hash")
+	suite.httpResponse.Request = suite.request
+	suite.cacher.On("Standardize", suite.httpResponse).Return(suite.response)
+	suite.cacher.On("Cache", "test-hash", suite.response)
+	suite.multiplexer.On("Write", suite.response).Return(true)
+	suite.multiplexer.On("Delete", "test-hash")
+	var done = make(chan bool)
+	FlushMultiplexer(suite.cacher, done)(suite.httpResponse)
+	<-done
+	suite.Assert().Equal("MISS", suite.httpResponse.Header.Get("X-Honey-Cache"))
+	suite.Assert().Equal(true, suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response))
+	suite.Assert().Equal(true, suite.multiplexer.AssertCalled(suite.T(), "Write", suite.response))
+	suite.Assert().Equal(http.StatusOK, suite.httpResponse.StatusCode)
 }
 
-func TestRespondFromMultiplexer(t *testing.T) {
-	server := testServer()
-	cacher := cache.NewDefaultCacher()
-	request := newTestValidRequest()
-	resp, err := http.Get(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Request = request
-	//actualResponse := cacher.Standardize(resp)
-	actualHash := cacher.Hash(request)
-
-	rw1 := httptest.NewRecorder()
-	rw2 := httptest.NewRecorder()
-
-	responded := RespondFromMultiplexer(actualHash, cacher, rw1, request)
-	if responded {
-		t.Error("RespondFromMultiplexer should return false when unable to respond from the multiplexer")
-	}
-	cb := func() {
-		FlushMultiplexer(cacher)(resp)
-	}
-	onwait = &cb
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		responded = RespondFromMultiplexer(actualHash, cacher, rw2, request)
-		wg.Done()
-	}()
-	wg.Wait()
-	if !responded {
-		t.Error("RespondFromMultiplexer should return true when able to respond from the multiplexer")
-	}
+func (suite *ResponderTestSuite) TestFlushMultiplexerHit() {
+	multiplexers.Store("test-hash", suite.multiplexer)
+	defer multiplexers.Delete("test-hash")
+	suite.httpResponse.Request = suite.request
+	suite.request.Header.Set("If-None-Match", `"abc123"`)
+	suite.response.Header().Set("Etag", `"abc123"`)
+	suite.cacher.On("Standardize", suite.httpResponse).Return(suite.response)
+	suite.cacher.On("Cache", "test-hash", suite.response)
+	suite.multiplexer.On("Write", suite.response).Return(true)
+	suite.multiplexer.On("Delete", "test-hash")
+	var done = make(chan bool)
+	FlushMultiplexer(suite.cacher, done)(suite.httpResponse)
+	<-done
+	suite.Assert().Equal("MISS", suite.httpResponse.Header.Get("X-Honey-Cache"))
+	suite.Assert().Equal(true, suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response))
+	suite.Assert().Equal(true, suite.multiplexer.AssertCalled(suite.T(), "Write", suite.response))
+	suite.Assert().Equal(http.StatusNotModified, suite.httpResponse.StatusCode)
 }

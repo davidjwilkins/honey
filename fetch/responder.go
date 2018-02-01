@@ -56,12 +56,11 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 // in Cacher c (unless it contains the Cache-Control: no-store directive).
 // It then writes the response to the multiplexer, and deletes the key from the
 // multiplexer list (because responses can now be handled from the cache).
-func FlushMultiplexer(c cache.Cacher) func(*http.Response) error {
+func FlushMultiplexer(c cache.Cacher, done chan bool) func(*http.Response) error {
 	return func(r *http.Response) error {
 		if r.Request == nil {
 			return nil
 		}
-		r.Header.Set("X-Honey-Cache", "MISS")
 		hash := c.Hash(r.Request)
 		m, found := multiplexers.Load(hash)
 		if !found {
@@ -73,9 +72,13 @@ func FlushMultiplexer(c cache.Cacher) func(*http.Response) error {
 		if !strings.Contains(response.Header().Get("Cache-Control"), "no-store") {
 			c.Cache(hash, response)
 		}
+		r.Header.Set("X-Honey-Cache", "MISS")
 		go func() {
 			multi.Write(response)
 			multiplexers.Delete(hash)
+			if done != nil {
+				done <- true
+			}
 		}()
 		if isNotModified(r.Request, response) {
 			r.StatusCode = http.StatusNotModified
