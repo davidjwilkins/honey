@@ -21,7 +21,7 @@ type defaultCacher struct {
 	allowedCookies map[string]bool
 	skipRegex      []*regexp.Regexp
 	entries        sync.Map
-	etags          sync.Map
+	hashHeaders    []string
 }
 
 var hasher hash.Hash
@@ -41,7 +41,7 @@ func NewDefaultCacher() *defaultCacher {
 		},
 		allowedCookies: make(map[string]bool),
 		entries:        sync.Map{},
-		etags:          sync.Map{},
+		hashHeaders:    []string{},
 	}
 
 	return cacher
@@ -89,6 +89,9 @@ func (c *defaultCacher) Hash(r *http.Request) string {
 				strings.Replace(cookie.Value, "::", "::::", -1),
 			)
 		}
+	}
+	for _, header := range c.hashHeaders {
+		key += "::" + r.Header.Get(header)
 	}
 	return key
 }
