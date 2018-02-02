@@ -27,8 +27,8 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 		return hash, false
 	}
 	resp, found := c.Load(hash)
-	if strings.Contains(r.Header.Get("Cache-Control"), "must-revalidate") ||
-		strings.Contains(r.Header.Get("Cache-Control"), "proxy-revalidate") {
+	if found && (strings.Contains(r.Header.Get("Cache-Control"), "must-revalidate") ||
+		strings.Contains(r.Header.Get("Cache-Control"), "proxy-revalidate")) {
 		responded = resp.Validate(r)
 	} else {
 		responded = found
@@ -98,9 +98,6 @@ func RespondFromMultiplexer(hash string, c cache.Cacher, w http.ResponseWriter, 
 	if fetching {
 		multi = m.(multiplexer.Multiplexer)
 		multi.AddWriter(w, r)
-		if onwait != nil {
-			(*onwait)()
-		}
 		multi.Wait()
 		multiplexers.Delete(hash)
 		return true
@@ -112,6 +109,3 @@ func isNotModified(r *http.Request, resp cache.Response) bool {
 	return r.Header.Get("If-None-Match") != "" &&
 		r.Header.Get("If-None-Match") == resp.Header().Get("Etag")
 }
-
-// for testing - lets us flush multiplexer once it is waiting
-var onwait *func()

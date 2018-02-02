@@ -2,36 +2,15 @@ package fetch
 
 import (
 	"bytes"
-	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 )
-
-type testHandler struct {
-	sync.Mutex
-	count int
-}
-
-func (h *testHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var count int
-	h.Lock()
-	h.count++
-	count = h.count
-	h.Unlock()
-
-	fmt.Fprintf(w, "Visitor count: %d.", count)
-}
-
-func testServer() *httptest.Server {
-	return httptest.NewServer(&testHandler{})
-}
 
 type testCacher struct {
 	mock.Mock
@@ -143,8 +122,6 @@ func newResponse() *http.Response {
 	}
 }
 
-// Make sure that VariableThatShouldStartAtFive is set to five
-// before each test
 func (suite *ResponderTestSuite) SetupTest() {
 	suite.cacher = &testCacher{}
 	suite.response = &testResponse{}
@@ -209,6 +186,14 @@ func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateValid() {
 	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal("HIT", suite.writer.Header().Get("X-Honey-Cache"), "RespondFromCache should set X-Honey-Cache: HIT")
 	suite.Assert().True(responded, "RespondFromCache should return true when cache validates")
+}
+
+func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateNoCache() {
+	suite.cacher.On("Load", "test-hash").Return(suite.response, false)
+	suite.request.Header.Set("Cache-Control", "proxy-revalidate")
+	suite.response.On("StatusCode").Return(http.StatusOK)
+	RespondFromCache(suite.cacher, suite.writer, suite.request)
+	suite.Assert().True(suite.response.AssertNotCalled(suite.T(), "Validate", suite.request))
 }
 
 func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateInvalid() {
@@ -278,4 +263,17 @@ func (suite *ResponderTestSuite) TestFlushMultiplexerHit() {
 	suite.Assert().Equal(true, suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response))
 	suite.Assert().Equal(true, suite.multiplexer.AssertCalled(suite.T(), "Write", suite.response))
 	suite.Assert().Equal(http.StatusNotModified, suite.httpResponse.StatusCode)
+}
+
+func (suite *ResponderTestSuite) TestRespondFromMultiplexerInitialRequest() {
+	found := RespondFromMultiplexer("test-hash", suite.cacher, suite.writer, suite.request)
+	suite.Assert().False(found, "Respond from multiplexer should return false on first request")
+}
+
+func (suite *ResponderTestSuite) TestRespondFromMultiplexerMultiplexedRequests() {
+	suite.multiplexer.On("AddWriter", suite.writer, suite.request)
+	suite.multiplexer.On("Wait")
+	multiplexers.Store("test-hash", suite.multiplexer)
+	found := RespondFromMultiplexer("test-hash", suite.cacher, suite.writer, suite.request)
+	suite.Assert().True(found, "Respond from multiplexer should return true on second request")
 }
