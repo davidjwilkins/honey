@@ -12,17 +12,17 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 
 ## Usage:
 
-	backend, err = url.Parse("http://www.example.com")
+	backend, err := url.Parse("https://www.example.com")
 	if err != nil {
 		panic(err)
 	}
 
 	cacher := cache.NewDefaultCacher()
-    //adding site_lang_id cookie to the default
-    //cacher will make it use this cookie to 
-    //vary the response
-    cacher.AddAllowedCookie("site_lang_id")
-	fetcher := fetch.Fetch(cacher, backend)
+	// adding site_lang_id cookie to the default
+	// cacher will make it use this cookie to
+	// vary the response
+	cacher.AddAllowedCookie("site_lang_id")
+	fetcher := fetch.Fetch(cacher, fetch.Forwarder(cacher), backend)
 	http.ListenAndServe(":8080", fetcher)
 
 
