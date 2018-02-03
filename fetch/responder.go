@@ -27,15 +27,17 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 		return hash, false
 	}
 	resp, found := c.Load(hash)
+	var statusCode int
 	if found && (strings.Contains(r.Header.Get("Cache-Control"), "must-revalidate") ||
 		strings.Contains(r.Header.Get("Cache-Control"), "proxy-revalidate")) {
-		responded = resp.Validate(r)
+		responded, statusCode = resp.Validate(r)
 	} else {
 		responded = found
+		statusCode = http.StatusNotModified
 	}
 	if responded {
 		if isNotModified(r, resp) {
-			w.WriteHeader(http.StatusNotModified)
+			w.WriteHeader(statusCode)
 			return
 		}
 		w.WriteHeader(resp.StatusCode())

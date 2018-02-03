@@ -62,9 +62,9 @@ func (t *testResponse) Body() []byte {
 	return args.Get(0).([]byte)
 }
 
-func (t *testResponse) Validate(r *http.Request) bool {
+func (t *testResponse) Validate(r *http.Request) (bool, int) {
 	args := t.Called(r)
-	return args.Bool(0)
+	return args.Bool(0), args.Int(1)
 }
 
 func (t *testResponse) Age() string {
@@ -162,7 +162,7 @@ func (suite *ResponderTestSuite) TestRespondFromPopulatedCache() {
 func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateValid() {
 	suite.cacher.On("Load", "test-hash").Return(suite.response, true)
 	suite.request.Header.Set("Cache-Control", "must-revalidate")
-	suite.response.On("Validate", suite.request).Return(true)
+	suite.response.On("Validate", suite.request).Return(true, http.StatusNotModified)
 	suite.response.On("StatusCode").Return(http.StatusOK)
 	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal("HIT", suite.writer.Header().Get("X-Honey-Cache"), "RespondFromCache should set X-Honey-Cache: HIT")
@@ -172,7 +172,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateValid() {
 func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateInvalid() {
 	suite.cacher.On("Load", "test-hash").Return(suite.response, true)
 	suite.request.Header.Set("Cache-Control", "must-revalidate")
-	suite.response.On("Validate", suite.request).Return(false)
+	suite.response.On("Validate", suite.request).Return(false, 0)
 	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal("", suite.writer.Header().Get("X-Honey-Cache"), "RespondFromCache should not set X-Honey-Cache when cache doesn't validate")
 	suite.Assert().False(responded, "RespondFromCache should return false when cache doesn't validate")
@@ -181,7 +181,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateInvalid() {
 func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateValid() {
 	suite.cacher.On("Load", "test-hash").Return(suite.response, true)
 	suite.request.Header.Set("Cache-Control", "proxy-revalidate")
-	suite.response.On("Validate", suite.request).Return(true)
+	suite.response.On("Validate", suite.request).Return(true, http.StatusNotModified)
 	suite.response.On("StatusCode").Return(http.StatusOK)
 	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal("HIT", suite.writer.Header().Get("X-Honey-Cache"), "RespondFromCache should set X-Honey-Cache: HIT")
@@ -199,7 +199,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateNoCache() {
 func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateInvalid() {
 	suite.cacher.On("Load", "test-hash").Return(suite.response, true)
 	suite.request.Header.Set("Cache-Control", "proxy-revalidate")
-	suite.response.On("Validate", suite.request).Return(false)
+	suite.response.On("Validate", suite.request).Return(false, 0)
 	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal("", suite.writer.Header().Get("X-Honey-Cache"), "RespondFromCache should not set X-Honey-Cache when cache doesn't validate")
 	suite.Assert().False(responded, "RespondFromCache should return false when cache doesn't validate")
