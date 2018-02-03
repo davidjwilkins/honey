@@ -53,8 +53,6 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 	- [ ] Configurable Site-wide
 	- [ ] Configurable Per route
 
-- [x] Add `cookie` to [`Vary`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Vary) header if the site has any `AllowedCookies`
-
 - [x] Add ability to configure which headers to include in the Request hash (e.g. Accept-Language)
 	- [ ] Configurable Site-wide
 	- [ ] Configurable Per route
