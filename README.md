@@ -19,8 +19,7 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 
 	cacher := cache.NewDefaultCacher()
 	// adding site_lang_id cookie to the default
-	// cacher will make it use this cookie to
-	// vary the response
+	// cacher will allow it through the cache
 	cacher.AddAllowedCookie("site_lang_id")
 	fetcher := fetch.Fetch(cacher, fetch.Forwarder(cacher), backend)
 	http.ListenAndServe(":8080", fetcher)
@@ -121,4 +120,5 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 
 - [ ] Move to gitlab
 
-- [ ] Don't multiplex responses if they contain the `private` Cache-Control directive.
+- [ ] After fetching a route with multiplexer, check vary headers, bucket queued requests based on the header,
+	  and do a fetch for each variant.
