@@ -27,5 +27,5 @@ type Cacher interface {
 	Cache(hash string, response Response)
 	// Load retrieves a response from the cache for the
 	// supplied hash
-	Load(hash string) (Response, bool)
+	Load(hash string, r *http.Request) (Response, bool)
 }

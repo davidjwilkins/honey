@@ -96,7 +96,7 @@ func (m *multiplexer) Write(r cache.Response) bool {
 	}()
 
 	if cc := r.Header().Get("Cache-Control"); strings.Contains(cc, "private") ||
-		strings.Contains(cc, "no-store") {
+		strings.Contains(cc, "no-store") || r.Header().Get("vary") == "*" {
 		m.cacheable = false
 		for range m.requests {
 			m.Done()

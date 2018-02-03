@@ -23,14 +23,30 @@ type Response interface {
 	Body() []byte
 	Validate(*http.Request) (bool, int)
 	Age() string
+	Cookie(name string) (*http.Cookie, error)
+	RequestHeaders() http.Header
 }
 
 type responseImpl struct {
-	response *http.Response
-	body     []byte
-	headers  http.Header
-	once     sync.Once
-	now      time.Time
+	response       *http.Response
+	cookies        map[string]*http.Cookie
+	body           []byte
+	headers        http.Header
+	requestHeaders http.Header
+	once           sync.Once
+	now            time.Time
+}
+
+func (r *responseImpl) RequestHeaders() http.Header {
+	return r.requestHeaders
+}
+
+// Cookie returns the cookie with the given name from the response
+func (r *responseImpl) Cookie(name string) (*http.Cookie, error) {
+	if c, ok := r.cookies[name]; ok {
+		return c, nil
+	}
+	return nil, http.ErrNoCookie
 }
 
 // Status returns the Status of the response

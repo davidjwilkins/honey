@@ -33,8 +33,8 @@ func (t *testCacher) Standardize(r *http.Response) cache.Response {
 func (t *testCacher) Cache(hash string, response cache.Response) {
 	t.Called(hash, response)
 }
-func (t *testCacher) Load(hash string) (cache.Response, bool) {
-	args := t.Called(hash)
+func (t *testCacher) Load(hash string, req *http.Request) (cache.Response, bool) {
+	args := t.Called(hash, req)
 	return args.Get(0).(cache.Response), args.Bool(1)
 }
 
@@ -70,6 +70,11 @@ func (t *testResponse) Validate(r *http.Request) (bool, int) {
 func (t *testResponse) Age() string {
 	args := t.Called()
 	return args.String(0)
+}
+
+func (t *testResponse) Cookie(name string) (*http.Cookie, error) {
+	args := t.Called()
+	return args.Get(0).(*http.Cookie), args.Error(1)
 }
 
 type testMultiplexer struct {
@@ -145,14 +150,14 @@ func TestResponderTestSuite(t *testing.T) {
 }
 
 func (suite *ResponderTestSuite) TestRespondFromEmptyCache() {
-	suite.cacher.On("Load", "test-hash").Return(suite.response, false)
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, false)
 	hash, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal(hash, "test-hash", "ResponeFromCache should return the requests hash")
 	suite.Assert().False(responded, "RespondFromCache should return false when not responded")
 }
 
 func (suite *ResponderTestSuite) TestRespondFromPopulatedCache() {
-	suite.cacher.On("Load", "test-hash").Return(suite.response, true)
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
 	suite.response.On("StatusCode").Return(http.StatusOK)
 	hash, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal(hash, "test-hash", "ResponeFromCache should return the requests hash")
@@ -160,7 +165,7 @@ func (suite *ResponderTestSuite) TestRespondFromPopulatedCache() {
 }
 
 func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateValid() {
-	suite.cacher.On("Load", "test-hash").Return(suite.response, true)
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
 	suite.request.Header.Set("Cache-Control", "must-revalidate")
 	suite.response.On("Validate", suite.request).Return(true, http.StatusNotModified)
 	suite.response.On("StatusCode").Return(http.StatusOK)
@@ -170,7 +175,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateValid() {
 }
 
 func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateInvalid() {
-	suite.cacher.On("Load", "test-hash").Return(suite.response, true)
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
 	suite.request.Header.Set("Cache-Control", "must-revalidate")
 	suite.response.On("Validate", suite.request).Return(false, 0)
 	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
@@ -179,7 +184,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateInvalid() {
 }
 
 func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateValid() {
-	suite.cacher.On("Load", "test-hash").Return(suite.response, true)
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
 	suite.request.Header.Set("Cache-Control", "proxy-revalidate")
 	suite.response.On("Validate", suite.request).Return(true, http.StatusNotModified)
 	suite.response.On("StatusCode").Return(http.StatusOK)
@@ -189,7 +194,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateValid() {
 }
 
 func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateNoCache() {
-	suite.cacher.On("Load", "test-hash").Return(suite.response, false)
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, false)
 	suite.request.Header.Set("Cache-Control", "proxy-revalidate")
 	suite.response.On("StatusCode").Return(http.StatusOK)
 	RespondFromCache(suite.cacher, suite.writer, suite.request)
@@ -197,7 +202,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateNoCache() {
 }
 
 func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateInvalid() {
-	suite.cacher.On("Load", "test-hash").Return(suite.response, true)
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
 	suite.request.Header.Set("Cache-Control", "proxy-revalidate")
 	suite.response.On("Validate", suite.request).Return(false, 0)
 	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
@@ -206,7 +211,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateInvalid() {
 }
 
 func (suite *ResponderTestSuite) TestRespondFromCacheEtagMatch() {
-	suite.cacher.On("Load", "test-hash").Return(suite.response, true)
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
 	suite.request.Header.Set("If-None-Match", `"abc123"`)
 	suite.response.Header().Set("Etag", `"abc123"`)
 	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
@@ -215,7 +220,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheEtagMatch() {
 }
 
 func (suite *ResponderTestSuite) TestRespondFromCacheCopiesHeaders() {
-	suite.cacher.On("Load", "test-hash").Return(suite.response, true)
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
 	suite.response.Header().Set("X-Fake-Header", "test")
 	suite.response.On("StatusCode").Return(http.StatusOK)
 	RespondFromCache(suite.cacher, suite.writer, suite.request)
@@ -223,7 +228,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheCopiesHeaders() {
 }
 
 func (suite *ResponderTestSuite) TestRespondFromCacheCopiesStatusCode() {
-	suite.cacher.On("Load", "test-hash").Return(suite.response, true)
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
 	suite.response.On("StatusCode").Return(http.StatusVariantAlsoNegotiates)
 	RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal(http.StatusVariantAlsoNegotiates, suite.writer.Code, "RespondFromCache should copy status code from remote to response")

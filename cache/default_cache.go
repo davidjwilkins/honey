@@ -17,11 +17,12 @@ import (
 )
 
 type defaultCacher struct {
-	skipUrls       map[string]bool
-	allowedCookies map[string]bool
-	skipRegex      []*regexp.Regexp
-	entries        sync.Map
-	hashHeaders    []string
+	skipUrls           map[string]bool
+	allowedCookies     map[string]bool
+	allowedCookieNames []string
+	skipRegex          []*regexp.Regexp
+	entries            sync.Map
+	vary               sync.Map
 }
 
 var hasher hash.Hash
@@ -39,9 +40,10 @@ func NewDefaultCacher() *defaultCacher {
 		skipRegex: []*regexp.Regexp{
 			regexp.MustCompile("/(feed|wp-admin|wp-login)"),
 		},
-		allowedCookies: make(map[string]bool),
-		entries:        sync.Map{},
-		hashHeaders:    []string{},
+		allowedCookies:     make(map[string]bool),
+		allowedCookieNames: []string{},
+		entries:            sync.Map{},
+		vary:               sync.Map{},
 	}
 
 	return cacher
@@ -79,27 +81,22 @@ func (c *defaultCacher) CanCache(r *http.Request) bool {
 // Hash creates a unique string for a request.  It includes
 // the method, the url, and any allowed cookies.
 func (c *defaultCacher) Hash(r *http.Request) string {
-	var key string
-	key = fmt.Sprintf("%s :: %s :: %s", r.Method, r.URL.String(), r.Header.Get("Accept-Encoding"))
-	for _, cookie := range r.Cookies() {
-		if allowed, ok := c.allowedCookies[cookie.Name]; allowed && ok {
-			key += fmt.Sprintf(
-				" :: %s :: %v",
-				strings.Replace(cookie.Name, "::", "::::", -1),
-				strings.Replace(cookie.Value, "::", "::::", -1),
-			)
-		}
+	var buffer bytes.Buffer
+	buffer.WriteString(fmt.Sprintf("%s :: %s", r.Method, r.URL.String()))
+
+	v, found := c.vary.Load(buffer.String())
+	if found {
+		vary := v.(string)
+		buffer.WriteString(c.getVaryHeadersHash(r.Header, r, vary))
 	}
-	for _, header := range c.hashHeaders {
-		key += "::" + r.Header.Get(header)
-	}
-	return key
+	return buffer.String()
 }
 
 // AddAllowedCookie adds a name to the list of cookies which
 // are allowed through the cache.
 func (c *defaultCacher) AddAllowedCookie(name string) {
 	c.allowedCookies[name] = true
+	c.allowedCookieNames = append(c.allowedCookieNames, name)
 }
 
 var replacer = strings.NewReplacer(`no-cache="set-cookie"`, "", ",,", "", "public", "")
@@ -153,10 +150,6 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 		resp.headers.Set("Cache-Control", cc)
 	}
 
-	if len(c.allowedCookies) > 0 && !strings.Contains(r.Header.Get("Vary"), "cookie") {
-		resp.headers.Set("Vary", ccReplacer(resp.headers.Get("Vary")+",cookie"))
-	}
-
 	if r.Header.Get("Last-Modified") == "" {
 		r.Header.Set("Last-Modified", time.Now().Format(time.RFC1123))
 	}
@@ -171,24 +164,78 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	r.Body = ioutil.NopCloser(bytes.NewReader(resp.body))
 	hasher.Write(resp.body)
 	if !strings.Contains(cc, "no-store") {
-		etag := `"` + base64.StdEncoding.EncodeToString(hasher.Sum(nil)) + `"`
+		etag := base64.StdEncoding.EncodeToString(hasher.Sum(nil))
 		resp.Header().Set("Etag", etag)
 		r.Header.Set("Etag", etag)
 	}
+	resp.cookies = make(map[string]*http.Cookie)
+	for _, cookie := range resp.response.Cookies() {
+		resp.cookies[cookie.Name] = cookie
+	}
+	if r.Request != nil {
+		resp.requestHeaders = r.Request.Header
+	} else {
+		resp.requestHeaders = http.Header{}
+	}
+
 	return &resp
 }
 
 // Cache will store the Response in the cache for later retrieval
 func (c *defaultCacher) Cache(hash string, r Response) {
+	vary := r.Header().Get("Vary")
+	if vary != "" {
+		c.vary.Store(hash, vary)
+	}
+	hash += c.getVaryHeadersHash(r.RequestHeaders(), r, vary)
 	c.entries.Store(hash, r)
 }
 
-// Load returns a Response from the cache.
-func (c *defaultCacher) Load(hash string) (Response, bool) {
+// Load returns a Response from the cache.  It returns the Response, if found, and
+// a boolean indicating whether or not it was found (and matched the Vary header, if
+// present)
+func (c *defaultCacher) Load(hash string, request *http.Request) (Response, bool) {
 	var r Response
 	r_tmp, ok := c.entries.Load(hash)
 	if ok {
 		r = r_tmp.(Response)
 	}
 	return r, ok
+}
+
+type CookieGetter interface {
+	Cookie(name string) (*http.Cookie, error)
+}
+
+func (c *defaultCacher) getVaryHeadersHash(headers http.Header, getCookie CookieGetter, vary string) (hash string) {
+	var buffer bytes.Buffer
+	buffer.WriteString(hash)
+
+	varies := strings.Split(vary, ",")
+	for _, header := range varies {
+		if header == "" {
+			return
+		}
+		if header != "cookie" {
+			buffer.WriteString("::")
+			buffer.WriteString(headers.Get(header))
+		} else {
+			for _, cookieName := range c.allowedCookieNames {
+				if cookie, err := getCookie.Cookie(cookieName); err == nil {
+					buffer.WriteString(fmt.Sprintf(
+						" :: %s :: %v",
+						strings.Replace(cookie.Name, "::", "::::", -1),
+						strings.Replace(cookie.Value, "::", "::::", -1),
+					))
+				} else {
+					buffer.WriteString(fmt.Sprintf(
+						" :: %s :: ",
+						strings.Replace(cookieName, "::", "::::", -1),
+					))
+				}
+			}
+		}
+	}
+
+	return buffer.String()
 }

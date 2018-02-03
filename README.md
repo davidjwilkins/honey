@@ -63,7 +63,7 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 
 - [ ] Come up with a way to mark certain routes/files as [`immutable`](https://hacks.mozilla.org/2017/01/using-immutable-caching-to-speed-up-the-web/)
 
-- [ ] Check [`Vary`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Vary) header from response and handle properly
+- [x] Check [`Vary`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Vary) header from response and handle properly
 
 - [ ] Send cached response with a [`Warning`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Warning) header if the backend gives an error after clearing the cache. 
 	- [ ] Configurable Site-wide (whether to send the warning to the end user, otherwise a webhook? or some other way to report the warning)

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func newValidRequest(uri string) *http.Request {
@@ -139,9 +141,11 @@ func TestDefaultCacheHashDoesNotIncludeCookiesUnlessAllowed(t *testing.T) {
 		Value: "This Doesn't matter",
 	})
 	var cache = NewDefaultCacher()
-	if cache.Hash(requestA) != cache.Hash(requestB) {
-		t.Error("Default cacher should not include cookies unless added to the allowed list")
-	}
+	hash := cache.Hash(requestA)
+	cache.vary.Store(hash, "cookie")
+	defer cache.vary.Delete(hash)
+	assert.Equal(t, cache.Hash(requestA), cache.Hash(requestB), "Hash should be equal if cookie not in allowed list")
+
 }
 
 func TestDefaultCacheHashDoesIncludeCookiesIfAllowed(t *testing.T) {
@@ -153,9 +157,11 @@ func TestDefaultCacheHashDoesIncludeCookiesIfAllowed(t *testing.T) {
 	})
 	var cache = NewDefaultCacher()
 	cache.AddAllowedCookie("site_lang_id")
-	if cache.Hash(requestA) == cache.Hash(requestB) {
-		t.Error("Default cacher should include cookies added to the allowed list")
-	}
+	hash := cache.Hash(requestA)
+	cache.vary.Store(hash, "cookie")
+	cache.vary.Store(hash, "cookie")
+	defer cache.vary.Delete(hash)
+	assert.NotEqual(t, cache.Hash(requestA), cache.Hash(requestB), "Hash should not be equal if allowed cookies are different")
 }
 
 func TestDefaultCacheRemovesCookiesIfNotAllowed(t *testing.T) {
@@ -166,13 +172,14 @@ func TestDefaultCacheRemovesCookiesIfNotAllowed(t *testing.T) {
 				"remove_me=1; HttpOnly; Path=/",
 			},
 		}),
+
 		Body: ioutil.NopCloser(bytes.NewBuffer([]byte("test"))),
 	}
 	var cache = NewDefaultCacher()
 	cache.AddAllowedCookie("site_lang_id")
 	cache.Standardize(&response)
 	cookies := response.Cookies()
-	if len(cookies) == 2 {
+	if len(cookies) >= 2 {
 		t.Error("Default cacher should remove cookies not added to the allowed list from the response")
 	} else if len(cookies) == 0 {
 		t.Error("Default cacher should not remove cookies added to the allowed list from the response")
@@ -181,23 +188,40 @@ func TestDefaultCacheRemovesCookiesIfNotAllowed(t *testing.T) {
 
 func TestDefaultCacheAddsAndRetrievesItemsFromCache(t *testing.T) {
 	response := http.Response{
-		Header: http.Header(map[string][]string{
-			"Set-Cookie": []string{
-				"site_lang_id=1; HttpOnly; Path=/",
-				"remove_me=1; HttpOnly; Path=/",
-			},
-		}),
-		Body: ioutil.NopCloser(bytes.NewBuffer([]byte("test"))),
+		Header: http.Header{},
+		Body:   ioutil.NopCloser(bytes.NewBuffer([]byte("test"))),
 	}
 	var cache = NewDefaultCacher()
-	cache.AddAllowedCookie("site_lang_id")
 	r := cache.Standardize(&response)
-	cache.Cache("test", r)
-	stored_r, ok := cache.Load("test")
+	request := newValidRequest("https://www.insomniac.com")
+
+	hash := cache.Hash(request)
+	cache.Cache(hash, r)
+	stored, ok := cache.Load(hash, request)
 	if !ok {
 		t.Error("Cacher should store cached responses")
 	}
-	if stored_r != r {
+	if stored != r {
 		t.Error("Cacher should return the appropriate stored response")
+	}
+}
+
+func TestDefaultCacheDoesntFindIfCookiesDontMatch(t *testing.T) {
+	response := http.Response{
+		Header: http.Header{},
+		Body:   ioutil.NopCloser(bytes.NewBuffer([]byte("test"))),
+	}
+	response.Header.Set("Vary", "cookie")
+	var cache = NewDefaultCacher()
+	cache.AddAllowedCookie("site_land_id")
+	r := cache.Standardize(&response)
+	requestA := newValidRequest("https://www.insomniac.com")
+	requestB := newValidRequest("https://www.insomniac.com")
+	requestA.AddCookie(&http.Cookie{Name: "site_lang_id", Value: "1", HttpOnly: false})
+	hash := cache.Hash(requestA)
+	cache.Cache(hash, r)
+	_, ok := cache.Load(hash, requestB)
+	if ok {
+		t.Error("Cacher should not match if cookies don't match")
 	}
 }

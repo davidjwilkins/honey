@@ -29,7 +29,6 @@ func Fetch(c cache.Cacher, handler http.Handler, backend *url.URL) http.HandlerF
 			if responded {
 				return
 			}
-
 			// https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9.4
 			// If we couldn't respond from the cache, and they only want it if
 			// it is cached, then exit with a 504 per the spec.

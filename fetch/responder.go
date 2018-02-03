@@ -26,7 +26,7 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 		r.Header.Get("Pragma") == "no-cache" {
 		return hash, false
 	}
-	resp, found := c.Load(hash)
+	resp, found := c.Load(hash, r)
 	var statusCode int
 	if found && (strings.Contains(r.Header.Get("Cache-Control"), "must-revalidate") ||
 		strings.Contains(r.Header.Get("Cache-Control"), "proxy-revalidate")) {
@@ -85,7 +85,7 @@ func FlushMultiplexer(c cache.Cacher, done chan bool) func(*http.Response) error
 		if isNotModified(r.Request, response) {
 			r.StatusCode = http.StatusNotModified
 			r.Body = ioutil.NopCloser(bytes.NewReader([]byte{}))
-		} else {
+		} else if canRespondWithoutBody(r.Request) {
 			if cached, code := response.Validate(r.Request); cached {
 				r.StatusCode = code
 				r.Body = ioutil.NopCloser(bytes.NewReader([]byte{}))
@@ -115,4 +115,10 @@ func RespondFromMultiplexer(hash string, c cache.Cacher, w http.ResponseWriter, 
 func isNotModified(r *http.Request, resp cache.Response) bool {
 	return r.Header.Get("If-None-Match") != "" &&
 		r.Header.Get("If-None-Match") == resp.Header().Get("Etag")
+}
+
+func canRespondWithoutBody(req *http.Request) bool {
+	return strings.Contains(req.Header.Get("Cache-Control"), "must-revalidate") ||
+		strings.Contains(req.Header.Get("Cache-Control"), "proxy-revalidate") ||
+		req.Header.Get("If-Modified-Since") != "" || req.Header.Get("If-UnModified-Since") != ""
 }
