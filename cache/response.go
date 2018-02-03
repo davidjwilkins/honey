@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+var tz = time.FixedZone("America/Los_Angeles", -8)
+
 // A Response interface is saved in the cache, and is used
 // to populate a real (net/http) Response when a request
 // may be served via the cache.
@@ -51,8 +53,8 @@ func (r *responseImpl) Age() string {
 	return strconv.FormatUint(uint64(time.Since(r.now)/time.Second), 10)
 }
 
-var smaxAgeFinder = regexp.MustCompile(`s-max-age=(?:\")?(\d+(?:\")?(?:,|$))`)
-var maxAgeFinder = regexp.MustCompile(`max-age=(?:\")?(\d+(?:\")?(?:,|$))`)
+var smaxAgeFinder = regexp.MustCompile(`s-maxage=(?:\")?(\d+)(?:\")?(?:,|$)`)
+var maxAgeFinder = regexp.MustCompile(`max-age=(?:\")?(\d+)(?:\")?(?:,|$)`)
 
 // Validate returns true if a response is still considered valid
 // for request req.
@@ -61,20 +63,27 @@ func (r *responseImpl) Validate(req *http.Request) bool {
 		strings.Contains(req.Header.Get("Cache-Control"), "proxy-revalidate") {
 		cc := r.Header().Get("Cache-Control")
 		var age string
-		if strings.Contains(cc, "s-max-age") {
-			age = smaxAgeFinder.FindString(cc)
+		if strings.Contains(cc, "s-maxage") {
+			// https://tools.ietf.org/html/rfc7234#section-5.2.2.8
+			tmp := smaxAgeFinder.FindStringSubmatch(cc)
+			if len(tmp) == 2 {
+				age = tmp[1]
+			}
 		} else if strings.Contains(cc, "max-age") {
-			age = maxAgeFinder.FindString(cc)
+			// https://tools.ietf.org/html/rfc7234#section-5.2.2.9
+			tmp := maxAgeFinder.FindStringSubmatch(cc)
+			if len(tmp) == 2 {
+				age = tmp[1]
+			}
 		}
 		if age != "" {
 			delta, err := strconv.Atoi(age)
-			if err != nil {
-				return false
+			if err == nil {
+				return int(time.Since(r.now)/time.Second) < delta
 			}
-			return int(time.Since(r.now)/time.Second) < delta
 		}
 
-		//https://tools.ietf.org/html/rfc7231#section-7.1.1.1
+		// https://tools.ietf.org/html/rfc7231#section-7.1.1.1
 		if r.Header().Get("Expires") == "" || r.Header().Get("Expires") == "0" {
 			return false
 		}
@@ -87,6 +96,9 @@ func (r *responseImpl) Validate(req *http.Request) bool {
 		//e.g. "Mon Jan _2 15:04:05 2006"
 		if err != nil {
 			expires, err = time.Parse(time.ANSIC, r.Header().Get("Expires"))
+			// TODO: Grab correct server timezone?
+			expires = expires.Add(8 * time.Hour)
+
 		}
 		//e.g. "Mon, 02 Jan 2006 15:04:05 -0700"
 		if err != nil {
