@@ -59,7 +59,7 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 	- [ ] Configurable Site-wide
 	- [ ] Configurable Per route
 
-- [ ] If cache miss, but after refresh Validate matches, send 304 Response
+- [x] If cache miss, but after refresh Validate matches, send 304 Response
 
 - [ ] Come up with a way to mark certain routes/files as [`immutable`](https://hacks.mozilla.org/2017/01/using-immutable-caching-to-speed-up-the-web/)
 

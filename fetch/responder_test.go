@@ -237,6 +237,7 @@ func (suite *ResponderTestSuite) TestFlushMultiplexerMiss() {
 	suite.cacher.On("Cache", "test-hash", suite.response)
 	suite.multiplexer.On("Write", suite.response).Return(true)
 	suite.multiplexer.On("Delete", "test-hash")
+	suite.response.On("Validate", suite.request).Return(false, 0)
 	var done = make(chan bool)
 	FlushMultiplexer(suite.cacher, done)(suite.httpResponse)
 	<-done
@@ -244,6 +245,24 @@ func (suite *ResponderTestSuite) TestFlushMultiplexerMiss() {
 	suite.Assert().Equal(true, suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response))
 	suite.Assert().Equal(true, suite.multiplexer.AssertCalled(suite.T(), "Write", suite.response))
 	suite.Assert().Equal(http.StatusOK, suite.httpResponse.StatusCode)
+}
+
+func (suite *ResponderTestSuite) TestFlushMultiplexerMissButValidates() {
+	multiplexers.Store("test-hash", suite.multiplexer)
+	defer multiplexers.Delete("test-hash")
+	suite.httpResponse.Request = suite.request
+	suite.cacher.On("Standardize", suite.httpResponse).Return(suite.response)
+	suite.cacher.On("Cache", "test-hash", suite.response)
+	suite.multiplexer.On("Write", suite.response).Return(true)
+	suite.multiplexer.On("Delete", "test-hash")
+	suite.response.On("Validate", suite.request).Return(true, http.StatusNotModified)
+	var done = make(chan bool)
+	FlushMultiplexer(suite.cacher, done)(suite.httpResponse)
+	<-done
+	suite.Assert().Equal("MISS", suite.httpResponse.Header.Get("X-Honey-Cache"))
+	suite.Assert().Equal(true, suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response))
+	suite.Assert().Equal(true, suite.multiplexer.AssertCalled(suite.T(), "Write", suite.response))
+	suite.Assert().Equal(http.StatusNotModified, suite.httpResponse.StatusCode)
 }
 
 func (suite *ResponderTestSuite) TestFlushMultiplexerHit() {

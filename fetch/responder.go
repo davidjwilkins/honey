@@ -85,6 +85,11 @@ func FlushMultiplexer(c cache.Cacher, done chan bool) func(*http.Response) error
 		if isNotModified(r.Request, response) {
 			r.StatusCode = http.StatusNotModified
 			r.Body = ioutil.NopCloser(bytes.NewReader([]byte{}))
+		} else {
+			if cached, code := response.Validate(r.Request); cached {
+				r.StatusCode = code
+				r.Body = ioutil.NopCloser(bytes.NewReader([]byte{}))
+			}
 		}
 		return nil
 	}
