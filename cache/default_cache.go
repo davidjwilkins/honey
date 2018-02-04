@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
-	"hash"
 	"io/ioutil"
 	"net/http"
 	"regexp"
@@ -23,12 +22,6 @@ type defaultCacher struct {
 	skipRegex          []*regexp.Regexp
 	entries            sync.Map
 	vary               sync.Map
-}
-
-var hasher hash.Hash
-
-func init() {
-	hasher = blake2b.New256()
 }
 
 // NewDefaultCacher returns a cacher optimized
@@ -167,8 +160,9 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	resp.body, _ = ioutil.ReadAll(r.Body)
 	r.Body.Close()
 	r.Body = ioutil.NopCloser(bytes.NewReader(resp.body))
-	hasher.Write(resp.body)
 	if !strings.Contains(cc, "no-store") {
+		hasher := blake2b.New256()
+		hasher.Write(resp.body)
 		etag := base64.StdEncoding.EncodeToString(hasher.Sum(nil))
 		resp.Header().Set("Etag", etag)
 		r.Header.Set("Etag", etag)
