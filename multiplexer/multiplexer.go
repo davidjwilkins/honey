@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/utilities"
 )
 
 type multiplexer struct {
@@ -15,6 +16,7 @@ type multiplexer struct {
 	response  cache.Response
 	done      bool
 	cacheable bool
+	handler   func(w http.ResponseWriter, r *http.Request)
 	sync.WaitGroup
 	sync.RWMutex
 }
@@ -47,12 +49,13 @@ type Multiplexer interface {
 
 // NewMultiplexer will create a new default multiplexer to be used for
 // all requests for which cacher provides the same hash.
-func NewMultiplexer(cacher cache.Cacher, r *http.Request) Multiplexer {
+func NewMultiplexer(cacher cache.Cacher, r *http.Request, handler func(w http.ResponseWriter, r *http.Request)) Multiplexer {
 	return &multiplexer{
 		cacher:    cacher,
 		requests:  []request{},
 		done:      false,
 		cacheable: true,
+		handler:   handler,
 	}
 }
 
@@ -94,16 +97,27 @@ func (m *multiplexer) Write(r cache.Response) bool {
 		m.requests = []request{}
 		m.Unlock()
 	}()
-
+	vary := r.Header().Get("Vary")
 	if cc := r.Header().Get("Cache-Control"); strings.Contains(cc, "private") ||
-		strings.Contains(cc, "no-store") || r.Header().Get("vary") == "*" {
+		strings.Contains(cc, "no-store") || vary == "*" {
 		m.cacheable = false
-		for range m.requests {
-			m.Done()
-		}
+		go func() {
+			for range m.requests {
+				m.Done()
+			}
+		}()
+		m.Wait()
 		return false
 	}
+	// Bucket the requests based on whether their headers for the response Vary are the same
+	hash := utilities.GetVaryHeadersHash(r.RequestHeaders(), r, m.cacher.AllowedCookies(), vary)
+	buckets := make(map[string][]request)
 	for _, req := range m.requests {
+		h := utilities.GetVaryHeadersHash(req.request.Header, req.request, m.cacher.AllowedCookies(), vary)
+		buckets[h] = append(buckets[h], req)
+	}
+	// Respond to any that match the Vary
+	for _, req := range buckets[hash] {
 		go func(req request) {
 			for key, values := range r.Header() {
 				for _, value := range values {
@@ -121,7 +135,22 @@ func (m *multiplexer) Write(r cache.Response) bool {
 			m.Done()
 		}(req)
 	}
+	go func() {
+		for bucket, requests := range buckets {
+			// we've already done the one with the current request's hash
+			if bucket == hash {
+				continue
+			}
+			// TODO: GET THE RESPONSE FOR EACH BUCKET
+			for _, req := range requests {
+				req.request.Header.Set("X-Honey-Vary", bucket)
+				m.handler(req.writer, req.request)
+				m.Done()
+			}
+		}
+	}()
 	m.Wait()
+
 	return true
 }
 

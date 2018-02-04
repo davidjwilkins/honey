@@ -28,4 +28,7 @@ type Cacher interface {
 	// Load retrieves a response from the cache for the
 	// supplied hash
 	Load(hash string, r *http.Request) (Response, bool)
+	// AllowedCookies retrieves a list of cookies the cache will
+	// allow in the response
+	AllowedCookies() []string
 }

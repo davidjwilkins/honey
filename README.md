@@ -120,5 +120,5 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 
 - [ ] Move to gitlab
 
-- [ ] After fetching a route with multiplexer, check vary headers, bucket queued requests based on the header,
+- [x] After fetching a route with multiplexer, check vary headers, bucket queued requests based on the header,
 	  and do a fetch for each variant.

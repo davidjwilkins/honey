@@ -16,9 +16,9 @@ var multiplexers sync.Map
 // ResponseFromCache will see if there a response for request r which exists in cache c.
 // If returns the hash of the request, and whether or not the request was responded to.
 // It will return false if either Cache-Control or Pragma contains the no-cache directive,
-// or if the response is not in the cache.
-// If it is found in the cache, it will check to see if the request's If-None-Match header
-// has the same value as the response's Etag, and if so, will return a 301: Not Modified.
+// or if the response is not in the cache.∫b
+// If it is found in the cache, it will check to see if the request'sIf-None-Match header
+// has the same value as the response's Etag, and if so, will return a  301: Not Modified.
 // Otherwise, we will return the cached response, with an "X-Honey-Cache: HIT" header
 func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (hash string, responded bool) {
 	hash = c.Hash(r)
@@ -36,17 +36,17 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 		statusCode = http.StatusNotModified
 	}
 	if responded {
+		for key, values := range resp.Header() {
+			for _, value := range values {
+				w.Header().Set(key, value)
+			}
+		}
+		w.Header().Set("X-Honey-Cache", "HIT")
 		if isNotModified(r, resp) {
 			w.WriteHeader(statusCode)
 			return
 		}
 		w.WriteHeader(resp.StatusCode())
-		for key, values := range resp.Header() {
-			for _, value := range values {
-				w.Header().Add(key, value)
-			}
-		}
-		w.Header().Set("X-Honey-Cache", "HIT")
 		w.Write(resp.Body())
 	}
 	return
@@ -99,8 +99,8 @@ func FlushMultiplexer(c cache.Cacher, done chan bool) func(*http.Response) error
 // If so, it will add ResponseWriter w to the multiplexer, wait for the multiplexer to response,
 // and then return true.  Otherwise, it will create a new multiplexer for the hash, and return
 // false.
-func RespondFromMultiplexer(hash string, c cache.Cacher, w http.ResponseWriter, r *http.Request) (responded bool) {
-	multi := multiplexer.NewMultiplexer(c, r)
+func RespondFromMultiplexer(hash string, c cache.Cacher, w http.ResponseWriter, r *http.Request, handler func(w http.ResponseWriter, r *http.Request)) (responded bool) {
+	multi := multiplexer.NewMultiplexer(c, r, handler)
 	m, fetching := multiplexers.LoadOrStore(hash, multi)
 	if fetching {
 		multi = m.(multiplexer.Multiplexer)

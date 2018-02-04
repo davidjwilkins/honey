@@ -38,6 +38,11 @@ func (t *testCacher) Load(hash string, req *http.Request) (cache.Response, bool)
 	return args.Get(0).(cache.Response), args.Bool(1)
 }
 
+func (t *testCacher) AllowedCookies() []string {
+	args := t.Called()
+	return args.Get(0).([]string)
+}
+
 type testResponse struct {
 	mock.Mock
 }
@@ -45,6 +50,11 @@ type testResponse struct {
 func (t *testResponse) Status() string {
 	args := t.Called()
 	return args.String(0)
+}
+
+func (t *testResponse) RequestHeaders() http.Header {
+	args := t.Called()
+	return args.Get(0).(http.Header)
 }
 
 func (t *testResponse) StatusCode() int {
@@ -262,6 +272,7 @@ func (suite *ResponderTestSuite) TestFlushMultiplexerMissButValidates() {
 	suite.multiplexer.On("Delete", "test-hash")
 	suite.response.On("Validate", suite.request).Return(true, http.StatusNotModified)
 	var done = make(chan bool)
+	suite.httpResponse.Request.Header.Set("Cache-Control", "must-revalidate")
 	FlushMultiplexer(suite.cacher, done)(suite.httpResponse)
 	<-done
 	suite.Assert().Equal("MISS", suite.httpResponse.Header.Get("X-Honey-Cache"))
@@ -289,8 +300,12 @@ func (suite *ResponderTestSuite) TestFlushMultiplexerHit() {
 	suite.Assert().Equal(http.StatusNotModified, suite.httpResponse.StatusCode)
 }
 
+func noopHandler(w http.ResponseWriter, r *http.Request) {
+
+}
+
 func (suite *ResponderTestSuite) TestRespondFromMultiplexerInitialRequest() {
-	found := RespondFromMultiplexer("test-hash", suite.cacher, suite.writer, suite.request)
+	found := RespondFromMultiplexer("test-hash", suite.cacher, suite.writer, suite.request, noopHandler)
 	suite.Assert().False(found, "Respond from multiplexer should return false on first request")
 }
 
@@ -298,6 +313,6 @@ func (suite *ResponderTestSuite) TestRespondFromMultiplexerMultiplexedRequests()
 	suite.multiplexer.On("AddWriter", suite.writer, suite.request)
 	suite.multiplexer.On("Wait")
 	multiplexers.Store("test-hash", suite.multiplexer)
-	found := RespondFromMultiplexer("test-hash", suite.cacher, suite.writer, suite.request)
+	found := RespondFromMultiplexer("test-hash", suite.cacher, suite.writer, suite.request, noopHandler)
 	suite.Assert().True(found, "Respond from multiplexer should return true on second request")
 }

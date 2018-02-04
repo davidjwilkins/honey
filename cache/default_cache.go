@@ -79,7 +79,9 @@ func (c *defaultCacher) CanCache(r *http.Request) bool {
 }
 
 // Hash creates a unique string for a request.  It includes
-// the method, the url, and any allowed cookies.
+// the method, the url, and any allowed cookies.  It also
+// includes the X-Honey-Vary header - which is used internally
+// on multiplexed requests.
 func (c *defaultCacher) Hash(r *http.Request) string {
 	var buffer bytes.Buffer
 	buffer.WriteString(fmt.Sprintf("%s :: %s", r.Method, r.URL.String()))
@@ -87,7 +89,10 @@ func (c *defaultCacher) Hash(r *http.Request) string {
 	v, found := c.vary.Load(buffer.String())
 	if found {
 		vary := v.(string)
-		buffer.WriteString(c.getVaryHeadersHash(r.Header, r, vary))
+		buffer.WriteString(utilities.GetVaryHeadersHash(r.Header, r, c.allowedCookieNames, vary))
+	}
+	if vary := r.Header.Get("X-Honey-Vary"); vary != "" {
+		buffer.WriteString(vary)
 	}
 	return buffer.String()
 }
@@ -187,7 +192,7 @@ func (c *defaultCacher) Cache(hash string, r Response) {
 	if vary != "" {
 		c.vary.Store(hash, vary)
 	}
-	hash += c.getVaryHeadersHash(r.RequestHeaders(), r, vary)
+	hash += utilities.GetVaryHeadersHash(r.RequestHeaders(), r, c.allowedCookieNames, vary)
 	c.entries.Store(hash, r)
 }
 
@@ -203,39 +208,6 @@ func (c *defaultCacher) Load(hash string, request *http.Request) (Response, bool
 	return r, ok
 }
 
-type CookieGetter interface {
-	Cookie(name string) (*http.Cookie, error)
-}
-
-func (c *defaultCacher) getVaryHeadersHash(headers http.Header, getCookie CookieGetter, vary string) (hash string) {
-	var buffer bytes.Buffer
-	buffer.WriteString(hash)
-
-	varies := strings.Split(vary, ",")
-	for _, header := range varies {
-		if header == "" {
-			return
-		}
-		if header != "cookie" {
-			buffer.WriteString("::")
-			buffer.WriteString(headers.Get(header))
-		} else {
-			for _, cookieName := range c.allowedCookieNames {
-				if cookie, err := getCookie.Cookie(cookieName); err == nil {
-					buffer.WriteString(fmt.Sprintf(
-						" :: %s :: %v",
-						strings.Replace(cookie.Name, "::", "::::", -1),
-						strings.Replace(cookie.Value, "::", "::::", -1),
-					))
-				} else {
-					buffer.WriteString(fmt.Sprintf(
-						" :: %s :: ",
-						strings.Replace(cookieName, "::", "::::", -1),
-					))
-				}
-			}
-		}
-	}
-
-	return buffer.String()
+func (c *defaultCacher) AllowedCookies() []string {
+	return c.allowedCookieNames
 }

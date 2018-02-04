@@ -40,7 +40,7 @@ func Fetch(c cache.Cacher, handler http.Handler, backend *url.URL) http.HandlerF
 			// RespondFromMultiplexer will return true if there was an in-flight
 			// request with the same hash, and we were able to respond with it's
 			// response.  It will block until the in-flight request has completed.
-			responded = RespondFromMultiplexer(hash, c, w, r)
+			responded = RespondFromMultiplexer(hash, c, w, r, Fetch(c, handler, backend))
 			if responded {
 				return
 			}
