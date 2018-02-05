@@ -27,6 +27,58 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 
 ### Todo
 
+- [ ] Handle `stale-if-error`
+	- [ ] Configurable Site-wide (whether to respect it if present, or whether to always act as if this header were present)
+	- [ ] Configurable Per route
+	- [ ] Send cached response with a [`Warning`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Warning) header if the backend gives an error after clearing the cache. 
+
+- [ ] Implement configuration via TOML file (honey.toml?)
+
+- [ ] Come up with a way to mark certain routes/files as [`immutable`](https://hacks.mozilla.org/2017/01/using-immutable-caching-to-speed-up-the-web/)
+
+- [ ] Web UI to configure / clear cache and view metrics
+
+- [ ] Minify html, js, css before cacheing
+	- [ ] Implement it
+	- [ ] Make this configurable (whether to do it, site wide and per route)
+
+- [ ] [Canonicalize](https://www.modpagespeed.com/doc/filter-canonicalize-js#sample)  popular JavaScript libraries that can be replaced with ones hosted for free by a JavaScript library hosting service
+	- [ ] Implement it
+	- [ ] Make this configurable (whether to do it, site wide and per route)
+
+- [ ] Use http/2 push to push assets if request doesn't have an If-None-Match header
+	- [ ] Implement it
+	- [ ] Make this configurable (whether to do it, site wide and per route)
+
+- [ ] Rewrite static assets to cookieless subdomain
+
+- [ ] Combine all google-font requests into a single one
+
+- [ ] Implement other cache backends
+	- [x] In Memory
+	- [ ] File
+	- [ ] Memcached
+	- [ ] Redis
+	- [ ] BoltDB
+
+	- [ ] Brotli compress if requester supports it
+	- [ ] Implement it
+	- [ ] Make this configurable (whether to do it, site wide and per route)
+
+- [ ] Implement [offline cache](https://developers.google.com/web/fundamentals/instant-and-offline/offline-cookbook/)
+	- [ ] Implement it
+	- [ ] Make this configurable (whether to do it, site wide and per route)
+
+- [ ] Automatically fix mixed-content https issues
+	- [ ] Implement it
+	- [ ] Make this configurable (whether to do it, site wide and per route)
+
+- [ ] Prevent hotlinking of images
+	- [ ] Implement it
+	- [ ] Make this configurable (whether to do it, site wide and per route)
+
+- [ ] Letsencypt SSL termination
+
 - [x] Set [`Last-Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Last-Modified) header on response to the cached time if it is not already on the backend response.
 	- [ ] Configurable Site-wide
 	- [ ] Configurable Per route
@@ -58,64 +110,11 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 
 - [x] If cache miss, but after refresh Validate matches, send 304 Response
 
-- [ ] Come up with a way to mark certain routes/files as [`immutable`](https://hacks.mozilla.org/2017/01/using-immutable-caching-to-speed-up-the-web/)
-
 - [x] Check [`Vary`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Vary) header from response and handle properly
-
-- [ ] Send cached response with a [`Warning`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Warning) header if the backend gives an error after clearing the cache. 
-	- [ ] Configurable Site-wide (whether to send the warning to the end user, otherwise a webhook? or some other way to report the warning)
-	- [ ] Configurable Per route
-
-- [ ] Letsencypt SSL termination
 
 - [x] Handle `stale-while-revalidate`
 	- [ ] Configurable Site-wide (whether to respect it)
 	- [ ] Configurable Per route
-
-- [ ] Handle `stale-if-error`
-	- [ ] Configurable Site-wide (whether to respect it)
-	- [ ] Configurable Per route
-
-- [ ] Web UI to configure / clear cache and view metrics
-
-- [ ] Minify html, js, css before cacheing
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] [Canonicalize](https://www.modpagespeed.com/doc/filter-canonicalize-js#sample)  popular JavaScript libraries that can be replaced with ones hosted for free by a JavaScript library hosting service
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Brotli compress if requester supports it
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Implement [offline cache](https://developers.google.com/web/fundamentals/instant-and-offline/offline-cookbook/)
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Automatically fix mixed-content https issues
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Prevent hotlinking of images
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Use http/2 push to push assets if request doesn't have an If-None-Match header
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Rewrite static assets to cookieless subdomain
-
-- [ ] Combine all google-font requests into a single one
-
-- [ ] Implement configurable cache backends
-	- [x] In Memory
-	- [ ] File
-	- [ ] Memcached
-	- [ ] Redis
-	- [ ] BoltDB
 
 - [x] After fetching a route with multiplexer, check vary headers, bucket queued requests based on the header,
 	  and do a fetch for each variant.
