@@ -2,12 +2,14 @@ package fetch
 
 import (
 	"bytes"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/multiplexer"
@@ -88,6 +90,9 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 // It then writes the response to the multiplexer, and deletes the key from the
 // multiplexer list (because responses can now be handled from the cache).
 func FlushMultiplexer(c cache.Cacher, done chan bool) func(*http.Response) error {
+	// Any modifications made to the response headers should be made to r.Header
+	// and not to response.Header as the headers from r will be copied to response,
+	// but if they don't get set on r then they won't appear on the initial request
 	return func(r *http.Response) error {
 		if r.Request == nil {
 			return nil
@@ -100,10 +105,54 @@ func FlushMultiplexer(c cache.Cacher, done chan bool) func(*http.Response) error
 		}
 		multi := m.(multiplexer.Multiplexer)
 		response := c.Standardize(r)
-		if !strings.Contains(response.Header().Get("Cache-Control"), "no-store") {
+		cc := response.Header().Get("Cache-Control")
+		// no-store: https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9.2
+		// and don't cache server errors
+		if !strings.Contains(cc, "no-store") && response.StatusCode() < 500 {
 			c.Cache(hash, response)
 		}
-		r.Header.Set("X-Honey-Cache", "MISS")
+		// if there was a server error, let's try and fetch a good response from the
+		// cache and set a warning header to indicate that we have served stale content,
+		// if there is a stale-if-error cache control
+		// https://tools.ietf.org/html/rfc5861#page-3
+		var serveStale bool
+		if response.StatusCode() >= 500 && strings.Contains(cc, "stale-if-error") {
+			var staleAge string
+			prevResponse, found := c.Load(c.Hash(r.Request), r.Request)
+			if found {
+				tmp := staleIfErrorFinder.FindStringSubmatch(cc)
+				if len(tmp) == 2 {
+					staleAge = tmp[1]
+				}
+				// This isn't in the spec, but we're going to support a * as meaning to
+				// indefinitely serve from the cache if the backend response is invalid
+				serveStale = staleAge == "*"
+				if !serveStale && staleAge != "" {
+					maxage, exists := utilities.GetMaxAge(cc)
+					if exists {
+						age, err := strconv.Atoi(prevResponse.Age())
+						if err == nil {
+							staleMax, err := strconv.Atoi(staleAge)
+							if err == nil {
+								serveStale = (age - maxage) < staleMax
+							}
+						}
+					}
+				}
+				if serveStale {
+					errorCode := response.StatusCode()
+					response = prevResponse
+					// http://www.iana.org/assignments/http-warn-codes/http-warn-codes.xhtml
+					// https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Warning
+					r.Header.Set("Warning", fmt.Sprintf(`110 Honey "Response is Stale" "%s"`, time.Now().Format(time.RFC1123)))
+					r.Header.Set("X-Honey-Cache", "STALE")
+					r.Header.Set("X-Honey-Stale", fmt.Sprintf("Backend gave HTTP Status %d", errorCode))
+				}
+			}
+		}
+		if !serveStale {
+			r.Header.Set("X-Honey-Cache", "MISS")
+		}
 		go func() {
 			multi.Write(response)
 			multiplexers.Delete(hash)
@@ -151,3 +200,5 @@ func canRespondWithoutBody(req *http.Request) bool {
 		strings.Contains(req.Header.Get("Cache-Control"), "proxy-revalidate") ||
 		req.Header.Get("If-Modified-Since") != "" || req.Header.Get("If-UnModified-Since") != ""
 }
+
+var staleIfErrorFinder = regexp.MustCompile(`stale-if-error=(?:\")?(\d+|\*+)(?:\")?(?:,|$)`)

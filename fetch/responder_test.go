@@ -266,6 +266,7 @@ func (suite *ResponderTestSuite) TestFlushMultiplexerMiss() {
 	suite.multiplexer.On("Write", suite.response).Return(true)
 	suite.multiplexer.On("Delete", "test-hash")
 	suite.response.On("Validate", suite.request).Return(false, 0)
+	suite.response.On("StatusCode").Return(http.StatusOK)
 	var done = make(chan bool)
 	FlushMultiplexer(suite.cacher, done)(suite.httpResponse)
 	<-done
@@ -286,6 +287,7 @@ func (suite *ResponderTestSuite) TestFlushMultiplexerMissButValidates() {
 	suite.response.On("Validate", suite.request).Return(true, http.StatusNotModified)
 	var done = make(chan bool)
 	suite.httpResponse.Request.Header.Set("Cache-Control", "must-revalidate")
+	suite.response.On("StatusCode").Return(http.StatusOK)
 	FlushMultiplexer(suite.cacher, done)(suite.httpResponse)
 	<-done
 	suite.Assert().Equal("MISS", suite.httpResponse.Header.Get("X-Honey-Cache"))
@@ -304,6 +306,7 @@ func (suite *ResponderTestSuite) TestFlushMultiplexerHit() {
 	suite.cacher.On("Cache", "test-hash", suite.response)
 	suite.multiplexer.On("Write", suite.response).Return(true)
 	suite.multiplexer.On("Delete", "test-hash")
+	suite.response.On("StatusCode").Return(http.StatusOK)
 	var done = make(chan bool)
 	FlushMultiplexer(suite.cacher, done)(suite.httpResponse)
 	<-done
