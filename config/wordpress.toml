@@ -1,0 +1,46 @@
+{
+    title: "Wordpress",
+    backends: [{
+        uri: "https://www.insomniac.com"
+    }],
+    headers: [{
+            name: "Cache-Control",
+            value: "max-age=600",
+            mode: "append",
+            request: true
+        },{
+            name: "Cache-Control",
+            value: "stale-if-error=*",
+            mode: "append",
+            request: true
+        },{
+            name: "Cache-Control",
+            value: "stale-if-error=*",
+            mode: "append",
+            request: true
+        },{
+            name: "Last-Modified",
+            mode: "ensure",
+            response: true
+        }
+    ],
+    routes: [{
+        route: "(?:\?preview=true$|\/(?:feed|wp-admin|wp-login))",
+        regex: true,
+        cache: false,
+        cookies: "*",
+        headers: [{
+            name: "Cache-Control",
+            value: "no-store,no-cache,max-age=0",
+            mode: "overwrite",
+            request: true,
+            response: true,
+        },{
+            name: "Pragma",
+            value: "no-cache",
+            mode: "overwrite",
+            request: true,
+            response: true,
+        }]
+    }]
+}
