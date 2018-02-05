@@ -31,7 +31,7 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 	- [ ] Add unit tests
 	- [ ] Configurable Site-wide (whether to respect it if present, or whether to always act as if this header were present)
 	- [ ] Configurable Per route
-	- [ ] Send cached response with a [`Warning`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Warning) header if the backend gives an error after clearing the cache. 
+	- [x] Send cached response with a [`Warning`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Warning) header if the backend gives an error after clearing the cache. 
 
 - [ ] Implement configuration via TOML file (honey.toml?)
 
