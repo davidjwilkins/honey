@@ -68,7 +68,11 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 
 - [ ] Letsencypt SSL termination
 
-- [ ] Handle `stale-while-revalidate` and `stale-if-error` Cache-Control extensions
+- [x] Handle `stale-while-revalidate`
+	- [ ] Configurable Site-wide (whether to respect it)
+	- [ ] Configurable Per route
+
+- [ ] Handle `stale-if-error`
 	- [ ] Configurable Site-wide (whether to respect it)
 	- [ ] Configurable Per route
 

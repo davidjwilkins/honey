@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/davidjwilkins/honey/utilities"
 )
 
 var tz = time.FixedZone("America/Los_Angeles", -8)
@@ -79,25 +81,9 @@ func (r *responseImpl) Validate(req *http.Request) (bool, int) {
 	if strings.Contains(req.Header.Get("Cache-Control"), "must-revalidate") ||
 		strings.Contains(req.Header.Get("Cache-Control"), "proxy-revalidate") {
 		cc := r.Header().Get("Cache-Control")
-		var age string
-		if strings.Contains(cc, "s-maxage") {
-			// https://tools.ietf.org/html/rfc7234#section-5.2.2.8
-			tmp := smaxAgeFinder.FindStringSubmatch(cc)
-			if len(tmp) == 2 {
-				age = tmp[1]
-			}
-		} else if strings.Contains(cc, "max-age") {
-			// https://tools.ietf.org/html/rfc7234#section-5.2.2.9
-			tmp := maxAgeFinder.FindStringSubmatch(cc)
-			if len(tmp) == 2 {
-				age = tmp[1]
-			}
-		}
-		if age != "" {
-			delta, err := strconv.Atoi(age)
-			if err == nil {
-				return int(time.Since(r.now)/time.Second) < delta, http.StatusNotModified
-			}
+		maxAge, found := utilities.GetMaxAge(cc)
+		if found {
+			return int(time.Since(r.now)/time.Second) < maxAge, http.StatusNotModified
 		}
 
 		// https://tools.ietf.org/html/rfc7231#section-7.1.1.1

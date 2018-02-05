@@ -4,14 +4,19 @@ import (
 	"bytes"
 	"io/ioutil"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/multiplexer"
+	"github.com/davidjwilkins/honey/utilities"
 )
 
 var multiplexers sync.Map
+
+var staleWhileRevaldateFinder = regexp.MustCompile(`stale-while-revalidate=(?:\")?(\d+)(?:\")?(?:,|$)`)
 
 // ResponseFromCache will see if there a response for request r which exists in cache c.
 // If returns the hash of the request, and whether or not the request was responded to.
@@ -20,17 +25,41 @@ var multiplexers sync.Map
 // If it is found in the cache, it will check to see if the request'sIf-None-Match header
 // has the same value as the response's Etag, and if so, will return a  301: Not Modified.
 // Otherwise, we will return the cached response, with an "X-Honey-Cache: HIT" header
-func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (hash string, responded bool) {
+func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (hash string, responded bool, revalidate bool) {
 	hash = c.Hash(r)
-	if strings.Contains(r.Header.Get("Cache-Control"), "no-cache") ||
+	cc := r.Header.Get("Cache-Control")
+	if strings.Contains(cc, "no-cache") ||
 		r.Header.Get("Pragma") == "no-cache" {
-		return hash, false
+		return hash, false, false
 	}
 	resp, found := c.Load(hash, r)
 	var statusCode int
-	if found && (strings.Contains(r.Header.Get("Cache-Control"), "must-revalidate") ||
-		strings.Contains(r.Header.Get("Cache-Control"), "proxy-revalidate")) {
+	if found && (strings.Contains(cc, "must-revalidate") ||
+		strings.Contains(cc, "proxy-revalidate") ||
+		strings.Contains(cc, "max-age")) {
 		responded, statusCode = resp.Validate(r)
+		// https://tools.ietf.org/html/rfc5861#page-2
+		// If the response is not valid, but it has a "stale-while-revalidate"
+		// and we are within the timeframe specified, serve the stale content,
+		// and revalidate in background
+		if (!responded) && strings.Contains(cc, "stale-while-revalidate") {
+			age, err := strconv.Atoi(resp.Age())
+			maxAge, found := utilities.GetMaxAge(cc)
+			if !found {
+				maxAge = 0
+			}
+			if err == nil {
+				var staleOffset int
+				tmp := staleWhileRevaldateFinder.FindStringSubmatch(cc)
+				if len(tmp) == 2 {
+					staleOffset, err = strconv.Atoi(tmp[1])
+					if err == nil && maxAge+staleOffset > age {
+						revalidate = true
+						responded = true
+					}
+				}
+			}
+		}
 	} else {
 		responded = found
 		statusCode = http.StatusNotModified

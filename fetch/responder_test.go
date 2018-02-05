@@ -161,7 +161,7 @@ func TestResponderTestSuite(t *testing.T) {
 
 func (suite *ResponderTestSuite) TestRespondFromEmptyCache() {
 	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, false)
-	hash, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
+	hash, responded, _ := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal(hash, "test-hash", "ResponeFromCache should return the requests hash")
 	suite.Assert().False(responded, "RespondFromCache should return false when not responded")
 }
@@ -169,7 +169,7 @@ func (suite *ResponderTestSuite) TestRespondFromEmptyCache() {
 func (suite *ResponderTestSuite) TestRespondFromPopulatedCache() {
 	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
 	suite.response.On("StatusCode").Return(http.StatusOK)
-	hash, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
+	hash, responded, _ := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal(hash, "test-hash", "ResponeFromCache should return the requests hash")
 	suite.Assert().True(responded, "RespondFromCache should return true when responded")
 }
@@ -179,7 +179,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateValid() {
 	suite.request.Header.Set("Cache-Control", "must-revalidate")
 	suite.response.On("Validate", suite.request).Return(true, http.StatusNotModified)
 	suite.response.On("StatusCode").Return(http.StatusOK)
-	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
+	_, responded, _ := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal("HIT", suite.writer.Header().Get("X-Honey-Cache"), "RespondFromCache should set X-Honey-Cache: HIT")
 	suite.Assert().True(responded, "RespondFromCache should return true when cache validates")
 }
@@ -188,9 +188,22 @@ func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateInvalid() {
 	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
 	suite.request.Header.Set("Cache-Control", "must-revalidate")
 	suite.response.On("Validate", suite.request).Return(false, 0)
-	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
+	_, responded, revalidate := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal("", suite.writer.Header().Get("X-Honey-Cache"), "RespondFromCache should not set X-Honey-Cache when cache doesn't validate")
 	suite.Assert().False(responded, "RespondFromCache should return false when cache doesn't validate")
+	suite.Assert().False(revalidate, "RespondFromCache should return false when not a stale-while-refresh")
+}
+
+func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateInvalidStaleWhileRevalidate() {
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
+	suite.request.Header.Set("Cache-Control", "max-age=60, stale-while-revalidate=30")
+	suite.response.On("Age").Return("80")
+	suite.response.On("Validate", suite.request).Return(false, 0)
+	suite.response.On("StatusCode").Return(http.StatusOK)
+	_, responded, revalidate := RespondFromCache(suite.cacher, suite.writer, suite.request)
+	suite.Assert().Equal("HIT", suite.writer.Header().Get("X-Honey-Cache"), "RespondFromCache should not set X-Honey-Cache when cache doesn't validate")
+	suite.Assert().True(responded, "RespondFromCache should return true when cache doesn't validate but serving stale")
+	suite.Assert().True(revalidate, "RespondFromCache should return revalidate:true when cache doesn't validate but should serve stale")
 }
 
 func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateValid() {
@@ -198,7 +211,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateValid() {
 	suite.request.Header.Set("Cache-Control", "proxy-revalidate")
 	suite.response.On("Validate", suite.request).Return(true, http.StatusNotModified)
 	suite.response.On("StatusCode").Return(http.StatusOK)
-	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
+	_, responded, _ := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal("HIT", suite.writer.Header().Get("X-Honey-Cache"), "RespondFromCache should set X-Honey-Cache: HIT")
 	suite.Assert().True(responded, "RespondFromCache should return true when cache validates")
 }
@@ -215,7 +228,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateInvalid() {
 	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
 	suite.request.Header.Set("Cache-Control", "proxy-revalidate")
 	suite.response.On("Validate", suite.request).Return(false, 0)
-	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
+	_, responded, _ := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal("", suite.writer.Header().Get("X-Honey-Cache"), "RespondFromCache should not set X-Honey-Cache when cache doesn't validate")
 	suite.Assert().False(responded, "RespondFromCache should return false when cache doesn't validate")
 }
@@ -224,7 +237,7 @@ func (suite *ResponderTestSuite) TestRespondFromCacheEtagMatch() {
 	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
 	suite.request.Header.Set("If-None-Match", `"abc123"`)
 	suite.response.Header().Set("Etag", `"abc123"`)
-	_, responded := RespondFromCache(suite.cacher, suite.writer, suite.request)
+	_, responded, _ := RespondFromCache(suite.cacher, suite.writer, suite.request)
 	suite.Assert().Equal(http.StatusNotModified, suite.writer.Code, "RespondFromCache should return 304 Not Modified if Etags match")
 	suite.Assert().True(responded, "RespondFromCache should write the response if etags match")
 }

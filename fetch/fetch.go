@@ -2,6 +2,7 @@ package fetch
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 
@@ -25,18 +26,20 @@ func Fetch(c cache.Cacher, handler http.Handler, backend *url.URL) http.HandlerF
 			// false if the cache entry does not yet exist, or if the request
 			// is not eligible for cacheing (due to Cache-Control: No-Cache, for
 			// example).
-			hash, responded := RespondFromCache(c, w, r)
+			hash, responded, revalidate := RespondFromCache(c, w, r)
 			if responded {
 				return
+			} else if revalidate {
+				w = httptest.NewRecorder()
+			} else {
+				// https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9.4
+				// If we couldn't respond from the cache, and they only want it if
+				// it is cached, then exit with a 504 per the spec.
+				if strings.Contains(r.Header.Get("Cache-Control"), "only-if-cached") {
+					w.WriteHeader(http.StatusGatewayTimeout)
+					return
+				}
 			}
-			// https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9.4
-			// If we couldn't respond from the cache, and they only want it if
-			// it is cached, then exit with a 504 per the spec.
-			if strings.Contains(r.Header.Get("Cache-Control"), "only-if-cached") {
-				w.WriteHeader(http.StatusGatewayTimeout)
-				return
-			}
-
 			// RespondFromMultiplexer will return true if there was an in-flight
 			// request with the same hash, and we were able to respond with it's
 			// response.  It will block until the in-flight request has completed.
