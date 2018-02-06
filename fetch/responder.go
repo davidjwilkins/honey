@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/davidjwilkins/honey/cache"
-	"github.com/davidjwilkins/honey/multiplexer"
+	"github.com/davidjwilkins/honey/singleflight"
 	"github.com/davidjwilkins/honey/utilities"
 )
 
-var multiplexers sync.Map
+var singleflights sync.Map
 
 var staleWhileRevaldateFinder = regexp.MustCompile(`stale-while-revalidate=(?:\")?(\d+)(?:\")?(?:,|$)`)
 
@@ -83,13 +83,13 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 	return
 }
 
-// FlushMultiplexer is a forward.ResponseModifier - it returns a function
+// FlushSingleflight is a forward.ResponseModifier - it returns a function
 // which takes a pointer a Response, and modified it.  In our case, we don't
 // actually modify the response, we instead save a standardized version of it
 // in Cacher c (unless it contains the Cache-Control: no-store directive).
-// It then writes the response to the multiplexer, and deletes the key from the
-// multiplexer list (because responses can now be handled from the cache).
-func FlushMultiplexer(c cache.Cacher, done chan bool) func(*http.Response) error {
+// It then writes the response to the singleflight, and deletes the key from the
+// singleflight list (because responses can now be handled from the cache).
+func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) error {
 	// Any modifications made to the response headers should be made to r.Header
 	// and not to response.Header as the headers from r will be copied to response,
 	// but if they don't get set on r then they won't appear on the initial request
@@ -98,12 +98,12 @@ func FlushMultiplexer(c cache.Cacher, done chan bool) func(*http.Response) error
 			return nil
 		}
 		hash := c.Hash(r.Request)
-		m, found := multiplexers.Load(hash)
+		m, found := singleflights.Load(hash)
 		if !found {
 			// TODO: handle this as it would be a serious error
 			return nil
 		}
-		multi := m.(multiplexer.Multiplexer)
+		multi := m.(singleflight.Singleflight)
 		response := c.Standardize(r)
 		cc := response.Header().Get("Cache-Control")
 		// no-store: https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9.2
@@ -155,7 +155,7 @@ func FlushMultiplexer(c cache.Cacher, done chan bool) func(*http.Response) error
 		}
 		go func() {
 			multi.Write(response)
-			multiplexers.Delete(hash)
+			singleflights.Delete(hash)
 			if done != nil {
 				done <- true
 			}
@@ -173,18 +173,18 @@ func FlushMultiplexer(c cache.Cacher, done chan bool) func(*http.Response) error
 	}
 }
 
-// ResponseFromMultiplexer will see if there is already a multiplexer for the supplied hash.
-// If so, it will add ResponseWriter w to the multiplexer, wait for the multiplexer to response,
-// and then return true.  Otherwise, it will create a new multiplexer for the hash, and return
+// ResponseFromSingleflight will see if there is already a singleflight for the supplied hash.
+// If so, it will add ResponseWriter w to the singleflight, wait for the singleflight to response,
+// and then return true.  Otherwise, it will create a new singleflight for the hash, and return
 // false.
-func RespondFromMultiplexer(hash string, c cache.Cacher, w http.ResponseWriter, r *http.Request, handler func(w http.ResponseWriter, r *http.Request)) (responded bool) {
-	multi := multiplexer.NewMultiplexer(c, r, handler)
-	m, fetching := multiplexers.LoadOrStore(hash, multi)
+func RespondFromSingleflight(hash string, c cache.Cacher, w http.ResponseWriter, r *http.Request, handler func(w http.ResponseWriter, r *http.Request)) (responded bool) {
+	multi := singleflight.NewSingleflight(c, r, handler)
+	m, fetching := singleflights.LoadOrStore(hash, multi)
 	if fetching {
-		multi = m.(multiplexer.Multiplexer)
+		multi = m.(singleflight.Singleflight)
 		multi.AddWriter(w, r)
 		multi.Wait()
-		multiplexers.Delete(hash)
+		singleflights.Delete(hash)
 		return true
 	}
 	return false

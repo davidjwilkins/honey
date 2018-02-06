@@ -1,4 +1,4 @@
-package multiplexer
+package singleflight
 
 import (
 	"fmt"
@@ -46,30 +46,30 @@ func noopHandler(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func newTestMultiplexer(withWriter bool) Multiplexer {
+func newTestSingleflight(withWriter bool) Singleflight {
 	cacher := cache.NewDefaultCacher()
-	multiplexer := NewMultiplexer(cacher, newTestValidRequest(), (&testHandler{}).ServeHTTP)
+	singleflight := NewSingleflight(cacher, newTestValidRequest(), (&testHandler{}).ServeHTTP)
 	if withWriter {
 		rec := httptest.NewRecorder()
-		multiplexer.AddWriter(rec, newTestValidRequest())
+		singleflight.AddWriter(rec, newTestValidRequest())
 	}
-	return multiplexer
+	return singleflight
 }
 
 func TestAddWriter(t *testing.T) {
-	multiplexer := newTestMultiplexer(false).(*multiplexer)
-	if len(multiplexer.requests) != 0 {
-		t.Errorf("multiplexer should save no writers when initialized")
+	singleflight := newTestSingleflight(false).(*singleflight)
+	if len(singleflight.requests) != 0 {
+		t.Errorf("singleflight should save no writers when initialized")
 	}
-	multiplexer.AddWriter(httptest.NewRecorder(), newTestValidRequest())
-	if len(multiplexer.requests) != 1 {
-		t.Errorf("AddWriter should save the writer to the multiplexer")
+	singleflight.AddWriter(httptest.NewRecorder(), newTestValidRequest())
+	if len(singleflight.requests) != 1 {
+		t.Errorf("AddWriter should save the writer to the singleflight")
 	}
 }
 
 func TestCanCacheReturnsErrorBeforeWrite(t *testing.T) {
-	multiplexer := newTestMultiplexer(false)
-	_, err := multiplexer.Cacheable()
+	singleflight := newTestSingleflight(false)
+	_, err := singleflight.Cacheable()
 	if err == nil {
 		t.Errorf("Cacheable should return error if Write has not been called")
 	}
@@ -80,8 +80,8 @@ func TestCanCacheReturnsErrorBeforeWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	multiplexer.Write(cacher.Standardize(resp))
-	_, err = multiplexer.Cacheable()
+	singleflight.Write(cacher.Standardize(resp))
+	_, err = singleflight.Cacheable()
 	if err != nil {
 		t.Errorf("Cacheable should not return error if Write has been called")
 	}
@@ -94,12 +94,12 @@ func TestWriteReturnsTheSameResponseToMultipleRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	multiplexer := newTestMultiplexer(false)
+	singleflight := newTestSingleflight(false)
 	rec1 := httptest.NewRecorder()
 	rec2 := httptest.NewRecorder()
-	multiplexer.AddWriter(rec1, newTestValidRequest())
-	multiplexer.AddWriter(rec2, newTestValidRequest())
-	multiplexer.Write(cache.NewDefaultCacher().Standardize(resp))
+	singleflight.AddWriter(rec1, newTestValidRequest())
+	singleflight.AddWriter(rec2, newTestValidRequest())
+	singleflight.Write(cache.NewDefaultCacher().Standardize(resp))
 	response1 := string(rec1.Body.Bytes())
 	response2 := string(rec2.Body.Bytes())
 	if response1 != "Visitor count: 1." {
@@ -113,13 +113,13 @@ func TestWriteReturnsTheSameResponseToMultipleRequests(t *testing.T) {
 // TODO: Figure out how to test that it is bucketing properly
 func TestWriteReturnsDifferentResponseToMultipleRequestsIfVary(t *testing.T) {
 	server := testServer(5) // set it to something different since it's a different instance
-	// than the multiplexer
+	// than the singleflight
 	defer server.Close()
 	resp, err := http.Get(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	multiplexer := newTestMultiplexer(false)
+	singleflight := newTestSingleflight(false)
 	rec1 := httptest.NewRecorder()
 	rec2 := httptest.NewRecorder()
 	rec3 := httptest.NewRecorder()
@@ -129,11 +129,11 @@ func TestWriteReturnsDifferentResponseToMultipleRequestsIfVary(t *testing.T) {
 	req1.Header.Set("Accept-Language", "en")
 	req2.Header.Set("Accept-Language", "ru")
 	req3.Header.Set("Accept-Language", "en")
-	multiplexer.AddWriter(rec1, req1)
-	multiplexer.AddWriter(rec2, req2)
-	multiplexer.AddWriter(rec3, req3)
+	singleflight.AddWriter(rec1, req1)
+	singleflight.AddWriter(rec2, req2)
+	singleflight.AddWriter(rec3, req3)
 	resp.Request = req1
-	multiplexer.Write(cache.NewDefaultCacher().Standardize(resp))
+	singleflight.Write(cache.NewDefaultCacher().Standardize(resp))
 	response1 := string(rec1.Body.Bytes())
 	response2 := string(rec2.Body.Bytes())
 	response3 := string(rec3.Body.Bytes())

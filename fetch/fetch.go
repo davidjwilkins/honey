@@ -40,10 +40,10 @@ func Fetch(c cache.Cacher, handler http.Handler, backend *url.URL) http.HandlerF
 					return
 				}
 			}
-			// RespondFromMultiplexer will return true if there was an in-flight
+			// RespondFromSingleflight will return true if there was an in-flight
 			// request with the same hash, and we were able to respond with it's
 			// response.  It will block until the in-flight request has completed.
-			responded = RespondFromMultiplexer(hash, c, w, r, Fetch(c, handler, backend))
+			responded = RespondFromSingleflight(hash, c, w, r, Fetch(c, handler, backend))
 			if responded {
 				return
 			}
@@ -58,7 +58,7 @@ func Fetch(c cache.Cacher, handler http.Handler, backend *url.URL) http.HandlerF
 // into cache.Cacher c.  It panics if it cannot create the forwarder.
 func Forwarder(c cache.Cacher) http.Handler {
 	forwarder, err := forward.New(
-		forward.ResponseModifier(FlushMultiplexer(c, nil)),
+		forward.ResponseModifier(FlushSingleflight(c, nil)),
 	)
 	if err != nil {
 		panic(err)
@@ -70,7 +70,7 @@ func Forwarder(c cache.Cacher) http.Handler {
 // to match the backend that it should be forwarder to.
 // We have to do this before Rewrite is called by forward
 // because otherwise we can't match the URL in the cache or
-// multiplexer.  It sets the X-Forwarded-Proto header if not
+// singleflight.  It sets the X-Forwarded-Proto header if not
 // already set to indicate the protocol (HTTP or HTTPS) that a
 // client used to connect, and sets the Host header to indicate
 // the actual hostname requested.

@@ -1,0 +1,21 @@
+# Honey Config v1.0
+# Title: Wordpress
+
+[ backends ]
+    uri: https://www.insomniac.com
+
+[ default ]
+    initialFetch: "multiplex"   # multiplex|fetch
+    revalidate: "multiplex"     # multiplex|stale|fetch
+    error: "stale"              # stale|error
+    vary: "inherit"             # inherit|comma separated list of headers: e.g. Accept-Language,Accept-Encoding
+    expires: "inherit|+7 days"  # inherit|(+/-)# (seconds|minutes|hours|days|months|years)
+    public: "inherit|public"    # set Cache-Control: public unless it gets private
+    mustRevalidate: 
+
+
+[ route ]
+    match: (?:\?preview=true$|\/(?:feed|wp-admin|wp-login))
+    cache: false
+
+

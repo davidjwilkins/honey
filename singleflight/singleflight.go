@@ -1,4 +1,4 @@
-package multiplexer
+package singleflight
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 	"github.com/davidjwilkins/honey/utilities"
 )
 
-type multiplexer struct {
+type singleflight struct {
 	cacher    cache.Cacher
 	requests  []request
 	response  cache.Response
@@ -26,7 +26,7 @@ type request struct {
 	request *http.Request
 }
 
-// A Multiplexer is used to prevent flooding the remote
+// A Singleflight is used to prevent flooding the remote
 // server with requests when the cache is empty (e.g.
 // after the cache has been cleared, or right after a
 // server has come online).
@@ -40,17 +40,17 @@ type request struct {
 // response did not contain the Private cache-control directive)
 //
 // Wait should block until Write has been called and completed.
-type Multiplexer interface {
+type Singleflight interface {
 	AddWriter(w http.ResponseWriter, r *http.Request)
 	Write(r cache.Response) bool
 	Cacheable() (bool, error)
 	Wait()
 }
 
-// NewMultiplexer will create a new default multiplexer to be used for
+// NewSingleflight will create a new default singleflight to be used for
 // all requests for which cacher provides the same hash.
-func NewMultiplexer(cacher cache.Cacher, r *http.Request, handler func(w http.ResponseWriter, r *http.Request)) Multiplexer {
-	return &multiplexer{
+func NewSingleflight(cacher cache.Cacher, r *http.Request, handler func(w http.ResponseWriter, r *http.Request)) Singleflight {
+	return &singleflight{
 		cacher:    cacher,
 		requests:  []request{},
 		done:      false,
@@ -61,7 +61,7 @@ func NewMultiplexer(cacher cache.Cacher, r *http.Request, handler func(w http.Re
 
 // AddWriter add a ResponseWriter to be written to when Write is called.
 // If Write has already been called, it will call it again.
-func (m *multiplexer) AddWriter(w http.ResponseWriter, r *http.Request) {
+func (m *singleflight) AddWriter(w http.ResponseWriter, r *http.Request) {
 	m.Lock()
 	m.requests = append(m.requests, request{w, r})
 	done := m.done
@@ -75,7 +75,7 @@ func (m *multiplexer) AddWriter(w http.ResponseWriter, r *http.Request) {
 // Cacheable returns whether the response provided to Write was eligible to
 // be used to write to all ResponseWriters.  If returns an error if Write
 // has not yet been called.
-func (m *multiplexer) Cacheable() (bool, error) {
+func (m *singleflight) Cacheable() (bool, error) {
 	if m.response == nil {
 		return m.cacheable, errors.New("No response yet")
 	}
@@ -89,7 +89,7 @@ func (m *multiplexer) Cacheable() (bool, error) {
 // header to MISS (MULTIPLEXED), indicating that the request was
 // not in the cache, but that this response was not (initially)
 // for this request.
-func (m *multiplexer) Write(r cache.Response) bool {
+func (m *singleflight) Write(r cache.Response) bool {
 	m.Lock()
 	defer func() {
 		m.response = r

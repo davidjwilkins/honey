@@ -87,24 +87,24 @@ func (t *testResponse) Cookie(name string) (*http.Cookie, error) {
 	return args.Get(0).(*http.Cookie), args.Error(1)
 }
 
-type testMultiplexer struct {
+type testSingleflight struct {
 	mock.Mock
 }
 
-func (t *testMultiplexer) AddWriter(w http.ResponseWriter, r *http.Request) {
+func (t *testSingleflight) AddWriter(w http.ResponseWriter, r *http.Request) {
 	t.Called(w, r)
 }
 
-func (t *testMultiplexer) Write(r cache.Response) bool {
+func (t *testSingleflight) Write(r cache.Response) bool {
 	args := t.Called(r)
 	return args.Bool(0)
 }
 
-func (t *testMultiplexer) Cacheable() (bool, error) {
+func (t *testSingleflight) Cacheable() (bool, error) {
 	args := t.Called()
 	return args.Bool(0), args.Error(1)
 }
-func (t *testMultiplexer) Wait() {
+func (t *testSingleflight) Wait() {
 	t.Called()
 }
 
@@ -114,7 +114,7 @@ type ResponderTestSuite struct {
 	response     *testResponse
 	request      *http.Request
 	writer       *httptest.ResponseRecorder
-	multiplexer  *testMultiplexer
+	singleflight *testSingleflight
 	httpResponse *http.Response
 }
 
@@ -144,11 +144,11 @@ func (suite *ResponderTestSuite) SetupTest() {
 	suite.cacher.On("Hash", suite.request).Return("test-hash")
 	suite.response.On("Body").Return([]byte("Test Response"))
 	suite.writer = httptest.NewRecorder()
-	suite.multiplexer = &testMultiplexer{}
-	suite.multiplexer.On("Lock")
-	suite.multiplexer.On("Unlock")
-	suite.multiplexer.On("Done")
-	suite.multiplexer.On("Wait")
+	suite.singleflight = &testSingleflight{}
+	suite.singleflight.On("Lock")
+	suite.singleflight.On("Unlock")
+	suite.singleflight.On("Done")
+	suite.singleflight.On("Wait")
 	suite.response.On("Header").Return(suite.writer.Header())
 	suite.httpResponse = newResponse()
 }
@@ -257,62 +257,62 @@ func (suite *ResponderTestSuite) TestRespondFromCacheCopiesStatusCode() {
 	suite.Assert().Equal(http.StatusVariantAlsoNegotiates, suite.writer.Code, "RespondFromCache should copy status code from remote to response")
 }
 
-func (suite *ResponderTestSuite) TestFlushMultiplexerMiss() {
-	multiplexers.Store("test-hash", suite.multiplexer)
-	defer multiplexers.Delete("test-hash")
+func (suite *ResponderTestSuite) TestFlushSingleflightMiss() {
+	singleflights.Store("test-hash", suite.singleflight)
+	defer singleflights.Delete("test-hash")
 	suite.httpResponse.Request = suite.request
 	suite.cacher.On("Standardize", suite.httpResponse).Return(suite.response)
 	suite.cacher.On("Cache", "test-hash", suite.response)
-	suite.multiplexer.On("Write", suite.response).Return(true)
-	suite.multiplexer.On("Delete", "test-hash")
+	suite.singleflight.On("Write", suite.response).Return(true)
+	suite.singleflight.On("Delete", "test-hash")
 	suite.response.On("Validate", suite.request).Return(false, 0)
 	suite.response.On("StatusCode").Return(http.StatusOK)
 	var done = make(chan bool)
-	FlushMultiplexer(suite.cacher, done)(suite.httpResponse)
+	FlushSingleflight(suite.cacher, done)(suite.httpResponse)
 	<-done
 	suite.Assert().Equal("MISS", suite.httpResponse.Header.Get("X-Honey-Cache"))
 	suite.Assert().Equal(true, suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response))
-	suite.Assert().Equal(true, suite.multiplexer.AssertCalled(suite.T(), "Write", suite.response))
+	suite.Assert().Equal(true, suite.singleflight.AssertCalled(suite.T(), "Write", suite.response))
 	suite.Assert().Equal(http.StatusOK, suite.httpResponse.StatusCode)
 }
 
-func (suite *ResponderTestSuite) TestFlushMultiplexerMissButValidates() {
-	multiplexers.Store("test-hash", suite.multiplexer)
-	defer multiplexers.Delete("test-hash")
+func (suite *ResponderTestSuite) TestFlushSingleflightMissButValidates() {
+	singleflights.Store("test-hash", suite.singleflight)
+	defer singleflights.Delete("test-hash")
 	suite.httpResponse.Request = suite.request
 	suite.cacher.On("Standardize", suite.httpResponse).Return(suite.response)
 	suite.cacher.On("Cache", "test-hash", suite.response)
-	suite.multiplexer.On("Write", suite.response).Return(true)
-	suite.multiplexer.On("Delete", "test-hash")
+	suite.singleflight.On("Write", suite.response).Return(true)
+	suite.singleflight.On("Delete", "test-hash")
 	suite.response.On("Validate", suite.request).Return(true, http.StatusNotModified)
 	var done = make(chan bool)
 	suite.httpResponse.Request.Header.Set("Cache-Control", "must-revalidate")
 	suite.response.On("StatusCode").Return(http.StatusOK)
-	FlushMultiplexer(suite.cacher, done)(suite.httpResponse)
+	FlushSingleflight(suite.cacher, done)(suite.httpResponse)
 	<-done
 	suite.Assert().Equal("MISS", suite.httpResponse.Header.Get("X-Honey-Cache"))
 	suite.Assert().Equal(true, suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response))
-	suite.Assert().Equal(true, suite.multiplexer.AssertCalled(suite.T(), "Write", suite.response))
+	suite.Assert().Equal(true, suite.singleflight.AssertCalled(suite.T(), "Write", suite.response))
 	suite.Assert().Equal(http.StatusNotModified, suite.httpResponse.StatusCode)
 }
 
-func (suite *ResponderTestSuite) TestFlushMultiplexerHit() {
-	multiplexers.Store("test-hash", suite.multiplexer)
-	defer multiplexers.Delete("test-hash")
+func (suite *ResponderTestSuite) TestFlushSingleflightHit() {
+	singleflights.Store("test-hash", suite.singleflight)
+	defer singleflights.Delete("test-hash")
 	suite.httpResponse.Request = suite.request
 	suite.request.Header.Set("If-None-Match", `"abc123"`)
 	suite.response.Header().Set("Etag", `"abc123"`)
 	suite.cacher.On("Standardize", suite.httpResponse).Return(suite.response)
 	suite.cacher.On("Cache", "test-hash", suite.response)
-	suite.multiplexer.On("Write", suite.response).Return(true)
-	suite.multiplexer.On("Delete", "test-hash")
+	suite.singleflight.On("Write", suite.response).Return(true)
+	suite.singleflight.On("Delete", "test-hash")
 	suite.response.On("StatusCode").Return(http.StatusOK)
 	var done = make(chan bool)
-	FlushMultiplexer(suite.cacher, done)(suite.httpResponse)
+	FlushSingleflight(suite.cacher, done)(suite.httpResponse)
 	<-done
 	suite.Assert().Equal("MISS", suite.httpResponse.Header.Get("X-Honey-Cache"))
 	suite.Assert().Equal(true, suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response))
-	suite.Assert().Equal(true, suite.multiplexer.AssertCalled(suite.T(), "Write", suite.response))
+	suite.Assert().Equal(true, suite.singleflight.AssertCalled(suite.T(), "Write", suite.response))
 	suite.Assert().Equal(http.StatusNotModified, suite.httpResponse.StatusCode)
 }
 
@@ -320,15 +320,15 @@ func noopHandler(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func (suite *ResponderTestSuite) TestRespondFromMultiplexerInitialRequest() {
-	found := RespondFromMultiplexer("test-hash", suite.cacher, suite.writer, suite.request, noopHandler)
-	suite.Assert().False(found, "Respond from multiplexer should return false on first request")
+func (suite *ResponderTestSuite) TestRespondFromSingleflightInitialRequest() {
+	found := RespondFromSingleflight("test-hash", suite.cacher, suite.writer, suite.request, noopHandler)
+	suite.Assert().False(found, "Respond from singleflight should return false on first request")
 }
 
-func (suite *ResponderTestSuite) TestRespondFromMultiplexerMultiplexedRequests() {
-	suite.multiplexer.On("AddWriter", suite.writer, suite.request)
-	suite.multiplexer.On("Wait")
-	multiplexers.Store("test-hash", suite.multiplexer)
-	found := RespondFromMultiplexer("test-hash", suite.cacher, suite.writer, suite.request, noopHandler)
-	suite.Assert().True(found, "Respond from multiplexer should return true on second request")
+func (suite *ResponderTestSuite) TestRespondFromSingleflightMultiplexedRequests() {
+	suite.singleflight.On("AddWriter", suite.writer, suite.request)
+	suite.singleflight.On("Wait")
+	singleflights.Store("test-hash", suite.singleflight)
+	found := RespondFromSingleflight("test-hash", suite.cacher, suite.writer, suite.request, noopHandler)
+	suite.Assert().True(found, "Respond from singleflight should return true on second request")
 }
