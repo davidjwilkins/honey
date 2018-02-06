@@ -1,21 +1,28 @@
 # Honey Config v1.0
 # Title: Wordpress
 
-[ backends ]
-    uri: https://www.insomniac.com
+[backends]
+uri = "https://www.insomniac.com"
 
-[ default ]
-    initialFetch: "multiplex"   # multiplex|fetch
-    revalidate: "multiplex"     # multiplex|stale|fetch
-    error: "stale"              # stale|error
-    vary: "inherit"             # inherit|comma separated list of headers: e.g. Accept-Language,Accept-Encoding
-    expires: "inherit|+7 days"  # inherit|(+/-)# (seconds|minutes|hours|days|months|years)
-    public: "inherit|public"    # set Cache-Control: public unless it gets private
-    mustRevalidate: 
+[default]
+    initialFetch = "multiplex"   # multiplex|fetch
+    revalidate = "multiplex"     # multiplex|stale|fetch
+    error = "stale"              # stale|error
+    vary = "inherit"             # inherit|comma separated list of headers: e.g. Accept-Language,Accept-Encoding
+    expires = "inherit|+7 days"  # inherit|(+/-)# (seconds|minutes|hours|days|months|years)
+    public = "inherit|public"    # set Cache-Control: public unless it gets private
+    lastModified = "+0 seconds"  # set Last-Modified to current time
 
+[default.must-revalidate]
+    default = false                    # don't let people clear the cache by default
+    [[default.must-revalidate.allow]]  # allow them to if they:
+    ips = ["127.0.0.1"]                # are coming from one of these IP addresses
+    [[default.must-revalidate.allow]]  # or if they:
+    header = "X-Honey-Cache" 
+    value  = "FhYmDiK5QJ%zzd3u*k1Qn^nH"  # have this X-Honey-Cache header
 
-[ route ]
-    match: (?:\?preview=true$|\/(?:feed|wp-admin|wp-login))
-    cache: false
-
+[route]
+    match = "(?:\\?preview=true$|\\/(?:feed|wp-admin|wp-login))"
+    regex = true
+    cache = false
 
