@@ -20,7 +20,7 @@ var singleflights sync.Map
 
 var staleWhileRevaldateFinder = regexp.MustCompile(`stale-while-revalidate=(?:\")?(\d+)(?:\")?(?:,|$)`)
 
-// ResponseFromCache will see if there a response for request r which exists in cache c.
+// RespondFromCache will see if there a response for request r which exists in cache c.
 // If returns the hash of the request, and whether or not the request was responded to.
 // It will return false if either Cache-Control or Pragma contains the no-cache directive,
 // or if the response is not in the cache.∫b
@@ -173,7 +173,7 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 	}
 }
 
-// ResponseFromSingleflight will see if there is already a singleflight for the supplied hash.
+// RespondFromSingleflight will see if there is already a singleflight for the supplied hash.
 // If so, it will add ResponseWriter w to the singleflight, wait for the singleflight to response,
 // and then return true.  Otherwise, it will create a new singleflight for the hash, and return
 // false.

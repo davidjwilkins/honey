@@ -103,10 +103,10 @@ func TestWriteReturnsTheSameResponseToMultipleRequests(t *testing.T) {
 	response1 := string(rec1.Body.Bytes())
 	response2 := string(rec2.Body.Bytes())
 	if response1 != "Visitor count: 1." {
-		t.Errorf("Write should return the correct reponsse")
+		t.Errorf("Write should return the correct response")
 	}
 	if response1 != response2 {
-		t.Errorf("Write should return the same reponse to all writers")
+		t.Errorf("Write should return the same response to all writers")
 	}
 }
 

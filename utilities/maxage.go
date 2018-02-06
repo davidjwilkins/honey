@@ -9,6 +9,11 @@ import (
 var smaxAgeFinder = regexp.MustCompile(`s-maxage=(?:\")?(\d+)(?:\")?(?:,|$)`)
 var maxAgeFinder = regexp.MustCompile(`max-age=(?:\")?(\d+)(?:\")?(?:,|$)`)
 
+// GetMaxAge gets the maximum age from a Cache-Control header
+// It gives priority to the s-maxage header, and if not found,
+// will use the max-age header.  It returns the maxage as an
+// an integer, and a boolean indicating whether a maxage was
+// found at all
 func GetMaxAge(cacheControl string) (maxage int, exists bool) {
 	var age string
 	var err error

@@ -195,9 +195,9 @@ func (c *defaultCacher) Cache(hash string, r Response) {
 // present)
 func (c *defaultCacher) Load(hash string, request *http.Request) (Response, bool) {
 	var r Response
-	r_tmp, ok := c.entries.Load(hash)
+	tmp, ok := c.entries.Load(hash)
 	if ok {
-		r = r_tmp.(Response)
+		r = tmp.(Response)
 	}
 	return r, ok
 }

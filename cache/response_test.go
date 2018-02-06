@@ -131,7 +131,6 @@ func (suite *ResponseTestSuite) TestResponseRevalidateExpiresRFC850Invalid() {
 }
 
 func (suite *ResponseTestSuite) TestResponseRevalidateExpiresANSICInvalid() {
-	return
 	suite.response = &responseImpl{
 		body:    []byte("Test Response Body"),
 		headers: http.Header{},

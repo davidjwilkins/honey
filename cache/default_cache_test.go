@@ -167,7 +167,7 @@ func TestDefaultCacheHashDoesIncludeCookiesIfAllowed(t *testing.T) {
 func TestDefaultCacheRemovesCookiesIfNotAllowed(t *testing.T) {
 	response := http.Response{
 		Header: http.Header(map[string][]string{
-			"Set-Cookie": []string{
+			"Set-Cookie": {
 				"site_lang_id=1; HttpOnly; Path=/",
 				"remove_me=1; HttpOnly; Path=/",
 			},
