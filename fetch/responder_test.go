@@ -45,6 +45,7 @@ func (t *testCacher) AllowedCookies() []string {
 
 type testResponse struct {
 	mock.Mock
+	age string
 }
 
 func (t *testResponse) Status() string {
@@ -78,8 +79,10 @@ func (t *testResponse) Validate(r *http.Request) (bool, int) {
 }
 
 func (t *testResponse) Age() string {
-	args := t.Called()
-	return args.String(0)
+	if t.age == "" {
+		return "0"
+	}
+	return t.age
 }
 
 func (t *testResponse) Cookie(name string) (*http.Cookie, error) {
@@ -106,6 +109,10 @@ func (t *testSingleflight) Cacheable() (bool, error) {
 }
 func (t *testSingleflight) Wait() {
 	t.Called()
+}
+
+func (t *testSingleflight) Abort(statusCode int) {
+	t.Called(statusCode)
 }
 
 type ResponderTestSuite struct {
@@ -150,6 +157,7 @@ func (suite *ResponderTestSuite) SetupTest() {
 	suite.singleflight.On("Done")
 	suite.singleflight.On("Wait")
 	suite.response.On("Header").Return(suite.writer.Header())
+	suite.response.Header().Set("Cache-Control", "max-age=60")
 	suite.httpResponse = newResponse()
 }
 
@@ -194,16 +202,43 @@ func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateInvalid() {
 	suite.Assert().False(revalidate, "RespondFromCache should return false when not a stale-while-refresh")
 }
 
-func (suite *ResponderTestSuite) TestRespondFromCacheMustRevalidateInvalidStaleWhileRevalidate() {
+func (suite *ResponderTestSuite) TestRespondFromCacheExpired() {
 	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
-	suite.request.Header.Set("Cache-Control", "max-age=60, stale-while-revalidate=30")
-	suite.response.On("Age").Return("80")
-	suite.response.On("Validate", suite.request).Return(false, 0)
+	suite.response.age = "61"
+	_, responded, revalidate := RespondFromCache(suite.cacher, suite.writer, suite.request)
+	suite.Assert().False(responded, "RespondFromCache should not respond with an expired response")
+	suite.Assert().False(revalidate, "RespondFromCache should not revalidate without stale-while-revalidate")
+}
+
+func (suite *ResponderTestSuite) TestRespondFromCacheExpiredByExpiresHeader() {
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
+	suite.response.Header().Del("Cache-Control")
+	suite.response.Header().Set("Date", "Mon, 05 Oct 2026 10:00:00 GMT")
+	suite.response.Header().Set("Expires", "Mon, 05 Oct 2026 10:01:00 GMT")
+	suite.response.age = "61"
+	_, responded, _ := RespondFromCache(suite.cacher, suite.writer, suite.request)
+	suite.Assert().False(responded, "RespondFromCache should not respond with a response past its Expires")
+}
+
+func (suite *ResponderTestSuite) TestRespondFromCacheStaleWhileRevalidate() {
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
+	suite.response.Header().Set("Cache-Control", "max-age=60, stale-while-revalidate=30")
+	suite.response.age = "80"
 	suite.response.On("StatusCode").Return(http.StatusOK)
 	_, responded, revalidate := RespondFromCache(suite.cacher, suite.writer, suite.request)
-	suite.Assert().Equal("HIT", suite.writer.Header().Get("X-Honey-Cache"), "RespondFromCache should not set X-Honey-Cache when cache doesn't validate")
-	suite.Assert().True(responded, "RespondFromCache should return true when cache doesn't validate but serving stale")
-	suite.Assert().True(revalidate, "RespondFromCache should return revalidate:true when cache doesn't validate but should serve stale")
+	suite.Assert().Equal("STALE", suite.writer.Header().Get("X-Honey-Cache"), "RespondFromCache should set X-Honey-Cache: STALE when serving stale content")
+	suite.Assert().Equal("80", suite.writer.Header().Get("Age"), "RespondFromCache should set the Age header")
+	suite.Assert().True(responded, "RespondFromCache should return true when serving stale")
+	suite.Assert().True(revalidate, "RespondFromCache should return revalidate:true when serving stale")
+}
+
+func (suite *ResponderTestSuite) TestRespondFromCacheStaleWhileRevalidateExpired() {
+	suite.cacher.On("Load", "test-hash", suite.request).Return(suite.response, true)
+	suite.response.Header().Set("Cache-Control", "max-age=60, stale-while-revalidate=30")
+	suite.response.age = "95"
+	_, responded, revalidate := RespondFromCache(suite.cacher, suite.writer, suite.request)
+	suite.Assert().False(responded, "RespondFromCache should not serve stale content past the stale-while-revalidate window")
+	suite.Assert().False(revalidate)
 }
 
 func (suite *ResponderTestSuite) TestRespondFromCacheProxyRevalidateValid() {

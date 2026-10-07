@@ -37,6 +37,10 @@ type responseImpl struct {
 	requestHeaders http.Header
 	once           sync.Once
 	now            time.Time
+	// initialAge is the Age the response already had when it was received
+	initialAge int
+	// baseKey is the cache key of the request, before any Vary values
+	baseKey string
 }
 
 func (r *responseImpl) RequestHeaders() http.Header {
@@ -67,8 +71,10 @@ func (r *responseImpl) Header() http.Header {
 	return r.headers
 }
 
+// Age returns the age of the response in seconds: the time since it was
+// received, plus any Age it already had when it was received
 func (r *responseImpl) Age() string {
-	return strconv.FormatUint(uint64(time.Since(r.now)/time.Second), 10)
+	return strconv.Itoa(r.initialAge + int(time.Since(r.now)/time.Second))
 }
 
 var smaxAgeFinder = regexp.MustCompile(`s-maxage=(?:\")?(\d+)(?:\")?(?:,|$)`)

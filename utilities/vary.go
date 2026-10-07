@@ -22,7 +22,8 @@ func GetVaryHeadersHash(headers http.Header, getCookie CookieGetter, allowedCook
 	var buffer bytes.Buffer
 	varies := strings.Split(vary, ",")
 	for _, header := range varies {
-		if header != "cookie" {
+		header = strings.TrimSpace(header)
+		if !strings.EqualFold(header, "cookie") {
 			buffer.WriteString("::")
 			buffer.WriteString(headers.Get(header))
 		} else {

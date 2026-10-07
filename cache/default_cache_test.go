@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -142,8 +143,7 @@ func TestDefaultCacheHashDoesNotIncludeCookiesUnlessAllowed(t *testing.T) {
 	})
 	var cache = NewDefaultCacher()
 	hash := cache.Hash(requestA)
-	cache.vary.Store(hash, "cookie")
-	defer cache.vary.Delete(hash)
+	cache.store.set(varyKey(hash), "cookie", 0, time.Time{})
 	assert.Equal(t, cache.Hash(requestA), cache.Hash(requestB), "Hash should be equal if cookie not in allowed list")
 
 }
@@ -158,9 +158,7 @@ func TestDefaultCacheHashDoesIncludeCookiesIfAllowed(t *testing.T) {
 	var cache = NewDefaultCacher()
 	cache.AddAllowedCookie("site_lang_id")
 	hash := cache.Hash(requestA)
-	cache.vary.Store(hash, "cookie")
-	cache.vary.Store(hash, "cookie")
-	defer cache.vary.Delete(hash)
+	cache.store.set(varyKey(hash), "cookie", 0, time.Time{})
 	assert.NotEqual(t, cache.Hash(requestA), cache.Hash(requestB), "Hash should not be equal if allowed cookies are different")
 }
 
