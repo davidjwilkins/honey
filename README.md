@@ -4,19 +4,57 @@ Honey is an http cache and proxy.
 
 In the event of a cache miss, It multiplexes requests to the same URL into a single request, and once the response has been received, writes it to all requesters, and adds it to the cache.
 
+Cached responses are served until they expire, according to the backend's `Cache-Control` (`s-maxage`, `max-age`) or `Expires` headers, or a configurable default TTL if it sends neither.  The cache is bounded in size, evicting the least recently used responses when it is full.
+
+If the backend sends `stale-while-revalidate`, expired responses are served immediately while they are refreshed in the background.  If it sends `stale-if-error`, expired responses are served (with a `Warning` header) when the backend errors or can't be reached.
+
 It will set an Etag on responses, and respond with an HTTP 304 Not Modified in the event that the `If-None-Match` header matches the Etag.
 
 If will not cache responses that contain the `no-store` Cache-Control directive
 
 It will always fetch fresh resources if the `no-cache` Cache-Control directive, or if Pragma: no-cache, is set in the request
 
-## Usage:
+Every response has an `X-Honey-Cache` header saying how it was served: `HIT`, `MISS`, `MISS (MULTIPLEXED)`, `STALE` or `NO-CACHE`.
+
+## Running it
+
+	go install github.com/davidjwilkins/honey/cmd/honey@latest
+	honey -config honey.toml
+
+A minimal config just needs a backend:
+
+	[backend]
+	uri = "https://www.example.com"
+
+All the available settings:
+
+	listen = ":8080"             # address to listen on
+
+	[backend]
+	uri = "https://www.example.com"
+
+	[cache]
+	maxSize = "256MB"            # memory for cached responses (KB, MB, GB)
+	defaultTTL = "5m"            # freshness for responses without max-age, s-maxage or Expires
+	allowedCookies = ["site_lang_id"]  # Set-Cookie headers allowed through the cache
+
+	# Requests not to cache. match is a path prefix, or with regex = true,
+	# a regular expression matched against the path and query string.
+	[[route]]
+	match = "/wp-admin"
+	cache = false
+
+Honey refuses to start if the config has settings it doesn't support.  See [`config/wordpress.toml`](config/wordpress.toml) for an example WordPress setup.
+
+## Using it as a library
 
 	backend, err := url.Parse("https://www.example.com")
 	if err != nil {
 		panic(err)
 	}
 
+	// NewDefaultCacher skips the WordPress admin, login, feed and previews;
+	// cache.NewCacher(cache.Options{...}) has no site-specific rules.
 	cacher := cache.NewDefaultCacher()
 	// adding site_lang_id cookie to the default
 	// cacher will allow it through the cache
@@ -28,12 +66,15 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 ### Todo
 
 - [x] Handle `stale-if-error`
-	- [ ] Add unit tests
+	- [x] Add unit tests
+	- [x] Serve stale content when the backend can't be reached at all
 	- [ ] Configurable Site-wide (whether to respect it if present, or whether to always act as if this header were present)
 	- [ ] Configurable Per route
 	- [x] Send cached response with a [`Warning`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Warning) header if the backend gives an error after clearing the cache. 
 
 - [ ] Implement configuration via TOML file (honey.toml?)
+	- [x] Backend, listen address, cache size, default TTL, allowed cookies, uncached routes
+	- [ ] The planned settings in `config/wordpress.toml`
 
 - [ ] Come up with a way to mark certain routes/files as [`immutable`](https://hacks.mozilla.org/2017/01/using-immutable-caching-to-speed-up-the-web/)
 
@@ -56,7 +97,7 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 - [ ] Combine all google-font requests into a single one
 
 - [ ] Implement other cache backends
-	- [x] In Memory
+	- [x] In Memory (size-bounded LRU)
 	- [ ] File
 	- [ ] Memcached
 	- [ ] Redis
@@ -99,7 +140,7 @@ It will always fetch fresh resources if the `no-cache` Cache-Control directive, 
 	- [ ] Configurable Per route
 
 - [x] Add [`Expires`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Expires) header to responses if not in response from backend.
-	- [ ] Configurable Cache TTL
+	- [x] Configurable Cache TTL
 	- [ ] Configurable whether to overwrite backend Expires
 	- [ ] Configure whether to serve stale content while refreshing, or multiplex requests into a single request and serve new content to all of them
 	- [ ] Configurable Site-wide
