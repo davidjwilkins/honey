@@ -134,8 +134,9 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 		response := c.Standardize(r)
 		cc := response.Header().Get("Cache-Control")
 		// no-store: https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9.2
-		// and don't cache server errors
-		if !strings.Contains(cc, "no-store") && response.StatusCode() < 500 {
+		// and don't cache server errors, or responses only meant for one
+		// requester's conditional or range request
+		if !strings.Contains(cc, "no-store") && response.StatusCode() < 500 && !isPartialStatus(response.StatusCode()) {
 			c.Cache(hash, response)
 		}
 		// if there was a server error, let's try and fetch a good response from the
@@ -176,11 +177,15 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 				done <- true
 			}
 		}()
-		if isNotModified(r.Request, response) {
+		// The request was sent to the backend without its conditional
+		// headers; decide from the full response whether this client
+		// should get a 304 (or 412) instead.
+		client := clientRequest(r.Request)
+		if isNotModified(client, response) {
 			r.StatusCode = http.StatusNotModified
 			r.Body = ioutil.NopCloser(bytes.NewReader([]byte{}))
-		} else if canRespondWithoutBody(r.Request) {
-			if cached, code := response.Validate(r.Request); cached {
+		} else if canRespondWithoutBody(client) {
+			if cached, code := response.Validate(client); cached {
 				r.StatusCode = code
 				r.Body = ioutil.NopCloser(bytes.NewReader([]byte{}))
 			}
@@ -209,6 +214,14 @@ func RespondFromSingleflight(hash string, c cache.Cacher, w http.ResponseWriter,
 func isNotModified(r *http.Request, resp cache.Response) bool {
 	return r.Header.Get("If-None-Match") != "" &&
 		r.Header.Get("If-None-Match") == resp.Header().Get("Etag")
+}
+
+// isPartialStatus returns whether statusCode is a response to a conditional
+// or range request, which doesn't contain the full response.
+func isPartialStatus(statusCode int) bool {
+	return statusCode == http.StatusPartialContent ||
+		statusCode == http.StatusNotModified ||
+		statusCode == http.StatusPreconditionFailed
 }
 
 func canRespondWithoutBody(req *http.Request) bool {

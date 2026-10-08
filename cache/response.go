@@ -41,6 +41,11 @@ type responseImpl struct {
 	initialAge int
 	// baseKey is the cache key of the request, before any Vary values
 	baseKey string
+	// status and statusCode are copied from response when it is cached,
+	// as response may be modified afterwards (e.g. into a 304 for the
+	// requester whose request populated the cache)
+	status     string
+	statusCode int
 }
 
 func (r *responseImpl) RequestHeaders() http.Header {
@@ -57,12 +62,12 @@ func (r *responseImpl) Cookie(name string) (*http.Cookie, error) {
 
 // Status returns the Status of the response
 func (r *responseImpl) Status() string {
-	return r.response.Status
+	return r.status
 }
 
 // StatusCode returns the http Status Code of the response
 func (r *responseImpl) StatusCode() int {
-	return r.response.StatusCode
+	return r.statusCode
 }
 
 // Header returns a map[string][]string containing the
@@ -132,7 +137,9 @@ func (r *responseImpl) Validate(req *http.Request) (bool, int) {
 			if err != nil {
 				return false, 0
 			}
-			return modified.Before(ifModifiedSince), http.StatusNotModified
+			// https://www.rfc-editor.org/rfc/rfc9110#section-13.1.3 - it is
+			// unmodified if Last-Modified is earlier than or equal to it
+			return !modified.After(ifModifiedSince), http.StatusNotModified
 		}
 		// The If-Unmodified-Since request HTTP header makes the request conditional: the server will
 		// send back the requested resource, or accept it in the case of a POST or another non-safe
@@ -142,7 +149,9 @@ func (r *responseImpl) Validate(req *http.Request) (bool, int) {
 		if err != nil {
 			return false, 0
 		}
-		valid := ifUnmodifiedSince.After(modified)
+		// https://www.rfc-editor.org/rfc/rfc9110#section-13.1.4 - the
+		// condition holds if Last-Modified is earlier than or equal to it
+		valid := !modified.After(ifUnmodifiedSince)
 
 		// For If-Unmodified-Since, we need to treat it an invalid resource as if it were cached,
 		// in that we shouldn't fetch the resource.  But valid resources we still do fetch.

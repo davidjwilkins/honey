@@ -251,3 +251,33 @@ func (suite *ResponseTestSuite) TestResponseIfUnmodifiedSinceModified() {
 	suite.Assert().True(valid, "Should return false if modified after If-Modified-Since")
 	suite.Assert().Equal(http.StatusPreconditionFailed, code, "If-Unmodified-Since should return true, 412 Precondition Failed if modified")
 }
+
+func (suite *ResponseTestSuite) TestResponseIfModifiedSinceSameTime() {
+	// Browsers send back the Last-Modified they were given, so this is
+	// the usual case for an unchanged resource
+	lastModified := time.Now().Add(time.Hour * -2).UTC().Format(http.TimeFormat)
+	suite.response = &responseImpl{
+		body:    []byte("Test Response Body"),
+		headers: http.Header{},
+		now:     time.Now(),
+	}
+	suite.response.Header().Set("Last-Modified", lastModified)
+	suite.request.Header.Set("If-Modified-Since", lastModified)
+	valid, code := suite.response.Validate(suite.request)
+	suite.Assert().True(valid, "Should be not modified if Last-Modified equals If-Modified-Since")
+	suite.Assert().Equal(http.StatusNotModified, code)
+}
+
+func (suite *ResponseTestSuite) TestResponseIfUnmodifiedSinceSameTime() {
+	lastModified := time.Now().Add(time.Hour * -2).UTC().Format(http.TimeFormat)
+	suite.response = &responseImpl{
+		body:    []byte("Test Response Body"),
+		headers: http.Header{},
+		now:     time.Now(),
+	}
+	suite.response.Header().Set("Last-Modified", lastModified)
+	suite.request.Header.Set("If-Unmodified-Since", lastModified)
+	valid, code := suite.response.Validate(suite.request)
+	suite.Assert().False(valid, "The precondition holds if Last-Modified equals If-Unmodified-Since, so it shouldn't 412")
+	suite.Assert().Equal(http.StatusOK, code)
+}
