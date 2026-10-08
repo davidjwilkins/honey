@@ -66,8 +66,12 @@ func (suite *FetchTestSuite) TestFetchUncacheableViaCache() {
 func (suite *FetchTestSuite) TestFetchUncacheableViaHeader() {
 	suite.cacher.On("CanCache", suite.request).Return(true)
 	suite.request.Header.Set("Cache-Control", "no-cache")
+	suite.handler.On("ServeHTTP", suite.writer, mock.AnythingOfType("*http.Request"))
 	Fetch(suite.cacher, suite.handler, suite.backend)(suite.writer, suite.request)
-	suite.handler.AssertCalled(suite.T(), "ServeHTTP", suite.writer, suite.request)
+	defer singleflights.Delete("test-hash")
+	suite.handler.AssertCalled(suite.T(), "ServeHTTP", suite.writer, mock.MatchedBy(func(r *http.Request) bool {
+		return requestHash(suite.cacher, r) == "test-hash"
+	}))
 }
 
 func (suite *FetchTestSuite) TestFetchUncacheableOnlyIfCached() {

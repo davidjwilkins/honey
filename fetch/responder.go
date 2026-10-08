@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,15 +17,16 @@ import (
 
 var singleflights sync.Map
 
-var staleWhileRevaldateFinder = regexp.MustCompile(`stale-while-revalidate=(?:\")?(\d+)(?:\")?(?:,|$)`)
-
 // RespondFromCache will see if there a response for request r which exists in cache c.
-// If returns the hash of the request, and whether or not the request was responded to.
+// It returns the hash of the request, whether or not the request was responded to, and
+// whether the response was stale and so needs to be revalidated.
 // It will return false if either Cache-Control or Pragma contains the no-cache directive,
-// or if the response is not in the cache.∫b
-// If it is found in the cache, it will check to see if the request'sIf-None-Match header
-// has the same value as the response's Etag, and if so, will return a  301: Not Modified.
+// if the response is not in the cache, or if the cached response is no longer fresh
+// (and can't be served stale per stale-while-revalidate).
+// If it is found in the cache, it will check to see if the request's If-None-Match header
+// has the same value as the response's Etag, and if so, will return a 304: Not Modified.
 // Otherwise, we will return the cached response, with an "X-Honey-Cache: HIT" header
+// (or "X-Honey-Cache: STALE" if it is being revalidated).
 func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (hash string, responded bool, revalidate bool) {
 	hash = c.Hash(r)
 	cc := r.Header.Get("Cache-Control")
@@ -35,36 +35,27 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 		return hash, false, false
 	}
 	resp, found := c.Load(hash, r)
-	var statusCode int
-	if found && (strings.Contains(cc, "must-revalidate") ||
-		strings.Contains(cc, "proxy-revalidate") ||
-		strings.Contains(cc, "max-age")) {
-		responded, statusCode = resp.Validate(r)
-		// https://tools.ietf.org/html/rfc5861#page-2
-		// If the response is not valid, but it has a "stale-while-revalidate"
+	if !found {
+		return hash, false, false
+	}
+	age, _ := strconv.Atoi(resp.Age())
+	lifetime := utilities.FreshnessLifetime(resp.Header())
+	statusCode := http.StatusNotModified
+	if age >= lifetime {
+		// https://tools.ietf.org/html/rfc5861#section-3
+		// If the response is stale, but it has a "stale-while-revalidate"
 		// and we are within the timeframe specified, serve the stale content,
 		// and revalidate in background
-		if (!responded) && strings.Contains(cc, "stale-while-revalidate") {
-			age, err := strconv.Atoi(resp.Age())
-			maxAge, found := utilities.GetMaxAge(cc)
-			if !found {
-				maxAge = 0
-			}
-			if err == nil {
-				var staleOffset int
-				tmp := staleWhileRevaldateFinder.FindStringSubmatch(cc)
-				if len(tmp) == 2 {
-					staleOffset, err = strconv.Atoi(tmp[1])
-					if err == nil && maxAge+staleOffset > age {
-						revalidate = true
-						responded = true
-					}
-				}
-			}
+		if age >= lifetime+utilities.StaleWhileRevalidate(resp.Header()) {
+			return hash, false, false
 		}
+		responded, revalidate = true, true
+	} else if strings.Contains(cc, "must-revalidate") ||
+		strings.Contains(cc, "proxy-revalidate") ||
+		strings.Contains(cc, "max-age") {
+		responded, statusCode = resp.Validate(r)
 	} else {
-		responded = found
-		statusCode = http.StatusNotModified
+		responded = true
 	}
 	if responded {
 		for key, values := range resp.Header() {
@@ -72,7 +63,12 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 				w.Header().Set(key, value)
 			}
 		}
-		w.Header().Set("X-Honey-Cache", "HIT")
+		w.Header().Set("Age", strconv.Itoa(age))
+		if revalidate {
+			w.Header().Set("X-Honey-Cache", "STALE")
+		} else {
+			w.Header().Set("X-Honey-Cache", "HIT")
+		}
 		if isNotModified(r, resp) {
 			w.WriteHeader(statusCode)
 			return
@@ -81,6 +77,37 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 		w.Write(resp.Body())
 	}
 	return
+}
+
+// canServeStaleOnError returns whether the cached response prev may be served
+// because the backend errored, per its stale-if-error directive (or that of
+// the backend's error response, errorCacheControl).
+// https://tools.ietf.org/html/rfc5861#section-4
+func canServeStaleOnError(prev cache.Response, errorCacheControl string) bool {
+	cc := prev.Header().Get("Cache-Control")
+	if _, found := utilities.Directive(cc, "stale-if-error"); !found {
+		cc = errorCacheControl
+	}
+	staleIfError, forever := utilities.StaleIfError(cc)
+	// This isn't in the spec, but we're going to support a * as meaning to
+	// indefinitely serve from the cache if the backend response is invalid
+	if forever {
+		return true
+	}
+	if staleIfError == 0 {
+		return false
+	}
+	age, err := strconv.Atoi(prev.Age())
+	if err != nil {
+		return false
+	}
+	return age-utilities.FreshnessLifetime(prev.Header()) < staleIfError
+}
+
+// staleWarning is the Warning header value set on stale responses
+// http://www.iana.org/assignments/http-warn-codes/http-warn-codes.xhtml
+func staleWarning() string {
+	return fmt.Sprintf(`110 Honey "Response is Stale" "%s"`, time.Now().UTC().Format(http.TimeFormat))
 }
 
 // FlushSingleflight is a forward.ResponseModifier - it returns a function
@@ -97,7 +124,7 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 		if r.Request == nil {
 			return nil
 		}
-		hash := c.Hash(r.Request)
+		hash := requestHash(c, r.Request)
 		m, found := singleflights.Load(hash)
 		if !found {
 			// TODO: handle this as it would be a serious error
@@ -116,38 +143,27 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 		// if there is a stale-if-error cache control
 		// https://tools.ietf.org/html/rfc5861#page-3
 		var serveStale bool
-		if response.StatusCode() >= 500 && strings.Contains(cc, "stale-if-error") {
-			var staleAge string
-			prevResponse, found := c.Load(c.Hash(r.Request), r.Request)
-			if found {
-				tmp := staleIfErrorFinder.FindStringSubmatch(cc)
-				if len(tmp) == 2 {
-					staleAge = tmp[1]
+		if response.StatusCode() >= 500 {
+			prevResponse, found := c.Load(hash, r.Request)
+			if found && canServeStaleOnError(prevResponse, cc) {
+				serveStale = true
+				errorCode := response.StatusCode()
+				response = prevResponse
+				// Replace the error with the stale response for this requester too
+				for key := range r.Header {
+					r.Header.Del(key)
 				}
-				// This isn't in the spec, but we're going to support a * as meaning to
-				// indefinitely serve from the cache if the backend response is invalid
-				serveStale = staleAge == "*"
-				if !serveStale && staleAge != "" {
-					maxage, exists := utilities.GetMaxAge(cc)
-					if exists {
-						age, err := strconv.Atoi(prevResponse.Age())
-						if err == nil {
-							staleMax, err := strconv.Atoi(staleAge)
-							if err == nil {
-								serveStale = (age - maxage) < staleMax
-							}
-						}
-					}
+				for key, values := range prevResponse.Header() {
+					r.Header[key] = append([]string(nil), values...)
 				}
-				if serveStale {
-					errorCode := response.StatusCode()
-					response = prevResponse
-					// http://www.iana.org/assignments/http-warn-codes/http-warn-codes.xhtml
-					// https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Warning
-					r.Header.Set("Warning", fmt.Sprintf(`110 Honey "Response is Stale" "%s"`, time.Now().Format(time.RFC1123)))
-					r.Header.Set("X-Honey-Cache", "STALE")
-					r.Header.Set("X-Honey-Stale", fmt.Sprintf("Backend gave HTTP Status %d", errorCode))
-				}
+				r.StatusCode = prevResponse.StatusCode()
+				r.Status = prevResponse.Status()
+				r.Body = ioutil.NopCloser(bytes.NewReader(prevResponse.Body()))
+				r.ContentLength = int64(len(prevResponse.Body()))
+				r.Header.Set("Age", prevResponse.Age())
+				r.Header.Set("Warning", staleWarning())
+				r.Header.Set("X-Honey-Cache", "STALE")
+				r.Header.Set("X-Honey-Stale", fmt.Sprintf("Backend gave HTTP Status %d", errorCode))
 			}
 		}
 		if !serveStale {
@@ -200,5 +216,3 @@ func canRespondWithoutBody(req *http.Request) bool {
 		strings.Contains(req.Header.Get("Cache-Control"), "proxy-revalidate") ||
 		req.Header.Get("If-Modified-Since") != "" || req.Header.Get("If-UnModified-Since") != ""
 }
-
-var staleIfErrorFinder = regexp.MustCompile(`stale-if-error=(?:\")?(\d+|\*+)(?:\")?(?:,|$)`)

@@ -15,6 +15,7 @@ type singleflight struct {
 	requests  []request
 	response  cache.Response
 	done      bool
+	aborted   int // the status code given to writers, if Abort was called
 	cacheable bool
 	handler   func(w http.ResponseWriter, r *http.Request)
 	sync.WaitGroup
@@ -40,11 +41,16 @@ type request struct {
 // response did not contain the Private cache-control directive)
 //
 // Wait should block until Write has been called and completed.
+//
+// Abort should respond to all writers with an error status code,
+// for when there is no response to write (e.g. the backend could
+// not be reached).
 type Singleflight interface {
 	AddWriter(w http.ResponseWriter, r *http.Request)
 	Write(r cache.Response) bool
 	Cacheable() (bool, error)
 	Wait()
+	Abort(statusCode int)
 }
 
 // NewSingleflight will create a new default singleflight to be used for
@@ -63,6 +69,11 @@ func NewSingleflight(cacher cache.Cacher, r *http.Request, handler func(w http.R
 // If Write has already been called, it will call it again.
 func (m *singleflight) AddWriter(w http.ResponseWriter, r *http.Request) {
 	m.Lock()
+	if m.aborted != 0 {
+		m.Unlock()
+		http.Error(w, http.StatusText(m.aborted), m.aborted)
+		return
+	}
 	m.requests = append(m.requests, request{w, r})
 	done := m.done
 	m.Add(1)
@@ -152,6 +163,20 @@ func (m *singleflight) Write(r cache.Response) bool {
 	m.Wait()
 
 	return true
+}
+
+// Abort responds to every writer added via AddWriter (and any added
+// afterwards) with statusCode, and releases anyone blocked in Wait.
+func (m *singleflight) Abort(statusCode int) {
+	m.Lock()
+	defer m.Unlock()
+	m.aborted = statusCode
+	m.cacheable = false
+	for _, req := range m.requests {
+		http.Error(req.writer, http.StatusText(statusCode), statusCode)
+		m.Done()
+	}
+	m.requests = []request{}
 }
 
 func isNotModified(r *http.Request, resp cache.Response) bool {
