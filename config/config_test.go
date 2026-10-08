@@ -34,6 +34,22 @@ uri = "http://localhost:8081"
 	assert.Equal(t, "localhost:8081", cfg.Backend.Host)
 	assert.Zero(t, cfg.Cache.MaxBytes, "unset values should be left to the cache's defaults")
 	assert.Zero(t, cfg.Cache.DefaultTTL)
+	assert.Zero(t, cfg.Cache.MaxObjectBytes)
+	assert.True(t, cfg.Cache.StaticFiles, "static files should be cached by default")
+}
+
+func TestParseStaticFilesAndObjectSize(t *testing.T) {
+	cfg, err := Parse(`
+[backend]
+uri = "https://www.example.com"
+
+[cache]
+maxObjectSize = "2MB"
+staticFiles = false
+`)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2<<20), cfg.Cache.MaxObjectBytes)
+	assert.False(t, cfg.Cache.StaticFiles)
 }
 
 func TestParseRoutesAndCookies(t *testing.T) {
@@ -65,6 +81,9 @@ func TestParseErrors(t *testing.T) {
 		"unknown setting":     backend + "[default]\nerror = \"stale\"\n",
 		"misspelled setting":  backend + "[cache]\nmax_size = \"1MB\"\n",
 		"bad size":            backend + "[cache]\nmaxSize = \"lots\"\n",
+		"bad object size":     backend + "[cache]\nmaxObjectSize = \"lots\"\n",
+		"object over max":     backend + "[cache]\nmaxSize = \"1MB\"\nmaxObjectSize = \"2MB\"\n",
+		"bad staticFiles":     backend + "[cache]\nstaticFiles = \"yes\"\n",
 		"bad ttl":             backend + "[cache]\ndefaultTTL = \"5\"\n",
 		"route without cache": backend + "[[route]]\nmatch = \"/a\"\n",
 		"route caching":       backend + "[[route]]\nmatch = \"/a\"\ncache = true\n",

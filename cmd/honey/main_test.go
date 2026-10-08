@@ -55,4 +55,23 @@ cache = false
 	assert.Equal(t, "NO-CACHE", get("/wp-admin/edit.php").Header.Get("X-Honey-Cache"))
 	assert.Equal(t, "NO-CACHE", get("/wp-admin/edit.php").Header.Get("X-Honey-Cache"))
 	assert.Equal(t, int32(3), atomic.LoadInt32(&hits))
+
+	get("/style.css")
+	assert.Equal(t, "HIT", get("/style.css").Header.Get("X-Honey-Cache"), "static files should be cached by default")
+}
+
+func TestHandlerCanSkipStaticFiles(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "hello")
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[cache]\nstaticFiles = false\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	resp, err := http.Get(proxy.URL + "/style.css")
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
 }

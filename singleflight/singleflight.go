@@ -15,7 +15,8 @@ type singleflight struct {
 	requests  []request
 	response  cache.Response
 	done      bool
-	aborted   int // the status code given to writers, if Abort was called
+	aborted   int          // the status code given to writers, if Abort was called
+	bypass    http.Handler // the handler writers are sent to, if Bypass was called
 	cacheable bool
 	handler   func(w http.ResponseWriter, r *http.Request)
 	sync.WaitGroup
@@ -45,12 +46,17 @@ type request struct {
 // Abort should respond to all writers with an error status code,
 // for when there is no response to write (e.g. the backend could
 // not be reached).
+//
+// Bypass should have a handler respond to each writer's request
+// itself, for when the response can't be shared (e.g. it is too
+// large to cache).
 type Singleflight interface {
 	AddWriter(w http.ResponseWriter, r *http.Request)
 	Write(r cache.Response) bool
 	Cacheable() (bool, error)
 	Wait()
 	Abort(statusCode int)
+	Bypass(handler http.Handler)
 }
 
 // NewSingleflight will create a new default singleflight to be used for
@@ -72,6 +78,11 @@ func (m *singleflight) AddWriter(w http.ResponseWriter, r *http.Request) {
 	if m.aborted != 0 {
 		m.Unlock()
 		http.Error(w, http.StatusText(m.aborted), m.aborted)
+		return
+	}
+	if bypass := m.bypass; bypass != nil {
+		m.Unlock()
+		bypass.ServeHTTP(w, r)
 		return
 	}
 	m.requests = append(m.requests, request{w, r})
@@ -177,6 +188,24 @@ func (m *singleflight) Abort(statusCode int) {
 		m.Done()
 	}
 	m.requests = []request{}
+}
+
+// Bypass has handler respond to every writer's request added via
+// AddWriter (and any added afterwards), and releases anyone blocked in
+// Wait once their request has been handled.
+func (m *singleflight) Bypass(handler http.Handler) {
+	m.Lock()
+	m.bypass = handler
+	m.cacheable = false
+	requests := m.requests
+	m.requests = []request{}
+	m.Unlock()
+	for _, req := range requests {
+		go func(req request) {
+			defer m.Done()
+			handler.ServeHTTP(req.writer, req.request)
+		}(req)
+	}
 }
 
 func isNotModified(r *http.Request, resp cache.Response) bool {

@@ -58,8 +58,10 @@ func main() {
 // newHandler builds the caching proxy described by cfg.
 func newHandler(cfg *config.Config) http.Handler {
 	cacher := cache.NewCacher(cache.Options{
-		MaxBytes:   cfg.Cache.MaxBytes,
-		DefaultTTL: cfg.Cache.DefaultTTL,
+		MaxBytes:        cfg.Cache.MaxBytes,
+		MaxObjectBytes:  cfg.Cache.MaxObjectBytes,
+		DefaultTTL:      cfg.Cache.DefaultTTL,
+		SkipStaticFiles: !cfg.Cache.StaticFiles,
 	})
 	for _, name := range cfg.Cache.AllowedCookies {
 		cacher.AddAllowedCookie(name)

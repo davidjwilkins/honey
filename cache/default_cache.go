@@ -22,6 +22,9 @@ const (
 	// DefaultTTL is the default freshness lifetime given to responses
 	// which don't specify one.
 	DefaultTTL = 5 * time.Minute
+	// DefaultMaxObjectBytes is the default limit on the size of a single
+	// response body which may be cached.
+	DefaultMaxObjectBytes = 10 << 20
 )
 
 // Options configures a Cacher created by NewCacher.
@@ -34,6 +37,13 @@ type Options struct {
 	// explicit expiration (Cache-Control max-age or s-maxage, or Expires).
 	// Defaults to DefaultTTL.
 	DefaultTTL time.Duration
+	// MaxObjectBytes is the largest response body which will be cached.
+	// Larger responses are streamed to the client without being cached.
+	// Defaults to DefaultMaxObjectBytes, and is never more than MaxBytes.
+	MaxObjectBytes int64
+	// SkipStaticFiles stops requests for static files (images, css, js,
+	// fonts, media, documents, archives...) from being cached.
+	SkipStaticFiles bool
 }
 
 type defaultCacher struct {
@@ -42,6 +52,8 @@ type defaultCacher struct {
 	allowedCookies     map[string]bool
 	allowedCookieNames []string
 	defaultTTL         time.Duration
+	maxObjectBytes     int64
+	skipStaticFiles    bool
 	// store holds both cached responses (keyed by their hash) and the
 	// Vary header last seen for each URL (keyed by varyKey)
 	store *store
@@ -55,10 +67,18 @@ func NewCacher(opts Options) *defaultCacher {
 	if opts.DefaultTTL <= 0 {
 		opts.DefaultTTL = DefaultTTL
 	}
+	if opts.MaxObjectBytes <= 0 {
+		opts.MaxObjectBytes = DefaultMaxObjectBytes
+	}
+	if opts.MaxObjectBytes > opts.MaxBytes {
+		opts.MaxObjectBytes = opts.MaxBytes
+	}
 	return &defaultCacher{
 		allowedCookies:     make(map[string]bool),
 		allowedCookieNames: []string{},
 		defaultTTL:         opts.DefaultTTL,
+		maxObjectBytes:     opts.MaxObjectBytes,
+		skipStaticFiles:    opts.SkipStaticFiles,
 		store:              newStore(opts.MaxBytes),
 	}
 }
@@ -74,15 +94,15 @@ func NewDefaultCacher() *defaultCacher {
 }
 
 // CanCache will return true if the method is a GET or
-// HEAD request, does not have a static file extension,
-// does not have an Authorization header, and does not
+// HEAD request, is not for a static file (if SkipStaticFiles
+// is set), does not have an Authorization header, and does not
 // match any of the skip rules added with AddSkipPrefix
 // or AddSkipRegex
 func (c *defaultCacher) CanCache(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
-	if utilities.IsStaticFile(r.URL.Path) {
+	if c.skipStaticFiles && utilities.IsStaticFile(r.URL.Path) {
 		return false
 	}
 	if r.Header.Get("Authorization") != "" {
@@ -269,6 +289,10 @@ func (c *defaultCacher) Cache(hash string, r Response) {
 		c.store.delete(varyKey(base))
 	}
 	key := base + utilities.GetVaryHeadersHash(r.RequestHeaders(), r, c.allowedCookieNames, vary)
+	if int64(len(r.Body())) > c.maxObjectBytes {
+		c.store.delete(key)
+		return
+	}
 
 	now := time.Now()
 	age, _ := strconv.Atoi(r.Age())
@@ -317,6 +341,12 @@ func (c *defaultCacher) Load(hash string, request *http.Request) (Response, bool
 // size in bytes.
 func (c *defaultCacher) Stats() (entries int, bytes int64) {
 	return c.store.stats()
+}
+
+// MaxObjectSize returns the size of the largest response body which
+// will be cached.
+func (c *defaultCacher) MaxObjectSize() int64 {
+	return c.maxObjectBytes
 }
 
 func (c *defaultCacher) AllowedCookies() []string {

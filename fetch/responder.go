@@ -3,6 +3,7 @@ package fetch
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"strconv"
@@ -73,6 +74,11 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 			w.WriteHeader(statusCode)
 			return
 		}
+		if r.Header.Get("Range") != "" && resp.StatusCode() == http.StatusOK {
+			// Handles Range and If-Range, using the Etag set above
+			http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(resp.Body()))
+			return
+		}
 		w.WriteHeader(resp.StatusCode())
 		w.Write(resp.Body())
 	}
@@ -124,6 +130,10 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 		if r.Request == nil {
 			return nil
 		}
+		if isBypass(r.Request) {
+			r.Header.Set("X-Honey-Cache", "NO-CACHE")
+			return nil
+		}
 		hash := requestHash(c, r.Request)
 		m, found := singleflights.Load(hash)
 		if !found {
@@ -131,6 +141,20 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 			return nil
 		}
 		multi := m.(singleflight.Singleflight)
+		if limiter, ok := c.(objectSizeLimiter); ok && !fitsInCache(r, limiter.MaxObjectSize()) {
+			// Stream it to this requester, and have everyone waiting for
+			// it fetch it themselves
+			singleflights.Delete(hash)
+			if f, ok := r.Request.Context().Value(flightKey{}).(flight); ok && f.backend != nil {
+				multi.Bypass(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					f.backend.ServeHTTP(w, withBypass(req))
+				}))
+			} else {
+				multi.Abort(http.StatusBadGateway)
+			}
+			r.Header.Set("X-Honey-Cache", "NO-CACHE")
+			return nil
+		}
 		response := c.Standardize(r)
 		cc := response.Header().Get("Cache-Control")
 		// no-store: https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9.2
@@ -214,6 +238,41 @@ func RespondFromSingleflight(hash string, c cache.Cacher, w http.ResponseWriter,
 func isNotModified(r *http.Request, resp cache.Response) bool {
 	return r.Header.Get("If-None-Match") != "" &&
 		r.Header.Get("If-None-Match") == resp.Header().Get("Etag")
+}
+
+// objectSizeLimiter is implemented by Cachers which limit the size of the
+// responses they cache
+type objectSizeLimiter interface {
+	MaxObjectSize() int64
+}
+
+// fitsInCache returns whether r's body is no larger than maxBytes.  It
+// reads at most maxBytes+1 bytes of the body to find out, and replaces
+// r.Body so that the whole body can still be read.  A body which can't
+// be read doesn't fit, so that a truncated body isn't cached.
+func fitsInCache(r *http.Response, maxBytes int64) bool {
+	if r.ContentLength > maxBytes {
+		return false
+	}
+	body := r.Body
+	buffered, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
+	rest := io.Reader(body)
+	if err != nil {
+		rest = errorReader{err}
+	}
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(buffered), rest), body}
+	return err == nil && int64(len(buffered)) <= maxBytes
+}
+
+type errorReader struct {
+	err error
+}
+
+func (e errorReader) Read([]byte) (int, error) {
+	return 0, e.err
 }
 
 // isPartialStatus returns whether statusCode is a response to a conditional
