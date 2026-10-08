@@ -31,8 +31,11 @@ type Config struct {
 // defaults.
 type Cache struct {
 	MaxBytes       int64
+	MaxObjectBytes int64
 	DefaultTTL     time.Duration
 	AllowedCookies []string
+	// StaticFiles is whether static files (images, css, js...) are cached
+	StaticFiles bool
 }
 
 // Route is a rule for requests whose path starts with Match, or, if
@@ -53,8 +56,10 @@ type file struct {
 	} `toml:"backend"`
 	Cache struct {
 		MaxSize        string   `toml:"maxSize"`
+		MaxObjectSize  string   `toml:"maxObjectSize"`
 		DefaultTTL     string   `toml:"defaultTTL"`
 		AllowedCookies []string `toml:"allowedCookies"`
+		StaticFiles    *bool    `toml:"staticFiles"`
 	} `toml:"cache"`
 	Routes []struct {
 		Match string `toml:"match"`
@@ -114,6 +119,16 @@ func Parse(data string) (*Config, error) {
 			return nil, fmt.Errorf("cache.maxSize: %w", err)
 		}
 	}
+	if f.Cache.MaxObjectSize != "" {
+		cfg.Cache.MaxObjectBytes, err = parseSize(f.Cache.MaxObjectSize)
+		if err != nil {
+			return nil, fmt.Errorf("cache.maxObjectSize: %w", err)
+		}
+	}
+	if cfg.Cache.MaxBytes != 0 && cfg.Cache.MaxObjectBytes > cfg.Cache.MaxBytes {
+		return nil, fmt.Errorf("cache.maxObjectSize can't be larger than cache.maxSize")
+	}
+	cfg.Cache.StaticFiles = f.Cache.StaticFiles == nil || *f.Cache.StaticFiles
 	if f.Cache.DefaultTTL != "" {
 		cfg.Cache.DefaultTTL, err = time.ParseDuration(f.Cache.DefaultTTL)
 		if err != nil || cfg.Cache.DefaultTTL < time.Second {

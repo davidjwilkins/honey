@@ -61,6 +61,13 @@ func serveFromCache(c cache.Cacher, handler http.Handler) http.HandlerFunc {
 				w.WriteHeader(http.StatusGatewayTimeout)
 				return
 			}
+			// A range request for something not in the cache is most likely
+			// seeking in large media, so let the backend handle it rather
+			// than fetching the whole thing.
+			if r.Header.Get("Range") != "" {
+				handler.ServeHTTP(w, withBypass(r))
+				return
+			}
 			// RespondFromSingleflight will return true if there was an in-flight
 			// request with the same hash, and we were able to respond with it's
 			// response.  It will block until the in-flight request has completed.
@@ -68,7 +75,7 @@ func serveFromCache(c cache.Cacher, handler http.Handler) http.HandlerFunc {
 			if responded {
 				return
 			}
-			r = forBackend(r, hash)
+			r = forBackend(r, hash, handler)
 		} else {
 			w.Header().Set("X-Honey-Cache", "NO-CACHE")
 		}
@@ -87,7 +94,7 @@ func revalidateInBackground(hash string, c cache.Cacher, handler http.Handler, s
 	if RespondFromSingleflight(hash, c, w, r, serve) {
 		return
 	}
-	handler.ServeHTTP(w, forBackend(r, hash))
+	handler.ServeHTTP(w, forBackend(r, hash, handler))
 }
 
 // conditionalHeaders make the backend respond with something other than
@@ -115,14 +122,31 @@ type flight struct {
 	// conditional holds the request's conditionalHeaders, which are not
 	// sent to the backend
 	conditional http.Header
+	// backend is the handler which sent the request to the backend, for
+	// the requests waiting on its singleflight to use if its response
+	// can't be shared with them
+	backend http.Handler
+}
+
+type bypassKey struct{}
+
+// withBypass marks r as being sent to the backend without the cache, so
+// that its response isn't cached or shared via a singleflight.
+func withBypass(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), bypassKey{}, true))
+}
+
+func isBypass(r *http.Request) bool {
+	bypass, _ := r.Context().Value(bypassKey{}).(bool)
+	return bypass
 }
 
 // forBackend returns a copy of r to fetch a response for the cache with:
 // it has none of the conditionalHeaders, so that the backend sends the
 // full response.  Whether this requester gets a 304 instead is decided
 // from the cached response (see clientRequest).
-func forBackend(r *http.Request, hash string) *http.Request {
-	f := flight{hash: hash, conditional: http.Header{}}
+func forBackend(r *http.Request, hash string, backend http.Handler) *http.Request {
+	f := flight{hash: hash, conditional: http.Header{}, backend: backend}
 	r = r.Clone(context.WithValue(r.Context(), flightKey{}, f))
 	for _, name := range conditionalHeaders {
 		if values, found := r.Header[name]; found {
@@ -177,7 +201,7 @@ type backendErrorHandler struct {
 }
 
 func (h backendErrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, err error) {
-	if !h.c.CanCache(r) {
+	if !h.c.CanCache(r) || isBypass(r) {
 		utils.DefaultHandler.ServeHTTP(w, r, err)
 		return
 	}

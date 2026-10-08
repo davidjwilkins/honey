@@ -10,7 +10,9 @@ uri = "https://www.insomniac.com"
 
 [cache]
 maxSize = "256MB"           # memory for cached responses; least recently used are evicted
+maxObjectSize = "10MB"      # larger responses are streamed to the client, not cached
 defaultTTL = "5m"           # freshness for responses without max-age, s-maxage or Expires
+staticFiles = true          # cache images, css, js, fonts, media and documents
 allowedCookies = []         # cookies allowed through the cache, e.g. ["site_lang_id"]
 
 # Don't cache previews, the RSS feed, or the admin and login pages.

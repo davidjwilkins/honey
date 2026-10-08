@@ -64,13 +64,26 @@ func TestDefaultCacheCanCachePage(t *testing.T) {
 	}
 }
 
-func TestDefaultCacheCannotCacheStaticFiles(t *testing.T) {
+func TestDefaultCacheCanCacheStaticFiles(t *testing.T) {
 	var request = newValidRequest("https://www.example.com/images/test.jpg")
-	var cache defaultCacher
-	if cache.CanCache(request) {
-		t.Error("Default cacher should not be able to cache static files: ", request.URL.Path)
+	if !NewCacher(Options{}).CanCache(request) {
+		t.Error("Cacher should be able to cache static files: ", request.URL.Path)
+	}
+	if NewCacher(Options{SkipStaticFiles: true}).CanCache(request) {
+		t.Error("Cacher should not cache static files with SkipStaticFiles: ", request.URL.Path)
 	}
 }
+
+func TestDefaultCacheDoesNotStoreLargeResponses(t *testing.T) {
+	c := NewCacher(Options{MaxObjectBytes: 10})
+	request := validRequest()
+	c.Cache(c.Hash(request), standardized(c, "", "this body is too large"))
+	_, found := c.Load(c.Hash(request), request)
+	assert.False(t, found, "responses larger than MaxObjectBytes should not be cached")
+	assert.Equal(t, int64(10), c.MaxObjectSize())
+	assert.Equal(t, int64(100), NewCacher(Options{MaxBytes: 100}).MaxObjectSize(), "MaxObjectBytes should be no more than MaxBytes")
+}
+
 func TestDefaultCacheCannotCacheIfAuthorizationHeader(t *testing.T) {
 	request := validRequest()
 	request.Header.Add("Authorization", "P@ssw0rd")

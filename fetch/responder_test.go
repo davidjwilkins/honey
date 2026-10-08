@@ -115,6 +115,10 @@ func (t *testSingleflight) Abort(statusCode int) {
 	t.Called(statusCode)
 }
 
+func (t *testSingleflight) Bypass(handler http.Handler) {
+	t.Called(handler)
+}
+
 type ResponderTestSuite struct {
 	suite.Suite
 	cacher       *testCacher

@@ -35,9 +35,13 @@ func newOrigin(handler func(w http.ResponseWriter, r *http.Request, hit int)) *o
 func (o *origin) Hits() int { return int(atomic.LoadInt32(&o.hits)) }
 
 func newProxy(t *testing.T, o *origin) *httptest.Server {
+	return newProxyWith(t, o, cache.Options{})
+}
+
+func newProxyWith(t *testing.T, o *origin, opts cache.Options) *httptest.Server {
 	backend, err := url.Parse(o.URL)
 	require.NoError(t, err)
-	c := cache.NewCacher(cache.Options{})
+	c := cache.NewCacher(opts)
 	proxy := httptest.NewServer(Fetch(c, Forwarder(c), backend))
 	t.Cleanup(proxy.Close)
 	t.Cleanup(o.Close)
@@ -245,19 +249,108 @@ func TestIntegrationConditionalMissDoesNotCacheNotModified(t *testing.T) {
 	assert.Equal(t, "full page body", body)
 }
 
-func TestIntegrationRangeMissDoesNotCachePartialContent(t *testing.T) {
+func TestIntegrationRangeMissPassesThrough(t *testing.T) {
 	o := fileOrigin()
 	proxy := newProxy(t, o)
 
+	// Range requests for something not yet cached go straight to the
+	// backend, so that seeking in large media still works
 	resp, body := get(t, proxy.URL+"/page", "Range", "bytes=0-3")
-	// Ignoring Range and sending the whole body is allowed (RFC 9110 §14.2)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "full page body", body)
+	assert.Equal(t, http.StatusPartialContent, resp.StatusCode)
+	assert.Equal(t, "full", body)
+	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
 
 	resp, body = get(t, proxy.URL+"/page")
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "full page body", body, "a partial response must not be cached as the whole page")
+	assert.Equal(t, "MISS", resp.Header.Get("X-Honey-Cache"))
+	assert.Equal(t, 2, o.Hits())
+}
+
+func TestIntegrationRangeServedFromCache(t *testing.T) {
+	o := fileOrigin()
+	proxy := newProxy(t, o)
+
+	get(t, proxy.URL+"/video.mp4")
+	resp, body := get(t, proxy.URL+"/video.mp4", "Range", "bytes=5-8")
+	assert.Equal(t, http.StatusPartialContent, resp.StatusCode)
+	assert.Equal(t, "page", body)
+	assert.Equal(t, "bytes 5-8/14", resp.Header.Get("Content-Range"))
+	assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"))
+
+	// If-Range with a different validator means the client's copy is out
+	// of date, so it gets the whole thing
+	resp, body = get(t, proxy.URL+"/video.mp4", "Range", "bytes=5-8", "If-Range", `"something-else"`)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "full page body", body)
 	assert.Equal(t, 1, o.Hits())
+}
+
+func TestIntegrationCachesStaticFiles(t *testing.T) {
+	o := fileOrigin()
+	proxy := newProxy(t, o)
+
+	for _, path := range []string{"/style.css", "/app.js", "/logo.png"} {
+		get(t, proxy.URL+path)
+		resp, body := get(t, proxy.URL+path)
+		assert.Equal(t, "full page body", body, path)
+		assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"), path)
+	}
+	assert.Equal(t, 3, o.Hits())
+}
+
+func TestIntegrationSkipStaticFiles(t *testing.T) {
+	o := fileOrigin()
+	proxy := newProxyWith(t, o, cache.Options{SkipStaticFiles: true})
+
+	get(t, proxy.URL+"/style.css")
+	resp, _ := get(t, proxy.URL+"/style.css")
+	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
+	assert.Equal(t, 2, o.Hits())
+}
+
+func TestIntegrationLargeResponsesStreamUncached(t *testing.T) {
+	large := strings.Repeat("x", 4<<10)
+	for name, chunked := range map[string]bool{"with Content-Length": false, "chunked": true} {
+		t.Run(name, func(t *testing.T) {
+			release := make(chan struct{})
+			o := newOrigin(func(w http.ResponseWriter, r *http.Request, hit int) {
+				<-release
+				w.Header().Set("Cache-Control", "max-age=60")
+				if !chunked {
+					w.Header().Set("Content-Length", strconv.Itoa(len(large)))
+				}
+				for i := 0; i < len(large); i += 1 << 10 {
+					io.WriteString(w, large[i:i+1<<10])
+					w.(http.Flusher).Flush()
+				}
+			})
+			proxy := newProxyWith(t, o, cache.Options{MaxObjectBytes: 1 << 10})
+
+			// Concurrent requests for a response too large to cache each
+			// get the whole of it
+			var wg sync.WaitGroup
+			bodies := make([]string, 5)
+			for i := range bodies {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					_, bodies[i] = get(t, proxy.URL+"/video.mp4")
+				}(i)
+			}
+			time.Sleep(200 * time.Millisecond)
+			close(release)
+			wg.Wait()
+			for _, body := range bodies {
+				assert.Equal(t, len(large), len(body))
+			}
+
+			resp, body := get(t, proxy.URL+"/video.mp4")
+			assert.Equal(t, len(large), len(body))
+			assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"), "it shouldn't have been cached")
+			assert.Equal(t, 6, o.Hits())
+		})
+	}
 }
 
 func TestIntegrationRevalidatingWithEtagDoesNotCacheNotModified(t *testing.T) {

@@ -10,6 +10,8 @@ If the backend sends `stale-while-revalidate`, expired responses are served imme
 
 It will set an Etag on responses, and respond with an HTTP 304 Not Modified in the event that the `If-None-Match` header matches the Etag.
 
+Static files (images, css, js, fonts, media, documents) are cached like any other response.  Responses larger than a configurable size (10MB by default) are streamed straight to the client instead of being cached.  Range requests (e.g. seeking in a video) are served from the cache if the file is cached, and otherwise sent to the backend.
+
 If will not cache responses that contain the `no-store` Cache-Control directive
 
 It will always fetch fresh resources if the `no-cache` Cache-Control directive, or if Pragma: no-cache, is set in the request
@@ -35,7 +37,9 @@ All the available settings:
 
 	[cache]
 	maxSize = "256MB"            # memory for cached responses (KB, MB, GB)
+	maxObjectSize = "10MB"       # larger responses are streamed to the client, not cached
 	defaultTTL = "5m"            # freshness for responses without max-age, s-maxage or Expires
+	staticFiles = true           # cache images, css, js, fonts, media and documents
 	allowedCookies = ["site_lang_id"]  # Set-Cookie headers allowed through the cache
 
 	# Requests not to cache. match is a path prefix, or with regex = true,
