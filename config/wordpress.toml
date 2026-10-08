@@ -13,6 +13,8 @@ maxSize = "256MB"           # memory for cached responses; least recently used a
 maxObjectSize = "10MB"      # larger responses are streamed to the client, not cached
 defaultTTL = "5m"           # freshness for responses without max-age, s-maxage or Expires
 staticFiles = true          # cache images, css, js, fonts, media and documents
+brotli = true               # brotli compress html, css, js, json, svg... for clients that accept it
+brotliMinSize = "1KB"       # smaller responses aren't compressed
 allowedCookies = []         # cookies allowed through the cache, e.g. ["site_lang_id"]
 
 # Don't cache previews, the RSS feed, or the admin and login pages.

@@ -101,7 +101,12 @@ func revalidateInBackground(hash string, c cache.Cacher, handler http.Handler, s
 // the full response - such as a 304 Not Modified, a 206 Partial Content
 // or a 412 Precondition Failed - which is specific to one requester, and
 // so mustn't be cached and served to everyone.
+//
+// Accept-Encoding is also left out, so that the backend's response is
+// unencoded: the cache encodes it for each client itself.  (Go's
+// http.Transport still asks the backend for gzip, and decodes it.)
 var conditionalHeaders = []string{
+	"Accept-Encoding",
 	"If-Match",
 	"If-None-Match",
 	"If-Modified-Since",
@@ -215,7 +220,8 @@ func (h backendErrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, e
 		if multi != nil {
 			go multi.Write(prev)
 		}
-		for key, values := range prev.Header() {
+		header, body := cache.Negotiate(prev, clientRequest(r))
+		for key, values := range header {
 			w.Header()[key] = append([]string(nil), values...)
 		}
 		w.Header().Set("Age", prev.Age())
@@ -223,7 +229,7 @@ func (h backendErrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, e
 		w.Header().Set("X-Honey-Cache", "STALE")
 		w.Header().Set("X-Honey-Stale", fmt.Sprintf("Backend error: %v", err))
 		w.WriteHeader(prev.StatusCode())
-		w.Write(prev.Body())
+		w.Write(body)
 		return
 	}
 	if multi != nil {

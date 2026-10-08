@@ -36,6 +36,9 @@ type Cache struct {
 	AllowedCookies []string
 	// StaticFiles is whether static files (images, css, js...) are cached
 	StaticFiles bool
+	// Brotli is whether compressible responses are brotli compressed
+	Brotli         bool
+	BrotliMinBytes int64
 }
 
 // Route is a rule for requests whose path starts with Match, or, if
@@ -60,6 +63,8 @@ type file struct {
 		DefaultTTL     string   `toml:"defaultTTL"`
 		AllowedCookies []string `toml:"allowedCookies"`
 		StaticFiles    *bool    `toml:"staticFiles"`
+		Brotli         *bool    `toml:"brotli"`
+		BrotliMinSize  string   `toml:"brotliMinSize"`
 	} `toml:"cache"`
 	Routes []struct {
 		Match string `toml:"match"`
@@ -129,6 +134,13 @@ func Parse(data string) (*Config, error) {
 		return nil, fmt.Errorf("cache.maxObjectSize can't be larger than cache.maxSize")
 	}
 	cfg.Cache.StaticFiles = f.Cache.StaticFiles == nil || *f.Cache.StaticFiles
+	cfg.Cache.Brotli = f.Cache.Brotli == nil || *f.Cache.Brotli
+	if f.Cache.BrotliMinSize != "" {
+		cfg.Cache.BrotliMinBytes, err = parseSize(f.Cache.BrotliMinSize)
+		if err != nil {
+			return nil, fmt.Errorf("cache.brotliMinSize: %w", err)
+		}
+	}
 	if f.Cache.DefaultTTL != "" {
 		cfg.Cache.DefaultTTL, err = time.ParseDuration(f.Cache.DefaultTTL)
 		if err != nil || cfg.Cache.DefaultTTL < time.Second {

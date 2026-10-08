@@ -396,3 +396,27 @@ func TestIntegrationDoesNotCacheUnexpectedPartialResponses(t *testing.T) {
 	assert.Equal(t, "full page body", body)
 	assert.Equal(t, 2, o.Hits())
 }
+
+func TestIntegrationMultiplexedRequestsWithDifferentVaryValues(t *testing.T) {
+	release := make(chan struct{})
+	o := newOrigin(func(w http.ResponseWriter, r *http.Request, hit int) {
+		<-release
+		w.Header().Set("Cache-Control", "max-age=60")
+		w.Header().Set("Vary", "Accept-Language")
+		io.WriteString(w, "page in "+r.Header.Get("Accept-Language"))
+	})
+	proxy := newProxy(t, o)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(language string) {
+			defer wg.Done()
+			_, body := get(t, proxy.URL+"/page", "Accept-Language", language)
+			assert.Equal(t, "page in "+language, body)
+		}([]string{"en", "fr"}[i%2])
+	}
+	time.Sleep(200 * time.Millisecond)
+	close(release)
+	wg.Wait()
+}

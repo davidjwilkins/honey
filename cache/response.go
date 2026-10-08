@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/davidjwilkins/honey/utilities"
@@ -46,6 +47,17 @@ type responseImpl struct {
 	// requester whose request populated the cache)
 	status     string
 	statusCode int
+	// brotli is the body brotli compressed, if it is worth compressing.
+	// It is replaced with a better compressed version in the background.
+	brotli atomic.Pointer[[]byte]
+}
+
+// brotliBody returns the brotli compressed body, or nil if there isn't one
+func (r *responseImpl) brotliBody() []byte {
+	if compressed := r.brotli.Load(); compressed != nil {
+		return *compressed
+	}
+	return nil
 }
 
 func (r *responseImpl) RequestHeaders() http.Header {
