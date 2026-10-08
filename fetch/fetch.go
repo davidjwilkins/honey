@@ -68,7 +68,7 @@ func serveFromCache(c cache.Cacher, handler http.Handler) http.HandlerFunc {
 			if responded {
 				return
 			}
-			r = withHash(r, hash)
+			r = forBackend(r, hash)
 		} else {
 			w.Header().Set("X-Honey-Cache", "NO-CACHE")
 		}
@@ -83,32 +83,76 @@ func revalidateInBackground(hash string, c cache.Cacher, handler http.Handler, s
 	if _, inFlight := singleflights.Load(hash); inFlight {
 		return
 	}
-	// We want the full response to cache, not a 304 for this client
-	r.Header.Del("If-None-Match")
-	r.Header.Del("If-Modified-Since")
 	w := httptest.NewRecorder()
 	if RespondFromSingleflight(hash, c, w, r, serve) {
 		return
 	}
-	handler.ServeHTTP(w, withHash(r, hash))
+	handler.ServeHTTP(w, forBackend(r, hash))
 }
 
-type hashKey struct{}
-
-// withHash records the hash under which r's singleflight is stored, so
-// that it can be found again once the backend responds, even if the
-// cacher would now hash the request differently (e.g. because the Vary
-// header it last saw for the URL has since been evicted).
-func withHash(r *http.Request, hash string) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), hashKey{}, hash))
+// conditionalHeaders make the backend respond with something other than
+// the full response - such as a 304 Not Modified, a 206 Partial Content
+// or a 412 Precondition Failed - which is specific to one requester, and
+// so mustn't be cached and served to everyone.
+var conditionalHeaders = []string{
+	"If-Match",
+	"If-None-Match",
+	"If-Modified-Since",
+	"If-Unmodified-Since",
+	"If-Range",
+	"Range",
 }
 
-// requestHash returns the hash recorded by withHash, or else hashes r.
+type flightKey struct{}
+
+// flight is what is remembered about a request while it is sent to the backend
+type flight struct {
+	// hash is the hash under which the request's singleflight is stored,
+	// so that it can be found again once the backend responds, even if
+	// the cacher would now hash the request differently (e.g. because the
+	// Vary header it last saw for the URL has since been evicted).
+	hash string
+	// conditional holds the request's conditionalHeaders, which are not
+	// sent to the backend
+	conditional http.Header
+}
+
+// forBackend returns a copy of r to fetch a response for the cache with:
+// it has none of the conditionalHeaders, so that the backend sends the
+// full response.  Whether this requester gets a 304 instead is decided
+// from the cached response (see clientRequest).
+func forBackend(r *http.Request, hash string) *http.Request {
+	f := flight{hash: hash, conditional: http.Header{}}
+	r = r.Clone(context.WithValue(r.Context(), flightKey{}, f))
+	for _, name := range conditionalHeaders {
+		if values, found := r.Header[name]; found {
+			f.conditional[name] = values
+			r.Header.Del(name)
+		}
+	}
+	return r
+}
+
+// requestHash returns the hash recorded by forBackend, or else hashes r.
 func requestHash(c cache.Cacher, r *http.Request) string {
-	if hash, ok := r.Context().Value(hashKey{}).(string); ok {
-		return hash
+	if f, ok := r.Context().Value(flightKey{}).(flight); ok {
+		return f.hash
 	}
 	return c.Hash(r)
+}
+
+// clientRequest returns r as the client sent it, with any of the
+// conditionalHeaders that forBackend removed.
+func clientRequest(r *http.Request) *http.Request {
+	f, ok := r.Context().Value(flightKey{}).(flight)
+	if !ok || len(f.conditional) == 0 {
+		return r
+	}
+	r = r.Clone(r.Context())
+	for name, values := range f.conditional {
+		r.Header[name] = values
+	}
+	return r
 }
 
 // Forwarder returns a new forward.Forwarder which saves responses

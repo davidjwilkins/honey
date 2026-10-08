@@ -213,8 +213,10 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	}
 
 	resp := responseImpl{
-		now:      now,
-		response: r,
+		now:        now,
+		response:   r,
+		status:     r.Status,
+		statusCode: r.StatusCode,
 	}
 	if r.Request != nil {
 		resp.baseKey = baseKey(r.Request)

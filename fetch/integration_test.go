@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -210,4 +211,95 @@ func TestIntegrationVaryStaysCachedAfterRefresh(t *testing.T) {
 	resp, body := get(t, proxy.URL+"/page", "Accept-Language", "fr")
 	assert.Equal(t, "fr3", body, "refreshed responses should be cached under the same key")
 	assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"))
+}
+
+// fileOrigin is a backend which honours conditional and range requests,
+// like a real web server serving a file.
+func fileOrigin() *origin {
+	modified := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	return newOrigin(func(w http.ResponseWriter, r *http.Request, hit int) {
+		w.Header().Set("Cache-Control", "max-age=60")
+		http.ServeContent(w, r, "page.html", modified, strings.NewReader("full page body"))
+	})
+}
+
+func TestIntegrationConditionalMissDoesNotCacheNotModified(t *testing.T) {
+	o := fileOrigin()
+	proxy := newProxy(t, o)
+
+	// A browser with an old copy revalidates while the cache is empty
+	resp, body := get(t, proxy.URL+"/page", "If-Modified-Since", "Thu, 01 Jan 2026 00:00:00 GMT")
+	assert.Equal(t, http.StatusNotModified, resp.StatusCode, "the client's copy is still current")
+	assert.Equal(t, "", body)
+
+	// A browser with no copy must get the full page, not the empty 304
+	resp, body = get(t, proxy.URL+"/page")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "full page body", body)
+	assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"))
+	assert.Equal(t, 1, o.Hits())
+
+	// A conditional request for an older copy gets the full page
+	resp, body = get(t, proxy.URL+"/page", "If-Modified-Since", "Wed, 31 Dec 2025 00:00:00 GMT")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "full page body", body)
+}
+
+func TestIntegrationRangeMissDoesNotCachePartialContent(t *testing.T) {
+	o := fileOrigin()
+	proxy := newProxy(t, o)
+
+	resp, body := get(t, proxy.URL+"/page", "Range", "bytes=0-3")
+	// Ignoring Range and sending the whole body is allowed (RFC 9110 §14.2)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "full page body", body)
+
+	resp, body = get(t, proxy.URL+"/page")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "full page body", body, "a partial response must not be cached as the whole page")
+	assert.Equal(t, 1, o.Hits())
+}
+
+func TestIntegrationRevalidatingWithEtagDoesNotCacheNotModified(t *testing.T) {
+	o := newOrigin(func(w http.ResponseWriter, r *http.Request, hit int) {
+		w.Header().Set("Cache-Control", "max-age=1")
+		io.WriteString(w, "full page body")
+	})
+	proxy := newProxy(t, o)
+
+	resp, _ := get(t, proxy.URL+"/page")
+	etag := resp.Header.Get("Etag")
+	require.NotEmpty(t, etag)
+
+	// Once it has expired, the browser revalidates with the Etag it was given
+	time.Sleep(1100 * time.Millisecond)
+	resp, body := get(t, proxy.URL+"/page", "If-None-Match", etag)
+	assert.Equal(t, http.StatusNotModified, resp.StatusCode)
+	assert.Equal(t, "", body)
+
+	resp, body = get(t, proxy.URL+"/page")
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "the 304 for one client must not become the cached status")
+	assert.Equal(t, "full page body", body)
+	assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"))
+}
+
+func TestIntegrationDoesNotCacheUnexpectedPartialResponses(t *testing.T) {
+	// A backend which sends partial or not modified responses even
+	// though Honey doesn't ask for them
+	o := newOrigin(func(w http.ResponseWriter, r *http.Request, hit int) {
+		w.Header().Set("Cache-Control", "max-age=60")
+		if hit == 1 {
+			w.Header().Set("Content-Range", "bytes 0-3/14")
+			w.WriteHeader(http.StatusPartialContent)
+			io.WriteString(w, "full")
+			return
+		}
+		io.WriteString(w, "full page body")
+	})
+	proxy := newProxy(t, o)
+
+	get(t, proxy.URL+"/page")
+	_, body := get(t, proxy.URL+"/page")
+	assert.Equal(t, "full page body", body)
+	assert.Equal(t, 2, o.Hits())
 }
