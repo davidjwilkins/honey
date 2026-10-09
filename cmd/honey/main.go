@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/davidjwilkins/honey/accesslog"
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/config"
 	"github.com/davidjwilkins/honey/fetch"
@@ -122,8 +124,16 @@ func newHandlers(cfg *config.Config) (handler http.Handler, metricsHandler http.
 		Control:     control,
 		QueryParams: cfg.Cache.QueryParams,
 	})
-	if recorder == nil {
-		return handler, nil
+	if recorder != nil {
+		handler = recorder.Middleware(handler)
+		metricsHandler = recorder
 	}
-	return recorder.Middleware(handler), recorder
+	if cfg.AccessLog {
+		logger := accesslog.New(accessLogOutput, accesslog.Format(cfg.AccessLogFormat))
+		handler = accesslog.Middleware(logger, handler)
+	}
+	return handler, metricsHandler
 }
+
+// accessLogOutput is where the access log is written
+var accessLogOutput io.Writer = os.Stdout

@@ -222,3 +222,18 @@ func TestParseQueryParams(t *testing.T) {
 	assert.NotNil(t, cfg.Cache.QueryParams, "an empty list removes every parameter, which isn't the same as not setting it")
 	assert.Empty(t, cfg.Cache.QueryParams)
 }
+
+func TestParseLog(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n")
+	require.NoError(t, err)
+	assert.False(t, cfg.AccessLog)
+	assert.Equal(t, "text", cfg.AccessLogFormat)
+
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[log]\naccess = true\nformat = \"json\"\n")
+	require.NoError(t, err)
+	assert.True(t, cfg.AccessLog)
+	assert.Equal(t, "json", cfg.AccessLogFormat)
+
+	_, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[log]\nformat = \"xml\"\n")
+	assert.Error(t, err)
+}
