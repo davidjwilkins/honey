@@ -44,6 +44,12 @@ type Options struct {
 	// SkipStaticFiles stops requests for static files (images, css, js,
 	// fonts, media, documents, archives...) from being cached.
 	SkipStaticFiles bool
+	// DisableBrotli stops compressible responses (html, css, js, json,
+	// svg...) from being brotli compressed for clients which accept it.
+	DisableBrotli bool
+	// BrotliMinBytes is the smallest response which is brotli compressed.
+	// Defaults to DefaultBrotliMinBytes.
+	BrotliMinBytes int64
 }
 
 type defaultCacher struct {
@@ -54,6 +60,9 @@ type defaultCacher struct {
 	defaultTTL         time.Duration
 	maxObjectBytes     int64
 	skipStaticFiles    bool
+	brotli             bool
+	brotliMinBytes     int
+	recompressor       *recompressor
 	// store holds both cached responses (keyed by their hash) and the
 	// Vary header last seen for each URL (keyed by varyKey)
 	store *store
@@ -73,12 +82,18 @@ func NewCacher(opts Options) *defaultCacher {
 	if opts.MaxObjectBytes > opts.MaxBytes {
 		opts.MaxObjectBytes = opts.MaxBytes
 	}
+	if opts.BrotliMinBytes <= 0 {
+		opts.BrotliMinBytes = DefaultBrotliMinBytes
+	}
 	return &defaultCacher{
 		allowedCookies:     make(map[string]bool),
 		allowedCookieNames: []string{},
 		defaultTTL:         opts.DefaultTTL,
 		maxObjectBytes:     opts.MaxObjectBytes,
 		skipStaticFiles:    opts.SkipStaticFiles,
+		brotli:             !opts.DisableBrotli,
+		brotliMinBytes:     int(opts.BrotliMinBytes),
+		recompressor:       &recompressor{},
 		store:              newStore(opts.MaxBytes),
 	}
 }
@@ -250,6 +265,15 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 		hasher.Write(resp.body)
 		r.Header.Set("Etag", `"`+base64.StdEncoding.EncodeToString(hasher.Sum(nil))+`"`)
 	}
+	var compressed []byte
+	if c.brotli && shouldCompress(r.StatusCode, r.Header, resp.body, c.brotliMinBytes) {
+		if compressed = compressBrotli(resp.body, fastBrotliQuality); len(compressed) < len(resp.body) {
+			resp.brotli.Store(&compressed)
+			if !headerListContains(r.Header.Values("Vary"), "Accept-Encoding") {
+				r.Header.Add("Vary", "Accept-Encoding")
+			}
+		}
+	}
 	resp.headers = r.Header.Clone()
 
 	// no-cache="set-cookie" allows the response to be cached, as long as
@@ -282,7 +306,13 @@ func (c *defaultCacher) Cache(hash string, r Response) {
 	if impl, ok := r.(*responseImpl); ok && impl.baseKey != "" {
 		base = impl.baseKey
 	}
-	vary := r.Header().Get("Vary")
+	// Bodies are cached unencoded, and encoded for each client as they're
+	// served, so a response encoded by the backend can't be cached (and
+	// Accept-Encoding isn't part of the cache key).
+	if encoding := r.Header().Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return
+	}
+	vary := utilities.CacheVary(strings.Join(r.Header().Values("Vary"), ","))
 	if vary != "" {
 		c.store.set(varyKey(base), vary, int64(len(base)+len(vary)), time.Time{})
 	} else {
@@ -313,11 +343,31 @@ func (c *defaultCacher) Cache(hash string, r Response) {
 		removeAt = now.Add(time.Duration(keep) * time.Second)
 	}
 	c.store.set(key, r, responseSize(key, r), removeAt)
+	if impl, ok := r.(*responseImpl); ok {
+		c.recompressor.add(impl)
+	}
+}
+
+// headerListContains returns whether a comma separated header (such as
+// Vary) contains name
+func headerListContains(values []string, name string) bool {
+	for _, value := range values {
+		for _, item := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(item), name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // responseSize approximates the memory used to cache a response
 func responseSize(key string, r Response) int64 {
 	size := len(key) + len(r.Body()) + 256
+	if impl, ok := r.(*responseImpl); ok {
+		// Recompressing in the background only makes this smaller
+		size += len(impl.brotliBody())
+	}
 	for name, values := range r.Header() {
 		for _, value := range values {
 			size += len(name) + len(value)

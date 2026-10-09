@@ -131,7 +131,10 @@ func (m *singleflight) Write(r cache.Response) bool {
 		m.Wait()
 		return false
 	}
-	// Bucket the requests based on whether their headers for the response Vary are the same
+	// Bucket the requests based on whether their headers for the response Vary
+	// are the same.  Accept-Encoding doesn't matter, as each requester gets
+	// the encoding they accept.
+	vary = utilities.CacheVary(vary)
 	hash := utilities.GetVaryHeadersHash(r.RequestHeaders(), r, m.cacher.AllowedCookies(), vary)
 	buckets := make(map[string][]request)
 	for _, req := range m.requests {
@@ -141,18 +144,19 @@ func (m *singleflight) Write(r cache.Response) bool {
 	// Respond to any that match the Vary
 	for _, req := range buckets[hash] {
 		go func(req request) {
-			for key, values := range r.Header() {
+			header, body := cache.Negotiate(r, req.request)
+			for key, values := range header {
 				for _, value := range values {
 					req.writer.Header().Add(key, value)
 				}
 			}
 			req.writer.Header().Set("X-Honey-Cache", "MISS (MULTIPLEXED)")
 			req.writer.Header().Set("Age", r.Age())
-			if isNotModified(req.request, r) {
+			if isNotModified(req.request, header.Get("Etag")) {
 				req.writer.WriteHeader(http.StatusNotModified)
 			} else {
 				req.writer.WriteHeader(r.StatusCode())
-				req.writer.Write(r.Body())
+				req.writer.Write(body)
 			}
 			m.Done()
 		}(req)
@@ -208,7 +212,7 @@ func (m *singleflight) Bypass(handler http.Handler) {
 	}
 }
 
-func isNotModified(r *http.Request, resp cache.Response) bool {
+func isNotModified(r *http.Request, etag string) bool {
 	return r.Header.Get("If-None-Match") != "" &&
-		r.Header.Get("If-None-Match") == resp.Header().Get("Etag")
+		r.Header.Get("If-None-Match") == etag
 }

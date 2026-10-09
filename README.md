@@ -12,6 +12,8 @@ It will set an Etag on responses, and respond with an HTTP 304 Not Modified in t
 
 Static files (images, css, js, fonts, media, documents) are cached like any other response.  Responses larger than a configurable size (10MB by default) are streamed straight to the client instead of being cached.  Range requests (e.g. seeking in a video) are served from the cache if the file is cached, and otherwise sent to the backend.
 
+Compressible responses (html, css, js, json, svg...) are served brotli compressed to clients which accept it, and unencoded to those which don't, from the same cache entry.  They're compressed quickly (quality 6) when first cached, so that the first requester isn't kept waiting, and then recompressed at maximum quality (11) in the background.  Responses with `Cache-Control: no-transform` aren't compressed.  The backend is asked for gzip (which Honey decodes) rather than the client's `Accept-Encoding`, so that the cache holds the unencoded response.
+
 If will not cache responses that contain the `no-store` Cache-Control directive
 
 It will always fetch fresh resources if the `no-cache` Cache-Control directive, or if Pragma: no-cache, is set in the request
@@ -40,6 +42,8 @@ All the available settings:
 	maxObjectSize = "10MB"       # larger responses are streamed to the client, not cached
 	defaultTTL = "5m"            # freshness for responses without max-age, s-maxage or Expires
 	staticFiles = true           # cache images, css, js, fonts, media and documents
+	brotli = true                # brotli compress html, css, js, json, svg... for clients that accept it
+	brotliMinSize = "1KB"        # smaller responses aren't compressed
 	allowedCookies = ["site_lang_id"]  # Set-Cookie headers allowed through the cache
 
 	# Requests not to cache. match is a path prefix, or with regex = true,
@@ -107,9 +111,11 @@ Honey refuses to start if the config has settings it doesn't support.  See [`con
 	- [ ] Redis
 	- [ ] BoltDB
 
-	- [ ] Brotli compress if requester supports it
-	- [ ] Implement it
+	- [x] Brotli compress if requester supports it
+	- [x] Implement it
 	- [ ] Make this configurable (whether to do it, site wide and per route)
+		- [x] Site wide
+		- [ ] Per route
 
 - [ ] Implement [offline cache](https://developers.google.com/web/fundamentals/instant-and-offline/offline-cookbook/)
 	- [ ] Implement it

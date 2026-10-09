@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -74,4 +75,26 @@ func TestHandlerCanSkipStaticFiles(t *testing.T) {
 	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
+}
+
+func TestHandlerBrotliSetting(t *testing.T) {
+	page := strings.Repeat("<p>Some compressible page content.</p>\n", 200)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, page)
+	}))
+	defer origin.Close()
+
+	for setting, expected := range map[string]string{"": "br", "brotli = false": ""} {
+		cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[cache]\n" + setting + "\n")
+		require.NoError(t, err)
+		proxy := httptest.NewServer(newHandler(cfg))
+		req, _ := http.NewRequest(http.MethodGet, proxy.URL+"/page", nil)
+		req.Header.Set("Accept-Encoding", "br")
+		resp, err := (&http.Transport{}).RoundTrip(req)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, expected, resp.Header.Get("Content-Encoding"), setting)
+		proxy.Close()
+	}
 }

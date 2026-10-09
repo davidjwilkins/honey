@@ -59,10 +59,9 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 		responded = true
 	}
 	if responded {
-		for key, values := range resp.Header() {
-			for _, value := range values {
-				w.Header().Set(key, value)
-			}
+		header, body := cache.Negotiate(resp, r)
+		for key, values := range header {
+			w.Header()[key] = append([]string(nil), values...)
 		}
 		w.Header().Set("Age", strconv.Itoa(age))
 		if revalidate {
@@ -70,17 +69,18 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 		} else {
 			w.Header().Set("X-Honey-Cache", "HIT")
 		}
-		if isNotModified(r, resp) {
+		if isNotModified(r, header.Get("Etag")) {
 			w.WriteHeader(statusCode)
 			return
 		}
 		if r.Header.Get("Range") != "" && resp.StatusCode() == http.StatusOK {
-			// Handles Range and If-Range, using the Etag set above
-			http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(resp.Body()))
+			// Handles Range and If-Range, using the Etag set above.  The
+			// body is unencoded, as Negotiate doesn't encode range requests.
+			http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(body))
 			return
 		}
 		w.WriteHeader(resp.StatusCode())
-		w.Write(resp.Body())
+		w.Write(body)
 	}
 	return
 }
@@ -202,10 +202,19 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 			}
 		}()
 		// The request was sent to the backend without its conditional
-		// headers; decide from the full response whether this client
-		// should get a 304 (or 412) instead.
+		// headers and Accept-Encoding; decide from the full response which
+		// encoding this client gets, and whether it should get a 304 (or
+		// 412) instead.
 		client := clientRequest(r.Request)
-		if isNotModified(client, response) {
+		header, body := cache.Negotiate(response, client)
+		if encoding := header.Get("Content-Encoding"); encoding != r.Header.Get("Content-Encoding") {
+			for _, key := range []string{"Content-Encoding", "Content-Length", "Etag"} {
+				r.Header.Set(key, header.Get(key))
+			}
+			r.Body = ioutil.NopCloser(bytes.NewReader(body))
+			r.ContentLength = int64(len(body))
+		}
+		if isNotModified(client, header.Get("Etag")) {
 			r.StatusCode = http.StatusNotModified
 			r.Body = ioutil.NopCloser(bytes.NewReader([]byte{}))
 		} else if canRespondWithoutBody(client) {
@@ -235,9 +244,9 @@ func RespondFromSingleflight(hash string, c cache.Cacher, w http.ResponseWriter,
 	return false
 }
 
-func isNotModified(r *http.Request, resp cache.Response) bool {
+func isNotModified(r *http.Request, etag string) bool {
 	return r.Header.Get("If-None-Match") != "" &&
-		r.Header.Get("If-None-Match") == resp.Header().Get("Etag")
+		r.Header.Get("If-None-Match") == etag
 }
 
 // objectSizeLimiter is implemented by Cachers which limit the size of the

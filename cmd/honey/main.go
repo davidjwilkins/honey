@@ -62,6 +62,8 @@ func newHandler(cfg *config.Config) http.Handler {
 		MaxObjectBytes:  cfg.Cache.MaxObjectBytes,
 		DefaultTTL:      cfg.Cache.DefaultTTL,
 		SkipStaticFiles: !cfg.Cache.StaticFiles,
+		DisableBrotli:   !cfg.Cache.Brotli,
+		BrotliMinBytes:  cfg.Cache.BrotliMinBytes,
 	})
 	for _, name := range cfg.Cache.AllowedCookies {
 		cacher.AddAllowedCookie(name)
