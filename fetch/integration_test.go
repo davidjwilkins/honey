@@ -516,3 +516,36 @@ func TestIntegrationVaryOnStrippedHeaderDoesNotHang(t *testing.T) {
 	close(release)
 	wg.Wait()
 }
+
+func TestIntegrationVaryOnCookie(t *testing.T) {
+	o := newOrigin(func(w http.ResponseWriter, r *http.Request, hit int) {
+		language := "en"
+		if cookie, err := r.Cookie("site_lang_id"); err == nil {
+			language = cookie.Value
+		}
+		w.Header().Set("Cache-Control", "max-age=60")
+		w.Header().Set("Vary", "Cookie")
+		io.WriteString(w, "page in "+language)
+	})
+	backend, err := url.Parse(o.URL)
+	require.NoError(t, err)
+	c := cache.NewCacher(cache.Options{})
+	c.AddAllowedCookie("site_lang_id")
+	proxy := httptest.NewServer(Fetch(c, Forwarder(c), backend))
+	t.Cleanup(proxy.Close)
+	t.Cleanup(o.Close)
+
+	_, body := get(t, proxy.URL+"/page", "Cookie", "site_lang_id=fr")
+	assert.Equal(t, "page in fr", body)
+	_, body = get(t, proxy.URL+"/page")
+	assert.Equal(t, "page in en", body, "a visitor without the cookie mustn't get the French page")
+	_, body = get(t, proxy.URL+"/page", "Cookie", "site_lang_id=de; tracking=123")
+	assert.Equal(t, "page in de", body)
+
+	for language, cookie := range map[string]string{"fr": "site_lang_id=fr", "en": "", "de": "tracking=456; site_lang_id=de"} {
+		resp, body := get(t, proxy.URL+"/page", "Cookie", cookie)
+		assert.Equal(t, "page in "+language, body)
+		assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"), "each language should be cached separately (%s)", language)
+	}
+	assert.Equal(t, 3, o.Hits())
+}
