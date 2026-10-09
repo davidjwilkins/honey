@@ -60,7 +60,8 @@ func (suite *FetchTestSuite) TestFetchUncacheableViaHeader() {
 	suite.cacher.On("CanCache", suite.request).Return(true)
 	suite.request.Header.Set("Cache-Control", "no-cache")
 	suite.handler.On("ServeHTTP", suite.writer, mock.AnythingOfType("*http.Request"))
-	Fetch(suite.cacher, suite.handler, suite.backend)(suite.writer, suite.request)
+	suite.request.Header.Set(DefaultSecretHeader, testSecret)
+	FetchWithControl(suite.cacher, suite.handler, suite.backend, Control{Secret: testSecret})(suite.writer, suite.request)
 	suite.Assert().False(flights.InFlight("test-hash"), "the leader's Flight should always be finished")
 	suite.handler.AssertCalled(suite.T(), "ServeHTTP", suite.writer, mock.MatchedBy(func(r *http.Request) bool {
 		return requestHash(suite.cacher, r) == "test-hash"
@@ -70,10 +71,13 @@ func (suite *FetchTestSuite) TestFetchUncacheableViaHeader() {
 func (suite *FetchTestSuite) TestFetchUncacheableOnlyIfCached() {
 	suite.cacher.On("CanCache", suite.request).Return(true)
 	suite.request.Header.Set("Cache-Control", "no-cache,only-if-cached")
-	Fetch(suite.cacher, suite.handler, suite.backend)(suite.writer, suite.request)
+	suite.request.Header.Set(DefaultSecretHeader, testSecret)
+	FetchWithControl(suite.cacher, suite.handler, suite.backend, Control{Secret: testSecret})(suite.writer, suite.request)
 	suite.handler.AssertNotCalled(suite.T(), "ServeHTTP", suite.writer, suite.request)
 	suite.Assert().Equal(http.StatusGatewayTimeout, suite.writer.Code)
 }
+
+const testSecret = "a-long-enough-test-secret"
 
 func newTestValidRequest() *http.Request {
 	url, err := url.Parse("https://www.insomniac.com")

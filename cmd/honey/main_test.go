@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -101,4 +102,38 @@ func TestHandlerBrotliSetting(t *testing.T) {
 		assert.Equal(t, expected, resp.Header.Get("Content-Encoding"), setting)
 		proxy.Close()
 	}
+}
+
+func TestHandlerControl(t *testing.T) {
+	var hits int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, fmt.Sprint(atomic.AddInt32(&hits, 1)))
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[control]\nsecret = \"0123456789abcdef\"\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	do := func(method string, headers ...string) (int, string) {
+		req, _ := http.NewRequest(method, proxy.URL+"/page", nil)
+		for i := 0; i+1 < len(headers); i += 2 {
+			req.Header.Set(headers[i], headers[i+1])
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode, string(body)
+	}
+	_, body := do(http.MethodGet)
+	assert.Equal(t, "1", body)
+	_, body = do(http.MethodGet, "Cache-Control", "no-cache")
+	assert.Equal(t, "1", body, "untrusted no-cache is ignored")
+	status, _ := do("PURGE")
+	assert.Equal(t, http.StatusForbidden, status)
+	status, _ = do("PURGE", "X-Honey-Secret", "0123456789abcdef")
+	assert.Equal(t, http.StatusOK, status)
+	_, body = do(http.MethodGet)
+	assert.Equal(t, "2", body, "the purged page is fetched again")
 }

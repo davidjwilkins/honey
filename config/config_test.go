@@ -136,3 +136,39 @@ func TestParseSize(t *testing.T) {
 		assert.Error(t, err, input)
 	}
 }
+
+func TestParseControl(t *testing.T) {
+	cfg, err := Parse(`
+[backend]
+uri = "https://www.example.com"
+
+[control]
+allowIPs = ["127.0.0.1", "10.0.0.0/8"]
+secret = "0123456789abcdef"
+secretHeader = "X-Purge-Key"
+`)
+	require.NoError(t, err)
+	require.Len(t, cfg.Control.AllowIPs, 2)
+	assert.Equal(t, "127.0.0.1/32", cfg.Control.AllowIPs[0].String())
+	assert.Equal(t, "10.0.0.0/8", cfg.Control.AllowIPs[1].String())
+	assert.Equal(t, "0123456789abcdef", cfg.Control.Secret)
+	assert.Equal(t, "X-Purge-Key", cfg.Control.SecretHeader)
+
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Control.AllowIPs, "nobody is trusted by default")
+	assert.Empty(t, cfg.Control.Secret)
+}
+
+func TestParseControlErrors(t *testing.T) {
+	const backend = "[backend]\nuri = \"https://www.example.com\"\n[control]\n"
+	for name, data := range map[string]string{
+		"bad ip":                backend + "allowIPs = [\"localhost\"]\n",
+		"short secret":          backend + "secret = \"hunter2\"\n",
+		"header without secret": backend + "secretHeader = \"X-Key\"\n",
+		"unknown setting":       backend + "password = \"0123456789abcdef\"\n",
+	} {
+		_, err := Parse(data)
+		assert.Error(t, err, name)
+	}
+}

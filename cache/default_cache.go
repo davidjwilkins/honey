@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -395,6 +396,37 @@ func (c *defaultCacher) Load(hash string, request *http.Request) (Response, bool
 		return nil, false
 	}
 	return r.(Response), true
+}
+
+// Purge removes every cached response for u - every method, and every
+// variant of it (for responses which Vary).  If prefix is true, it removes
+// every cached response whose URL starts with u instead (e.g. everything
+// under https://www.example.com/blog/).  It returns the number of
+// responses removed.
+func (c *defaultCacher) Purge(u *url.URL, prefix bool) int {
+	target := u.String()
+	responses := 0
+	c.store.deleteMatching(func(key string) bool {
+		vary := strings.HasPrefix(key, varyKey(""))
+		key = strings.TrimPrefix(key, varyKey(""))
+		_, keyURL, found := strings.Cut(key, " :: ")
+		if !found {
+			return false
+		}
+		var match bool
+		if prefix {
+			match = strings.HasPrefix(keyURL, target)
+		} else {
+			// Variant keys are the URL followed by "::" and the values of
+			// the headers the response Varies on (see GetVaryHeadersHash)
+			match = keyURL == target || strings.HasPrefix(keyURL, target+"::") || strings.HasPrefix(keyURL, target+" :: ")
+		}
+		if match && !vary {
+			responses++
+		}
+		return match
+	})
+	return responses
 }
 
 // Stats returns the number of entries in the cache, and their approximate

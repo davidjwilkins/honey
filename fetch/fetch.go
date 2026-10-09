@@ -19,11 +19,22 @@ import (
 
 // Fetch will fetch and save responses from the cache, if possible.
 // If not, it will attempt to do a single request from the backend,
-// and multiplex the response to all requesters.
+// and multiplex the response to all requesters.  No requests are trusted
+// to control the cache: see FetchWithControl.
 func Fetch(c cache.Cacher, handler http.Handler, backend *url.URL) http.HandlerFunc {
+	return FetchWithControl(c, handler, backend, Control{})
+}
+
+// FetchWithControl is like Fetch, but requests which control trusts may
+// purge the cache (with the PURGE method), and make it fetch a fresh
+// response (with Cache-Control: no-cache or Pragma: no-cache).
+func FetchWithControl(c cache.Cacher, handler http.Handler, backend *url.URL, control Control) http.HandlerFunc {
 	serve := serveFromCache(c, handler)
 	return func(w http.ResponseWriter, r *http.Request) {
 		SwitchBackend(r, backend)
+		if control.applyControl(c, w, r) {
+			return
+		}
 		serve(w, r)
 	}
 }

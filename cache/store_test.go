@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -120,4 +121,57 @@ func TestStandardizeFillsInDefaults(t *testing.T) {
 
 	r = standardized(c, `public, no-cache="set-cookie", max-age=10`, "test")
 	assert.Equal(t, "public, max-age=10", r.Header().Get("Cache-Control"))
+}
+
+func TestPurge(t *testing.T) {
+	c := NewCacher(Options{})
+	cacheURL := func(method, u string, vary string, cookie string) *http.Request {
+		request := newValidRequest(u)
+		request.Method = method
+		if cookie != "" {
+			request.Header.Set("Accept-Language", cookie)
+		}
+		response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(bytes.NewBufferString("body")), Request: request}
+		if vary != "" {
+			response.Header.Set("Vary", vary)
+		}
+		c.Cache(c.Hash(request), c.Standardize(response))
+		return request
+	}
+	cached := func(request *http.Request) bool {
+		_, found := c.Load(c.Hash(request), request)
+		return found
+	}
+	page := cacheURL(http.MethodGet, "https://www.example.com/page", "", "")
+	pageHead := cacheURL(http.MethodHead, "https://www.example.com/page", "", "")
+	page2 := cacheURL(http.MethodGet, "https://www.example.com/page2", "", "")
+	query := cacheURL(http.MethodGet, "https://www.example.com/page?p=1", "", "")
+	english := cacheURL(http.MethodGet, "https://www.example.com/lang", "Accept-Language", "en")
+	french := cacheURL(http.MethodGet, "https://www.example.com/lang", "Accept-Language", "fr")
+	blogA := cacheURL(http.MethodGet, "https://www.example.com/blog/a", "", "")
+	blogB := cacheURL(http.MethodGet, "https://www.example.com/blog/b?x=1", "", "")
+
+	u, _ := url.Parse("https://www.example.com/page")
+	assert.Equal(t, 2, c.Purge(u, false), "GET and HEAD")
+	assert.False(t, cached(page))
+	assert.False(t, cached(pageHead))
+	assert.True(t, cached(page2), "purging /page mustn't purge /page2")
+	assert.True(t, cached(query), "purging /page mustn't purge /page?p=1")
+
+	u, _ = url.Parse("https://www.example.com/lang")
+	assert.Equal(t, 2, c.Purge(u, false), "every variant")
+	assert.False(t, cached(english))
+	assert.False(t, cached(french))
+
+	u, _ = url.Parse("https://www.example.com/blog/")
+	assert.Equal(t, 2, c.Purge(u, true))
+	assert.False(t, cached(blogA))
+	assert.False(t, cached(blogB))
+	assert.True(t, cached(page2))
+
+	u, _ = url.Parse("https://www.example.com/")
+	assert.Equal(t, 2, c.Purge(u, true))
+	entries, size := c.Stats()
+	assert.Equal(t, 0, entries, "purging everything should leave nothing, Vary records included")
+	assert.Equal(t, int64(0), size)
 }

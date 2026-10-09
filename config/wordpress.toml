@@ -26,6 +26,14 @@ match = "(?:[?&]preview=true(?:&|$)|/(?:feed|wp-admin|wp-login))"
 regex = true
 cache = false
 
+# Who may purge the cache (curl -X PURGE ...) and refresh it with
+# Cache-Control: no-cache.  Nobody is trusted unless listed here.  If Honey
+# is behind another proxy on this host, don't allow 127.0.0.1 - every
+# request would come from it - use the secret instead.
+[control]
+allowIPs = []
+# secret = "a long random string"    # sent in the X-Honey-Secret header
+
 # ----------------------------------------------------------------------
 # Planned settings (not implemented yet - Honey will refuse to start if
 # these are uncommented):
@@ -38,11 +46,3 @@ cache = false
 #     expires = "inherit|+7 days"  # inherit|(+/-)# (seconds|minutes|hours|days|months|years)
 #     public = "inherit|public"    # set Cache-Control: public unless it gets private
 #     lastModified = "+0 seconds"  # set Last-Modified to current time
-#
-# [default.must-revalidate]
-#     default = false                    # don't let people clear the cache by default
-#     [[default.must-revalidate.allow]]  # allow them to if they:
-#     ips = ["127.0.0.1"]                # are coming from one of these IP addresses
-#     [[default.must-revalidate.allow]]  # or if they:
-#     header = "X-Honey-Cache"
-#     value  = "change-me"               # have this X-Honey-Cache header
