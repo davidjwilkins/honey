@@ -30,6 +30,10 @@ type Config struct {
 	// MetricsListen is the address to serve metrics on, e.g.
 	// "127.0.0.1:9090", or "" not to serve them
 	MetricsListen string
+	// AccessLog is whether to log each request to stdout, in
+	// AccessLogFormat ("text" or "json")
+	AccessLog       bool
+	AccessLogFormat string
 	// Backend is the server which requests are proxied to
 	Backend *url.URL
 	// BackendTimeout is how long to wait for the backend to start
@@ -90,6 +94,10 @@ type file struct {
 	Metrics struct {
 		Listen string `toml:"listen"`
 	} `toml:"metrics"`
+	Log struct {
+		Access bool   `toml:"access"`
+		Format string `toml:"format"`
+	} `toml:"log"`
 	Backend struct {
 		URI     string `toml:"uri"`
 		Timeout string `toml:"timeout"`
@@ -147,7 +155,14 @@ func Parse(data string) (*Config, error) {
 		return nil, fmt.Errorf("unsupported settings: %s", strings.Join(keys, ", "))
 	}
 
-	cfg := &Config{Listen: f.Listen, MetricsListen: f.Metrics.Listen}
+	cfg := &Config{Listen: f.Listen, MetricsListen: f.Metrics.Listen, AccessLog: f.Log.Access, AccessLogFormat: f.Log.Format}
+	switch cfg.AccessLogFormat {
+	case "":
+		cfg.AccessLogFormat = "text"
+	case "text", "json":
+	default:
+		return nil, fmt.Errorf("log.format must be \"text\" or \"json\"")
+	}
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen
 	}

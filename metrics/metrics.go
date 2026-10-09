@@ -3,16 +3,15 @@
 package metrics
 
 import (
-	"bufio"
-	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/davidjwilkins/honey/internal/capture"
 )
 
 // cacheResults maps the X-Honey-Cache header to the "cache" label of
@@ -68,72 +67,17 @@ func statusClass(statusCode int) string {
 // it (its X-Honey-Cache header) and its status.
 func (m *Recorder) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rw := &responseWriter{ResponseWriter: w}
+		rw := capture.NewWriter(w)
 		next.ServeHTTP(rw, r)
-		if !rw.wroteHeader {
-			// net/http sends a 200 if nothing was written
-			rw.record(http.StatusOK)
-		}
-		result, found := cacheResults[rw.cache]
+		result, found := cacheResults[rw.Cache()]
 		if !found {
 			result = "none"
 		}
 		m.mu.Lock()
 		m.requests[result]++
-		m.responses[statusClass(rw.status)]++
+		m.responses[statusClass(rw.Status())]++
 		m.mu.Unlock()
 	})
-}
-
-type responseWriter struct {
-	http.ResponseWriter
-	wroteHeader bool
-	status      int
-	cache       string
-}
-
-func (w *responseWriter) record(status int) {
-	w.wroteHeader = true
-	w.status = status
-	w.cache = w.Header().Get("X-Honey-Cache")
-}
-
-func (w *responseWriter) WriteHeader(status int) {
-	if !w.wroteHeader {
-		w.record(status)
-	}
-	w.ResponseWriter.WriteHeader(status)
-}
-
-func (w *responseWriter) Write(b []byte) (int, error) {
-	if !w.wroteHeader {
-		w.record(http.StatusOK)
-	}
-	return w.ResponseWriter.Write(b)
-}
-
-// Flush lets streamed responses (e.g. large files) be flushed through
-func (w *responseWriter) Flush() {
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
-// Hijack lets the proxy take over the connection, e.g. for websockets
-func (w *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	h, ok := w.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, errors.New("metrics: the ResponseWriter can't be hijacked")
-	}
-	if !w.wroteHeader {
-		w.record(http.StatusSwitchingProtocols)
-	}
-	return h.Hijack()
-}
-
-// Unwrap lets http.ResponseController reach the underlying ResponseWriter
-func (w *responseWriter) Unwrap() http.ResponseWriter {
-	return w.ResponseWriter
 }
 
 // Transport counts the requests sent to the backend through next, by

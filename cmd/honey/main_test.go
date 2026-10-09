@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -225,4 +227,38 @@ func TestHandlerQueryParams(t *testing.T) {
 		resp.Body.Close()
 	}
 	assert.Equal(t, []string{"/page?p=1"}, seen)
+}
+
+func TestHandlerAccessLog(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "hello")
+	}))
+	defer origin.Close()
+	var out bytes.Buffer
+	accessLogOutput = &out
+	defer func() { accessLogOutput = os.Stdout }()
+
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	resp, err := http.Get(proxy.URL + "/page")
+	require.NoError(t, err)
+	resp.Body.Close()
+	proxy.Close()
+	assert.Empty(t, out.String(), "access logging is off unless configured")
+
+	cfg, err = config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[log]\naccess = true\nformat = \"json\"\n")
+	require.NoError(t, err)
+	proxy = httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+	for i := 0; i < 2; i++ {
+		resp, err := http.Get(proxy.URL + "/page?p=1")
+		require.NoError(t, err)
+		resp.Body.Close()
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	require.Len(t, lines, 2)
+	assert.Contains(t, lines[0], `"uri":"/page?p=1"`)
+	assert.Contains(t, lines[0], `"cache":"MISS"`)
+	assert.Contains(t, lines[1], `"cache":"HIT"`)
 }

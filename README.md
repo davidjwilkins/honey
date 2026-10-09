@@ -1,5 +1,7 @@
 # honey
 
+[![CI](https://github.com/davidjwilkins/honey/actions/workflows/ci.yml/badge.svg)](https://github.com/davidjwilkins/honey/actions/workflows/ci.yml)
+
 Honey is an http cache and proxy.
 
 In the event of a cache miss, It multiplexes requests to the same URL into a single request, and once the response has been received, writes it to all requesters, and adds it to the cache.
@@ -56,6 +58,12 @@ All the available settings:
 	[[route]]
 	match = "/wp-admin"
 	cache = false
+
+	# Log each request to stdout: method, uri, status, bytes, duration_ms,
+	# cache (the X-Honey-Cache result), remote and forwarded_for.
+	[log]
+	access = true                # off by default
+	format = "text"              # text|json
 
 	# Serve Prometheus metrics at http://127.0.0.1:9090/metrics (off unless set).
 	# Use a separate, private address: they shouldn't be public.
