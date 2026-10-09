@@ -36,11 +36,14 @@ All the available settings:
 
 	[backend]
 	uri = "https://www.example.com"
+	timeout = "30s"              # how long to wait for the backend to start responding ("0" for no limit)
 
 	[cache]
 	maxSize = "256MB"            # memory for cached responses (KB, MB, GB)
 	maxObjectSize = "10MB"       # larger responses are streamed to the client, not cached
 	defaultTTL = "5m"            # freshness for responses without max-age, s-maxage or Expires
+	staleIfError = "1h"          # serve expired responses this long if the backend errors or times out
+	                             # (unless they have their own stale-if-error; off by default)
 	staticFiles = true           # cache images, css, js, fonts, media and documents
 	brotli = true                # brotli compress html, css, js, json, svg... for clients that accept it
 	gzip = true                  # gzip them for clients that accept gzip but not brotli

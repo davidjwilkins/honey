@@ -19,15 +19,22 @@ import (
 // DefaultListen is the address Honey listens on if none is configured.
 const DefaultListen = ":8080"
 
+// DefaultBackendTimeout is how long Honey waits for the backend to start
+// responding, if no backend.timeout is configured.
+const DefaultBackendTimeout = 30 * time.Second
+
 // Config is a validated Honey configuration.
 type Config struct {
 	// Listen is the address to listen on, e.g. ":8080"
 	Listen string
 	// Backend is the server which requests are proxied to
 	Backend *url.URL
-	Cache   Cache
-	Routes  []Route
-	Control Control
+	// BackendTimeout is how long to wait for the backend to start
+	// responding.  Zero means no limit.
+	BackendTimeout time.Duration
+	Cache          Cache
+	Routes         []Route
+	Control        Control
 }
 
 // Control says which requests are trusted to purge the cache and to make
@@ -48,6 +55,9 @@ type Cache struct {
 	MaxBytes       int64
 	MaxObjectBytes int64
 	DefaultTTL     time.Duration
+	// StaleIfError is how long responses may be served stale if the
+	// backend errors, unless they say otherwise
+	StaleIfError   time.Duration
 	AllowedCookies []string
 	// StaticFiles is whether static files (images, css, js...) are cached
 	StaticFiles bool
@@ -72,12 +82,14 @@ type Route struct {
 type file struct {
 	Listen  string `toml:"listen"`
 	Backend struct {
-		URI string `toml:"uri"`
+		URI     string `toml:"uri"`
+		Timeout string `toml:"timeout"`
 	} `toml:"backend"`
 	Cache struct {
 		MaxSize         string   `toml:"maxSize"`
 		MaxObjectSize   string   `toml:"maxObjectSize"`
 		DefaultTTL      string   `toml:"defaultTTL"`
+		StaleIfError    string   `toml:"staleIfError"`
 		AllowedCookies  []string `toml:"allowedCookies"`
 		StaticFiles     *bool    `toml:"staticFiles"`
 		Brotli          *bool    `toml:"brotli"`
@@ -141,6 +153,19 @@ func Parse(data string) (*Config, error) {
 		return nil, fmt.Errorf("backend.uri must be an http or https URL, e.g. https://www.example.com")
 	}
 
+	cfg.BackendTimeout = DefaultBackendTimeout
+	if f.Backend.Timeout != "" {
+		cfg.BackendTimeout, err = time.ParseDuration(f.Backend.Timeout)
+		if err != nil || cfg.BackendTimeout < 0 || (cfg.BackendTimeout > 0 && cfg.BackendTimeout < time.Second) {
+			return nil, fmt.Errorf("backend.timeout must be a duration of at least 1s (or \"0\" for no limit), e.g. \"30s\"")
+		}
+	}
+	if f.Cache.StaleIfError != "" {
+		cfg.Cache.StaleIfError, err = time.ParseDuration(f.Cache.StaleIfError)
+		if err != nil || cfg.Cache.StaleIfError < time.Second {
+			return nil, fmt.Errorf("cache.staleIfError must be a duration of at least 1s, e.g. \"1h\"")
+		}
+	}
 	if f.Cache.MaxSize != "" {
 		cfg.Cache.MaxBytes, err = parseSize(f.Cache.MaxSize)
 		if err != nil {

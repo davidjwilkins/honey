@@ -61,6 +61,7 @@ func newHandler(cfg *config.Config) http.Handler {
 		MaxBytes:         cfg.Cache.MaxBytes,
 		MaxObjectBytes:   cfg.Cache.MaxObjectBytes,
 		DefaultTTL:       cfg.Cache.DefaultTTL,
+		StaleIfError:     cfg.Cache.StaleIfError,
 		SkipStaticFiles:  !cfg.Cache.StaticFiles,
 		DisableBrotli:    !cfg.Cache.Brotli,
 		DisableGzip:      !cfg.Cache.Gzip,
@@ -81,5 +82,7 @@ func newHandler(cfg *config.Config) http.Handler {
 		Secret:       cfg.Control.Secret,
 		SecretHeader: cfg.Control.SecretHeader,
 	}
-	return fetch.FetchWithControl(cacher, fetch.Forwarder(cacher), cfg.Backend, control)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = cfg.BackendTimeout
+	return fetch.FetchWithControl(cacher, fetch.NewForwarder(cacher, transport), cfg.Backend, control)
 }

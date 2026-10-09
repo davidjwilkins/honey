@@ -172,3 +172,29 @@ func TestParseControlErrors(t *testing.T) {
 		assert.Error(t, err, name)
 	}
 }
+
+func TestParseTimeouts(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, DefaultBackendTimeout, cfg.BackendTimeout)
+	assert.Zero(t, cfg.Cache.StaleIfError, "serving stale content is off unless configured")
+
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\ntimeout = \"5s\"\n[cache]\nstaleIfError = \"1h\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, 5*time.Second, cfg.BackendTimeout)
+	assert.Equal(t, time.Hour, cfg.Cache.StaleIfError)
+
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\ntimeout = \"0\"\n")
+	require.NoError(t, err)
+	assert.Zero(t, cfg.BackendTimeout, "0 means no limit")
+
+	for _, data := range []string{
+		"[backend]\nuri = \"https://www.example.com\"\ntimeout = \"5\"\n",
+		"[backend]\nuri = \"https://www.example.com\"\ntimeout = \"10ms\"\n",
+		"[backend]\nuri = \"https://www.example.com\"\ntimeout = \"-1s\"\n",
+		"[backend]\nuri = \"https://www.example.com\"\n[cache]\nstaleIfError = \"forever\"\n",
+	} {
+		_, err := Parse(data)
+		assert.Error(t, err, data)
+	}
+}

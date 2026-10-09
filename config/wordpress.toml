@@ -7,11 +7,13 @@ listen = ":8080"
 
 [backend]
 uri = "https://www.insomniac.com"
+timeout = "30s"             # how long to wait for WordPress to start responding
 
 [cache]
 maxSize = "256MB"           # memory for cached responses; least recently used are evicted
 maxObjectSize = "10MB"      # larger responses are streamed to the client, not cached
 defaultTTL = "5m"           # freshness for responses without max-age, s-maxage or Expires
+staleIfError = "1h"         # if WordPress errors or times out, serve expired pages this long
 staticFiles = true          # cache images, css, js, fonts, media and documents
 brotli = true               # brotli compress html, css, js, json, svg... for clients that accept it
 gzip = true                 # gzip them for clients that accept gzip but not brotli

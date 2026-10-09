@@ -305,9 +305,20 @@ func clientRequest(r *http.Request) *http.Request {
 // Forwarder returns a new forward.Forwarder which saves responses
 // into cache.Cacher c.  It panics if it cannot create the forwarder.
 func Forwarder(c cache.Cacher) http.Handler {
+	return NewForwarder(c, nil)
+}
+
+// NewForwarder is like Forwarder, but sends requests to the backend with
+// transport (or http.DefaultTransport, if transport is nil) - e.g. to set
+// timeouts.
+func NewForwarder(c cache.Cacher, transport http.RoundTripper) http.Handler {
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
 	forwarder, err := forward.New(
 		forward.ResponseModifier(FlushSingleflight(c, nil)),
 		forward.ErrorHandler(backendErrorHandler{c}),
+		forward.RoundTripper(transport),
 	)
 	if err != nil {
 		panic(err)
