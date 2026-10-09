@@ -325,7 +325,10 @@ func (c *defaultCacher) Cache(hash string, r Response) {
 	} else {
 		c.store.delete(varyKey(base))
 	}
-	key := base + utilities.GetVaryHeadersHash(r.RequestHeaders(), r, c.allowedCookieNames, vary)
+	// Key on the cookies of the request the response was fetched for (as
+	// Hash does), not the cookies the response sets.
+	fetchedFor := &http.Request{Header: r.RequestHeaders()}
+	key := base + utilities.GetVaryHeadersHash(fetchedFor.Header, fetchedFor, c.allowedCookieNames, vary)
 	if int64(len(r.Body())) > c.maxObjectBytes {
 		c.store.delete(key)
 		return
