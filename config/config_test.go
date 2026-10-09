@@ -37,7 +37,8 @@ uri = "http://localhost:8081"
 	assert.Zero(t, cfg.Cache.MaxObjectBytes)
 	assert.True(t, cfg.Cache.StaticFiles, "static files should be cached by default")
 	assert.True(t, cfg.Cache.Brotli, "brotli should be on by default")
-	assert.Zero(t, cfg.Cache.BrotliMinBytes)
+	assert.True(t, cfg.Cache.Gzip, "gzip should be on by default")
+	assert.Zero(t, cfg.Cache.CompressMinBytes)
 }
 
 func TestParseBrotli(t *testing.T) {
@@ -47,11 +48,13 @@ uri = "https://www.example.com"
 
 [cache]
 brotli = false
-brotliMinSize = "4KB"
+gzip = false
+compressMinSize = "4KB"
 `)
 	require.NoError(t, err)
 	assert.False(t, cfg.Cache.Brotli)
-	assert.Equal(t, int64(4<<10), cfg.Cache.BrotliMinBytes)
+	assert.False(t, cfg.Cache.Gzip)
+	assert.Equal(t, int64(4<<10), cfg.Cache.CompressMinBytes)
 }
 
 func TestParseStaticFilesAndObjectSize(t *testing.T) {
@@ -101,7 +104,9 @@ func TestParseErrors(t *testing.T) {
 		"object over max":     backend + "[cache]\nmaxSize = \"1MB\"\nmaxObjectSize = \"2MB\"\n",
 		"bad staticFiles":     backend + "[cache]\nstaticFiles = \"yes\"\n",
 		"bad brotli":          backend + "[cache]\nbrotli = \"yes\"\n",
-		"bad brotliMinSize":   backend + "[cache]\nbrotliMinSize = \"small\"\n",
+		"bad gzip":            backend + "[cache]\ngzip = \"yes\"\n",
+		"old brotliMinSize":   backend + "[cache]\nbrotliMinSize = \"1KB\"\n",
+		"bad compressMinSize": backend + "[cache]\ncompressMinSize = \"small\"\n",
 		"bad ttl":             backend + "[cache]\ndefaultTTL = \"5\"\n",
 		"route without cache": backend + "[[route]]\nmatch = \"/a\"\n",
 		"route caching":       backend + "[[route]]\nmatch = \"/a\"\ncache = true\n",

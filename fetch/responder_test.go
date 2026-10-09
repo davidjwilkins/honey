@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/singleflight"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 )
@@ -90,42 +91,12 @@ func (t *testResponse) Cookie(name string) (*http.Cookie, error) {
 	return args.Get(0).(*http.Cookie), args.Error(1)
 }
 
-type testSingleflight struct {
-	mock.Mock
-}
-
-func (t *testSingleflight) AddWriter(w http.ResponseWriter, r *http.Request) {
-	t.Called(w, r)
-}
-
-func (t *testSingleflight) Write(r cache.Response) bool {
-	args := t.Called(r)
-	return args.Bool(0)
-}
-
-func (t *testSingleflight) Cacheable() (bool, error) {
-	args := t.Called()
-	return args.Bool(0), args.Error(1)
-}
-func (t *testSingleflight) Wait() {
-	t.Called()
-}
-
-func (t *testSingleflight) Abort(statusCode int) {
-	t.Called(statusCode)
-}
-
-func (t *testSingleflight) Bypass(handler http.Handler) {
-	t.Called(handler)
-}
-
 type ResponderTestSuite struct {
 	suite.Suite
 	cacher       *testCacher
 	response     *testResponse
 	request      *http.Request
 	writer       *httptest.ResponseRecorder
-	singleflight *testSingleflight
 	httpResponse *http.Response
 }
 
@@ -155,11 +126,6 @@ func (suite *ResponderTestSuite) SetupTest() {
 	suite.cacher.On("Hash", suite.request).Return("test-hash")
 	suite.response.On("Body").Return([]byte("Test Response"))
 	suite.writer = httptest.NewRecorder()
-	suite.singleflight = &testSingleflight{}
-	suite.singleflight.On("Lock")
-	suite.singleflight.On("Unlock")
-	suite.singleflight.On("Done")
-	suite.singleflight.On("Wait")
 	suite.response.On("Header").Return(suite.writer.Header())
 	suite.response.Header().Set("Cache-Control", "max-age=60")
 	suite.httpResponse = newResponse()
@@ -296,78 +262,67 @@ func (suite *ResponderTestSuite) TestRespondFromCacheCopiesStatusCode() {
 	suite.Assert().Equal(http.StatusVariantAlsoNegotiates, suite.writer.Code, "RespondFromCache should copy status code from remote to response")
 }
 
+// leadFlight makes suite.httpResponse the response to a request which
+// leads a Flight, as it would be when it reaches FlushSingleflight
+func (suite *ResponderTestSuite) leadFlight() *singleflight.Flight {
+	f, leader := flights.Join("test-hash")
+	suite.Require().True(leader)
+	suite.T().Cleanup(func() { flights.Finish("test-hash", f, singleflight.Result{Retry: true}) })
+	suite.httpResponse.Request = forBackend(suite.request, "test-hash", f)
+	return f
+}
+
 func (suite *ResponderTestSuite) TestFlushSingleflightMiss() {
-	singleflights.Store("test-hash", suite.singleflight)
-	defer singleflights.Delete("test-hash")
-	suite.httpResponse.Request = suite.request
+	f := suite.leadFlight()
 	suite.cacher.On("Standardize", suite.httpResponse).Return(suite.response)
 	suite.cacher.On("Cache", "test-hash", suite.response)
-	suite.singleflight.On("Write", suite.response).Return(true)
-	suite.singleflight.On("Delete", "test-hash")
-	suite.response.On("Validate", suite.request).Return(false, 0)
+	suite.response.On("Validate", mock.Anything).Return(false, 0)
 	suite.response.On("StatusCode").Return(http.StatusOK)
 	var done = make(chan bool)
 	FlushSingleflight(suite.cacher, done)(suite.httpResponse)
 	<-done
 	suite.Assert().Equal("MISS", suite.httpResponse.Header.Get("X-Honey-Cache"))
-	suite.Assert().Equal(true, suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response))
-	suite.Assert().Equal(true, suite.singleflight.AssertCalled(suite.T(), "Write", suite.response))
+	suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response)
+	<-f.Done()
+	suite.Assert().Equal(singleflight.Result{Response: suite.response}, f.Result(), "the response should be shared with waiting requests")
+	suite.Assert().False(flights.InFlight("test-hash"))
 	suite.Assert().Equal(http.StatusOK, suite.httpResponse.StatusCode)
 }
 
 func (suite *ResponderTestSuite) TestFlushSingleflightMissButValidates() {
-	singleflights.Store("test-hash", suite.singleflight)
-	defer singleflights.Delete("test-hash")
-	suite.httpResponse.Request = suite.request
+	suite.request.Header.Set("Cache-Control", "must-revalidate")
+	f := suite.leadFlight()
 	suite.cacher.On("Standardize", suite.httpResponse).Return(suite.response)
 	suite.cacher.On("Cache", "test-hash", suite.response)
-	suite.singleflight.On("Write", suite.response).Return(true)
-	suite.singleflight.On("Delete", "test-hash")
-	suite.response.On("Validate", suite.request).Return(true, http.StatusNotModified)
-	var done = make(chan bool)
-	suite.httpResponse.Request.Header.Set("Cache-Control", "must-revalidate")
+	suite.response.On("Validate", mock.Anything).Return(true, http.StatusNotModified)
 	suite.response.On("StatusCode").Return(http.StatusOK)
+	var done = make(chan bool)
 	FlushSingleflight(suite.cacher, done)(suite.httpResponse)
 	<-done
 	suite.Assert().Equal("MISS", suite.httpResponse.Header.Get("X-Honey-Cache"))
-	suite.Assert().Equal(true, suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response))
-	suite.Assert().Equal(true, suite.singleflight.AssertCalled(suite.T(), "Write", suite.response))
+	suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response)
+	<-f.Done()
 	suite.Assert().Equal(http.StatusNotModified, suite.httpResponse.StatusCode)
 }
 
 func (suite *ResponderTestSuite) TestFlushSingleflightHit() {
-	singleflights.Store("test-hash", suite.singleflight)
-	defer singleflights.Delete("test-hash")
-	suite.httpResponse.Request = suite.request
 	suite.request.Header.Set("If-None-Match", `"abc123"`)
 	suite.response.Header().Set("Etag", `"abc123"`)
+	f := suite.leadFlight()
 	suite.cacher.On("Standardize", suite.httpResponse).Return(suite.response)
 	suite.cacher.On("Cache", "test-hash", suite.response)
-	suite.singleflight.On("Write", suite.response).Return(true)
-	suite.singleflight.On("Delete", "test-hash")
 	suite.response.On("StatusCode").Return(http.StatusOK)
 	var done = make(chan bool)
 	FlushSingleflight(suite.cacher, done)(suite.httpResponse)
 	<-done
 	suite.Assert().Equal("MISS", suite.httpResponse.Header.Get("X-Honey-Cache"))
-	suite.Assert().Equal(true, suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response))
-	suite.Assert().Equal(true, suite.singleflight.AssertCalled(suite.T(), "Write", suite.response))
+	suite.cacher.AssertCalled(suite.T(), "Cache", "test-hash", suite.response)
+	<-f.Done()
 	suite.Assert().Equal(http.StatusNotModified, suite.httpResponse.StatusCode)
 }
 
-func noopHandler(w http.ResponseWriter, r *http.Request) {
-
-}
-
-func (suite *ResponderTestSuite) TestRespondFromSingleflightInitialRequest() {
-	found := RespondFromSingleflight("test-hash", suite.cacher, suite.writer, suite.request, noopHandler)
-	suite.Assert().False(found, "Respond from singleflight should return false on first request")
-}
-
-func (suite *ResponderTestSuite) TestRespondFromSingleflightMultiplexedRequests() {
-	suite.singleflight.On("AddWriter", suite.writer, suite.request)
-	suite.singleflight.On("Wait")
-	singleflights.Store("test-hash", suite.singleflight)
-	found := RespondFromSingleflight("test-hash", suite.cacher, suite.writer, suite.request, noopHandler)
-	suite.Assert().True(found, "Respond from singleflight should return true on second request")
+func (suite *ResponderTestSuite) TestFlushSingleflightIgnoresRequestsWithoutFlight() {
+	suite.httpResponse.Request = suite.request
+	suite.Assert().NoError(FlushSingleflight(suite.cacher, nil)(suite.httpResponse))
+	suite.cacher.AssertNotCalled(suite.T(), "Standardize", suite.httpResponse)
 }

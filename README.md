@@ -12,7 +12,7 @@ It will set an Etag on responses, and respond with an HTTP 304 Not Modified in t
 
 Static files (images, css, js, fonts, media, documents) are cached like any other response.  Responses larger than a configurable size (10MB by default) are streamed straight to the client instead of being cached.  Range requests (e.g. seeking in a video) are served from the cache if the file is cached, and otherwise sent to the backend.
 
-Compressible responses (html, css, js, json, svg...) are served brotli compressed to clients which accept it, and unencoded to those which don't, from the same cache entry.  They're compressed quickly (quality 6) when first cached, so that the first requester isn't kept waiting, and then recompressed at maximum quality (11) in the background.  Responses with `Cache-Control: no-transform` aren't compressed.  The backend is asked for gzip (which Honey decodes) rather than the client's `Accept-Encoding`, so that the cache holds the unencoded response.
+Compressible responses (html, css, js, json, svg...) are served brotli compressed to clients which accept it, gzip compressed to clients which only accept gzip, and unencoded to the rest, all from the same cache entry (the client's `Accept-Encoding` q-values decide between them).  The brotli copy is made quickly (quality 6) when a response is first cached, so that the first requester isn't kept waiting, and then remade at maximum quality (11) in the background.  Responses with `Cache-Control: no-transform` aren't compressed.  The backend is asked for gzip (which Honey decodes) rather than the client's `Accept-Encoding`, so that the cache holds the unencoded response.
 
 If will not cache responses that contain the `no-store` Cache-Control directive
 
@@ -43,7 +43,8 @@ All the available settings:
 	defaultTTL = "5m"            # freshness for responses without max-age, s-maxage or Expires
 	staticFiles = true           # cache images, css, js, fonts, media and documents
 	brotli = true                # brotli compress html, css, js, json, svg... for clients that accept it
-	brotliMinSize = "1KB"        # smaller responses aren't compressed
+	gzip = true                  # gzip them for clients that accept gzip but not brotli
+	compressMinSize = "1KB"      # smaller responses aren't compressed
 	allowedCookies = ["site_lang_id"]  # Set-Cookie headers allowed through the cache
 
 	# Requests not to cache. match is a path prefix, or with regex = true,

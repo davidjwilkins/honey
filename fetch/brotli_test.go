@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/davidjwilkins/honey/cache"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,6 +45,15 @@ func getRaw(t *testing.T, u string, headers ...string) (*http.Response, []byte) 
 func decodeBrotli(t *testing.T, body []byte) string {
 	t.Helper()
 	decoded, err := io.ReadAll(brotli.NewReader(strings.NewReader(string(body))))
+	require.NoError(t, err)
+	return string(decoded)
+}
+
+func decodeGzip(t *testing.T, body []byte) string {
+	t.Helper()
+	r, err := gzip.NewReader(strings.NewReader(string(body)))
+	require.NoError(t, err)
+	decoded, err := io.ReadAll(r)
 	require.NoError(t, err)
 	return string(decoded)
 }
@@ -86,9 +96,16 @@ func TestBrotliServedToClientsWhichAcceptIt(t *testing.T) {
 
 	resp, body = getRaw(t, proxy.URL+"/page", "Accept-Encoding", "gzip")
 	assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"), "clients which don't accept brotli share the same cache entry")
+	assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
+	assert.Equal(t, page, decodeGzip(t, body))
+	gzipEtag := resp.Header.Get("Etag")
+	assert.True(t, strings.HasSuffix(gzipEtag, `-gzip"`), gzipEtag)
+
+	resp, body = getRaw(t, proxy.URL+"/page", "Accept-Encoding", "identity")
+	assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"))
 	assert.Equal(t, "", resp.Header.Get("Content-Encoding"))
 	assert.Equal(t, page, string(body))
-	assert.NotEqual(t, brEtag, resp.Header.Get("Etag"), "each encoding needs its own Etag")
+	assert.NotContains(t, []string{brEtag, gzipEtag}, resp.Header.Get("Etag"), "each encoding needs its own Etag")
 
 	resp, _ = getRaw(t, proxy.URL+"/page", "Accept-Encoding", "br", "If-None-Match", brEtag)
 	assert.Equal(t, http.StatusNotModified, resp.StatusCode)
@@ -213,4 +230,43 @@ func compressForTest(s string) []byte {
 	io.WriteString(w, s)
 	w.Close()
 	return []byte(b.String())
+}
+
+func TestGzipFallback(t *testing.T) {
+	o := htmlOrigin("text/html", page)
+	proxy := newProxy(t, o)
+
+	resp, body := getRaw(t, proxy.URL+"/page", "Accept-Encoding", "gzip, deflate")
+	assert.Equal(t, "MISS", resp.Header.Get("X-Honey-Cache"))
+	assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"), "the requester which filled the cache should get gzip too")
+	assert.Equal(t, page, decodeGzip(t, body))
+	assert.Contains(t, resp.Header.Values("Vary"), "Accept-Encoding")
+
+	etag := resp.Header.Get("Etag")
+	resp, _ = getRaw(t, proxy.URL+"/page", "Accept-Encoding", "gzip", "If-None-Match", etag)
+	assert.Equal(t, http.StatusNotModified, resp.StatusCode)
+
+	resp, _ = getRaw(t, proxy.URL+"/page", "Accept-Encoding", "br;q=0.5, gzip")
+	assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"), "the client's q-values decide")
+	resp, _ = getRaw(t, proxy.URL+"/page", "Accept-Encoding", "br, gzip")
+	assert.Equal(t, "br", resp.Header.Get("Content-Encoding"), "brotli is preferred when the client has no preference")
+	assert.Equal(t, 1, o.Hits())
+}
+
+func TestGzipWithoutBrotli(t *testing.T) {
+	o := htmlOrigin("text/html", page)
+	proxy := newProxyWith(t, o, cache.Options{DisableBrotli: true})
+
+	resp, body := getRaw(t, proxy.URL+"/page", "Accept-Encoding", "gzip, br")
+	assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"), "with brotli off, gzip is still used")
+	assert.Equal(t, page, decodeGzip(t, body))
+}
+
+func TestCompressionDisabled(t *testing.T) {
+	o := htmlOrigin("text/html", page)
+	proxy := newProxyWith(t, o, cache.Options{DisableBrotli: true, DisableGzip: true})
+
+	resp, body := getRaw(t, proxy.URL+"/page", "Accept-Encoding", "gzip, br")
+	assert.Equal(t, "", resp.Header.Get("Content-Encoding"))
+	assert.Equal(t, page, string(body))
 }

@@ -420,3 +420,99 @@ func TestIntegrationMultiplexedRequestsWithDifferentVaryValues(t *testing.T) {
 	close(release)
 	wg.Wait()
 }
+
+func TestIntegrationConcurrentUnshareableResponses(t *testing.T) {
+	for _, cacheControl := range []string{"private, max-age=60", "no-store"} {
+		t.Run(cacheControl, func(t *testing.T) {
+			release := make(chan struct{})
+			o := newOrigin(func(w http.ResponseWriter, r *http.Request, hit int) {
+				<-release
+				w.Header().Set("Cache-Control", cacheControl)
+				io.WriteString(w, "response "+strconv.Itoa(hit))
+			})
+			proxy := newProxy(t, o)
+
+			var wg sync.WaitGroup
+			bodies := make([]string, 5)
+			for i := range bodies {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					_, bodies[i] = get(t, proxy.URL+"/account")
+				}(i)
+			}
+			time.Sleep(200 * time.Millisecond)
+			close(release)
+			wg.Wait()
+			seen := map[string]bool{}
+			for _, body := range bodies {
+				assert.True(t, strings.HasPrefix(body, "response "), "every requester should get a response, got %q", body)
+				seen[body] = true
+			}
+			assert.Len(t, seen, len(bodies), "a response which can't be shared should be fetched for each requester")
+		})
+	}
+}
+
+func TestIntegrationLeaderDisconnectingDoesNotFailWaiters(t *testing.T) {
+	release := make(chan struct{})
+	o := newOrigin(func(w http.ResponseWriter, r *http.Request, hit int) {
+		if hit == 1 {
+			// the first request hangs until its client gives up
+			<-r.Context().Done()
+			return
+		}
+		<-release
+		w.Header().Set("Cache-Control", "max-age=60")
+		io.WriteString(w, "v"+strconv.Itoa(hit))
+	})
+	proxy := newProxy(t, o)
+
+	go func() {
+		client := &http.Client{Timeout: 300 * time.Millisecond}
+		if resp, err := client.Get(proxy.URL + "/page"); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, body := get(t, proxy.URL+"/page")
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.Equal(t, "v2", body)
+		}()
+	}
+	time.Sleep(400 * time.Millisecond)
+	close(release)
+	wg.Wait()
+}
+
+func TestIntegrationVaryOnStrippedHeaderDoesNotHang(t *testing.T) {
+	// Honey doesn't send If-Modified-Since to the backend, so none of the
+	// waiting requests' values match the request the response was fetched
+	// for.  The old singleflight deadlocked on this.
+	release := make(chan struct{})
+	o := newOrigin(func(w http.ResponseWriter, r *http.Request, hit int) {
+		<-release
+		w.Header().Set("Cache-Control", "max-age=60")
+		w.Header().Set("Vary", "If-Modified-Since")
+		io.WriteString(w, "page")
+	})
+	proxy := newProxy(t, o)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			resp, _ := get(t, proxy.URL+"/page", "If-Modified-Since", time.Date(2020, 1, 1+i%3, 0, 0, 0, 0, time.UTC).Format(http.TimeFormat))
+			assert.Contains(t, []int{http.StatusOK, http.StatusNotModified}, resp.StatusCode)
+		}(i)
+	}
+	time.Sleep(200 * time.Millisecond)
+	close(release)
+	wg.Wait()
+}

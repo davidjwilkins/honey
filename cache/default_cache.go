@@ -47,9 +47,12 @@ type Options struct {
 	// DisableBrotli stops compressible responses (html, css, js, json,
 	// svg...) from being brotli compressed for clients which accept it.
 	DisableBrotli bool
-	// BrotliMinBytes is the smallest response which is brotli compressed.
-	// Defaults to DefaultBrotliMinBytes.
-	BrotliMinBytes int64
+	// DisableGzip stops compressible responses from being gzip compressed
+	// for clients which accept gzip but not brotli.
+	DisableGzip bool
+	// CompressMinBytes is the smallest response which is compressed (with
+	// brotli or gzip).  Defaults to DefaultCompressMinBytes.
+	CompressMinBytes int64
 }
 
 type defaultCacher struct {
@@ -61,7 +64,8 @@ type defaultCacher struct {
 	maxObjectBytes     int64
 	skipStaticFiles    bool
 	brotli             bool
-	brotliMinBytes     int
+	gzip               bool
+	compressMinBytes   int
 	recompressor       *recompressor
 	// store holds both cached responses (keyed by their hash) and the
 	// Vary header last seen for each URL (keyed by varyKey)
@@ -82,8 +86,8 @@ func NewCacher(opts Options) *defaultCacher {
 	if opts.MaxObjectBytes > opts.MaxBytes {
 		opts.MaxObjectBytes = opts.MaxBytes
 	}
-	if opts.BrotliMinBytes <= 0 {
-		opts.BrotliMinBytes = DefaultBrotliMinBytes
+	if opts.CompressMinBytes <= 0 {
+		opts.CompressMinBytes = DefaultCompressMinBytes
 	}
 	return &defaultCacher{
 		allowedCookies:     make(map[string]bool),
@@ -92,7 +96,8 @@ func NewCacher(opts Options) *defaultCacher {
 		maxObjectBytes:     opts.MaxObjectBytes,
 		skipStaticFiles:    opts.SkipStaticFiles,
 		brotli:             !opts.DisableBrotli,
-		brotliMinBytes:     int(opts.BrotliMinBytes),
+		gzip:               !opts.DisableGzip,
+		compressMinBytes:   int(opts.CompressMinBytes),
 		recompressor:       &recompressor{},
 		store:              newStore(opts.MaxBytes),
 	}
@@ -159,15 +164,11 @@ func varyKey(base string) string {
 // Hash creates a unique string for a request.  It includes
 // the method, the url, and the values of any headers (and
 // allowed cookies) listed in the Vary header of the last
-// response for that url.  It also includes the X-Honey-Vary
-// header - which is used internally on multiplexed requests.
+// response for that url.
 func (c *defaultCacher) Hash(r *http.Request) string {
 	hash := baseKey(r)
 	if vary, found := c.store.get(varyKey(hash), time.Now()); found {
 		hash += utilities.GetVaryHeadersHash(r.Header, r, c.allowedCookieNames, vary.(string))
-	}
-	if vary := r.Header.Get("X-Honey-Vary"); vary != "" {
-		hash += vary
 	}
 	return hash
 }
@@ -265,13 +266,19 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 		hasher.Write(resp.body)
 		r.Header.Set("Etag", `"`+base64.StdEncoding.EncodeToString(hasher.Sum(nil))+`"`)
 	}
-	var compressed []byte
-	if c.brotli && shouldCompress(r.StatusCode, r.Header, resp.body, c.brotliMinBytes) {
-		if compressed = compressBrotli(resp.body, fastBrotliQuality); len(compressed) < len(resp.body) {
-			resp.brotli.Store(&compressed)
-			if !headerListContains(r.Header.Values("Vary"), "Accept-Encoding") {
-				r.Header.Add("Vary", "Accept-Encoding")
+	if (c.brotli || c.gzip) && shouldCompress(r.StatusCode, r.Header, resp.body, c.compressMinBytes) {
+		if c.brotli {
+			if compressed := compressBrotli(resp.body, fastBrotliQuality); len(compressed) < len(resp.body) {
+				resp.brotli.Store(&compressed)
 			}
+		}
+		if c.gzip {
+			if compressed := compressGzip(resp.body); len(compressed) < len(resp.body) {
+				resp.gzip = compressed
+			}
+		}
+		if (resp.brotliBody() != nil || resp.gzip != nil) && !headerListContains(r.Header.Values("Vary"), "Accept-Encoding") {
+			r.Header.Add("Vary", "Accept-Encoding")
 		}
 	}
 	resp.headers = r.Header.Clone()
@@ -366,7 +373,7 @@ func responseSize(key string, r Response) int64 {
 	size := len(key) + len(r.Body()) + 256
 	if impl, ok := r.(*responseImpl); ok {
 		// Recompressing in the background only makes this smaller
-		size += len(impl.brotliBody())
+		size += len(impl.brotliBody()) + len(impl.gzip)
 	}
 	for name, values := range r.Header() {
 		for _, value := range values {
