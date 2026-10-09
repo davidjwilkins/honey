@@ -19,6 +19,10 @@ brotli = true               # brotli compress html, css, js, json, svg... for cl
 gzip = true                 # gzip them for clients that accept gzip but not brotli
 compressMinSize = "1KB"     # smaller responses aren't compressed
 allowedCookies = []         # cookies allowed through the cache, e.g. ["site_lang_id"]
+# The only query parameters which matter - others are removed, so that they
+# can't be used to get around the cache.  These are WordPress core's (ver is
+# on css and js); add any your plugins use before uncommenting this.
+# queryParams = ["p", "page_id", "s", "paged", "cat", "tag", "author", "m", "year", "monthnum", "day", "post_type", "cpage", "replytocom", "attachment_id", "ver"]
 
 # Don't cache previews, the RSS feed, or the admin and login pages.
 # regex = true matches against the path and query string; otherwise

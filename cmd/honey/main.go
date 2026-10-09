@@ -118,7 +118,10 @@ func newHandlers(cfg *config.Config) (handler http.Handler, metricsHandler http.
 		recorder = metrics.New(cacher.Stats, maxBytes)
 		transport = recorder.Transport(transport)
 	}
-	handler = fetch.FetchWithControl(cacher, fetch.NewForwarder(cacher, transport), cfg.Backend, control)
+	handler = fetch.FetchWithOptions(cacher, fetch.NewForwarder(cacher, transport), cfg.Backend, fetch.Options{
+		Control:     control,
+		QueryParams: cfg.Cache.QueryParams,
+	})
 	if recorder == nil {
 		return handler, nil
 	}

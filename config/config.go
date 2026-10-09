@@ -62,6 +62,9 @@ type Cache struct {
 	// backend errors, unless they say otherwise
 	StaleIfError   time.Duration
 	AllowedCookies []string
+	// QueryParams, if not nil, are the only query parameters kept on
+	// cacheable requests (see fetch.Options)
+	QueryParams []string
 	// StaticFiles is whether static files (images, css, js...) are cached
 	StaticFiles bool
 	// Brotli and Gzip are whether compressible responses are compressed
@@ -92,15 +95,16 @@ type file struct {
 		Timeout string `toml:"timeout"`
 	} `toml:"backend"`
 	Cache struct {
-		MaxSize         string   `toml:"maxSize"`
-		MaxObjectSize   string   `toml:"maxObjectSize"`
-		DefaultTTL      string   `toml:"defaultTTL"`
-		StaleIfError    string   `toml:"staleIfError"`
-		AllowedCookies  []string `toml:"allowedCookies"`
-		StaticFiles     *bool    `toml:"staticFiles"`
-		Brotli          *bool    `toml:"brotli"`
-		Gzip            *bool    `toml:"gzip"`
-		CompressMinSize string   `toml:"compressMinSize"`
+		MaxSize         string    `toml:"maxSize"`
+		MaxObjectSize   string    `toml:"maxObjectSize"`
+		DefaultTTL      string    `toml:"defaultTTL"`
+		StaleIfError    string    `toml:"staleIfError"`
+		AllowedCookies  []string  `toml:"allowedCookies"`
+		QueryParams     *[]string `toml:"queryParams"`
+		StaticFiles     *bool     `toml:"staticFiles"`
+		Brotli          *bool     `toml:"brotli"`
+		Gzip            *bool     `toml:"gzip"`
+		CompressMinSize string    `toml:"compressMinSize"`
 	} `toml:"cache"`
 	Control struct {
 		AllowIPs     []string `toml:"allowIPs"`
@@ -203,6 +207,9 @@ func Parse(data string) (*Config, error) {
 		}
 	}
 	cfg.Cache.AllowedCookies = f.Cache.AllowedCookies
+	if f.Cache.QueryParams != nil {
+		cfg.Cache.QueryParams = append([]string{}, *f.Cache.QueryParams...)
+	}
 
 	cfg.Control.AllowIPs, err = fetch.ParseIPs(f.Control.AllowIPs)
 	if err != nil {

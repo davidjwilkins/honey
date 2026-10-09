@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -201,4 +202,27 @@ func TestHandlerMetrics(t *testing.T) {
 	} {
 		assert.Contains(t, w.Body.String(), line+"\n")
 	}
+}
+
+func TestHandlerQueryParams(t *testing.T) {
+	var seen []string
+	var mu sync.Mutex
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.URL.RequestURI())
+		mu.Unlock()
+		io.WriteString(w, "hello")
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[cache]\nqueryParams = [\"p\"]\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	for _, query := range []string{"?p=1&utm_source=a", "?utm_source=b&p=1", "?p=1"} {
+		resp, err := http.Get(proxy.URL + "/page" + query)
+		require.NoError(t, err)
+		resp.Body.Close()
+	}
+	assert.Equal(t, []string{"/page?p=1"}, seen)
 }

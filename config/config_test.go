@@ -207,3 +207,18 @@ func TestParseMetrics(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "127.0.0.1:9090", cfg.MetricsListen)
 }
+
+func TestParseQueryParams(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n")
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Cache.QueryParams, "every parameter is kept unless configured")
+
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cache]\nqueryParams = [\"p\", \"ver\"]\n")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"p", "ver"}, cfg.Cache.QueryParams)
+
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cache]\nqueryParams = []\n")
+	require.NoError(t, err)
+	assert.NotNil(t, cfg.Cache.QueryParams, "an empty list removes every parameter, which isn't the same as not setting it")
+	assert.Empty(t, cfg.Cache.QueryParams)
+}

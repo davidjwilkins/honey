@@ -49,6 +49,7 @@ All the available settings:
 	gzip = true                  # gzip them for clients that accept gzip but not brotli
 	compressMinSize = "1KB"      # smaller responses aren't compressed
 	allowedCookies = ["site_lang_id"]  # Set-Cookie headers allowed through the cache
+	queryParams = ["p", "s", "ver"]    # the only query parameters which matter (unset: all of them)
 
 	# Requests not to cache. match is a path prefix, or with regex = true,
 	# a regular expression matched against the path and query string.
@@ -69,6 +70,14 @@ All the available settings:
 	secretHeader = "X-Honey-Secret"
 
 Honey refuses to start if the config has settings it doesn't support.  See [`config/wordpress.toml`](config/wordpress.toml) for an example WordPress setup.
+
+## Query parameters
+
+By default every query parameter is part of the cache key, so `/page?nocache=123` is a different page to `/page`, and goes to the backend.  That lets anyone get around the cache, and tracking parameters like `utm_source` and `fbclid` split it.
+
+Setting `queryParams` lists the parameters which matter.  Any others are removed from cacheable requests before they are looked up in the cache or sent to the backend, so the backend never sees them, and the cache can't serve the wrong content because of them.  Parameters are also sorted, so their order doesn't matter.  Requests which aren't cached (e.g. those matching a `[[route]]` with `cache = false`) are left alone.
+
+For WordPress, core uses `p`, `page_id`, `s`, `paged`, `cat`, `tag`, `author`, `m`, `year`, `monthnum`, `day`, `post_type`, `cpage`, `replytocom`, `attachment_id` and `ver` (on css and js, so that an upgrade isn't served old cached files) - but check which ones your plugins use, as their parameters will stop working if they aren't listed.
 
 ## Metrics
 
