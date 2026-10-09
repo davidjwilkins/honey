@@ -56,6 +56,11 @@ All the available settings:
 	match = "/wp-admin"
 	cache = false
 
+	# Serve Prometheus metrics at http://127.0.0.1:9090/metrics (off unless set).
+	# Use a separate, private address: they shouldn't be public.
+	[metrics]
+	listen = "127.0.0.1:9090"
+
 	# Who may purge the cache, and refresh it with no-cache.  Nobody is
 	# trusted unless they are listed here.
 	[control]
@@ -64,6 +69,17 @@ All the available settings:
 	secretHeader = "X-Honey-Secret"
 
 Honey refuses to start if the config has settings it doesn't support.  See [`config/wordpress.toml`](config/wordpress.toml) for an example WordPress setup.
+
+## Metrics
+
+With `[metrics] listen` set, `/metrics` on that address has, in the Prometheus text format:
+
+- `honey_requests_total{cache="hit|miss|multiplexed|stale|bypass|none"}`: requests, by how the cache handled them (`none` is e.g. purges and errors)
+- `honey_responses_total{code="2xx|..."}`: responses, by status class
+- `honey_backend_requests_total{code="2xx|...|error"}`, `honey_backend_response_seconds` (histogram) and `honey_backend_requests_in_flight`: requests to the backend, and how long it took to start responding
+- `honey_cache_entries`, `honey_cache_bytes` and `honey_cache_max_bytes`: how full the cache is
+
+The hit ratio is `rate(honey_requests_total{cache=~"hit|multiplexed|stale"}[5m]) / rate(honey_requests_total[5m])`.
 
 ## Purging and refreshing
 

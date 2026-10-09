@@ -27,6 +27,9 @@ const DefaultBackendTimeout = 30 * time.Second
 type Config struct {
 	// Listen is the address to listen on, e.g. ":8080"
 	Listen string
+	// MetricsListen is the address to serve metrics on, e.g.
+	// "127.0.0.1:9090", or "" not to serve them
+	MetricsListen string
 	// Backend is the server which requests are proxied to
 	Backend *url.URL
 	// BackendTimeout is how long to wait for the backend to start
@@ -81,6 +84,9 @@ type Route struct {
 // file is the layout of the TOML file
 type file struct {
 	Listen  string `toml:"listen"`
+	Metrics struct {
+		Listen string `toml:"listen"`
+	} `toml:"metrics"`
 	Backend struct {
 		URI     string `toml:"uri"`
 		Timeout string `toml:"timeout"`
@@ -137,7 +143,7 @@ func Parse(data string) (*Config, error) {
 		return nil, fmt.Errorf("unsupported settings: %s", strings.Join(keys, ", "))
 	}
 
-	cfg := &Config{Listen: f.Listen}
+	cfg := &Config{Listen: f.Listen, MetricsListen: f.Metrics.Listen}
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/config"
 	"github.com/davidjwilkins/honey/fetch"
+	"github.com/davidjwilkins/honey/metrics"
 )
 
 func main() {
@@ -30,11 +31,24 @@ func main() {
 		log.Fatal(err)
 	}
 
+	handler, metricsHandler := newHandlers(cfg)
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           newHandler(cfg),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
+	}
+	var metricsServer *http.Server
+	if metricsHandler != nil {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", metricsHandler)
+		metricsServer = &http.Server{Addr: cfg.MetricsListen, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			log.Printf("metrics on http://%s/metrics", cfg.MetricsListen)
+			if err := metricsServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				log.Fatal(err)
+			}
+		}()
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -44,6 +58,9 @@ func main() {
 		log.Print("shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		if metricsServer != nil {
+			metricsServer.Shutdown(shutdownCtx)
+		}
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("shutdown: %v", err)
 		}
@@ -57,6 +74,13 @@ func main() {
 
 // newHandler builds the caching proxy described by cfg.
 func newHandler(cfg *config.Config) http.Handler {
+	handler, _ := newHandlers(cfg)
+	return handler
+}
+
+// newHandlers builds the caching proxy described by cfg, and the handler
+// for its metrics if they are enabled (or else nil).
+func newHandlers(cfg *config.Config) (handler http.Handler, metricsHandler http.Handler) {
 	cacher := cache.NewCacher(cache.Options{
 		MaxBytes:         cfg.Cache.MaxBytes,
 		MaxObjectBytes:   cfg.Cache.MaxObjectBytes,
@@ -82,7 +106,21 @@ func newHandler(cfg *config.Config) http.Handler {
 		Secret:       cfg.Control.Secret,
 		SecretHeader: cfg.Control.SecretHeader,
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = cfg.BackendTimeout
-	return fetch.FetchWithControl(cacher, fetch.NewForwarder(cacher, transport), cfg.Backend, control)
+	backendTransport := http.DefaultTransport.(*http.Transport).Clone()
+	backendTransport.ResponseHeaderTimeout = cfg.BackendTimeout
+	var transport http.RoundTripper = backendTransport
+	var recorder *metrics.Recorder
+	if cfg.MetricsListen != "" {
+		maxBytes := cfg.Cache.MaxBytes
+		if maxBytes == 0 {
+			maxBytes = cache.DefaultMaxBytes
+		}
+		recorder = metrics.New(cacher.Stats, maxBytes)
+		transport = recorder.Transport(transport)
+	}
+	handler = fetch.FetchWithControl(cacher, fetch.NewForwarder(cacher, transport), cfg.Backend, control)
+	if recorder == nil {
+		return handler, nil
+	}
+	return recorder.Middleware(handler), recorder
 }

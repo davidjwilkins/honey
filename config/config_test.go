@@ -198,3 +198,12 @@ func TestParseTimeouts(t *testing.T) {
 		assert.Error(t, err, data)
 	}
 }
+
+func TestParseMetrics(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.MetricsListen, "metrics are off by default")
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[metrics]\nlisten = \"127.0.0.1:9090\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:9090", cfg.MetricsListen)
+}
