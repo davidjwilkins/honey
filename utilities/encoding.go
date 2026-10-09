@@ -6,31 +6,51 @@ import (
 	"strings"
 )
 
-// AcceptsBrotli returns whether a request with the given Accept-Encoding
-// header accepts a brotli ("br") encoded response
-// (https://www.rfc-editor.org/rfc/rfc9110#section-12.5.3).
-func AcceptsBrotli(acceptEncoding string) bool {
-	star := false
+// PreferredEncoding returns which of the available content codings
+// (e.g. "br", "gzip") a request with the given Accept-Encoding header
+// prefers, or "" if it prefers the unencoded response
+// (https://www.rfc-editor.org/rfc/rfc9110#section-12.5.3).  Codings are
+// chosen by their q-value; ties go to the earliest available coding.  A
+// coding the client lists always beats the unencoded response unless the
+// client lists "identity" too, as clients list the codings they want.
+func PreferredEncoding(acceptEncoding string, available ...string) string {
+	qualities := map[string]float64{}
 	for _, part := range strings.Split(acceptEncoding, ",") {
 		coding, params, _ := strings.Cut(part, ";")
 		coding = strings.ToLower(strings.TrimSpace(coding))
+		if coding == "" {
+			continue
+		}
 		q := 1.0
 		for _, param := range strings.Split(params, ";") {
 			name, value, _ := strings.Cut(strings.TrimSpace(param), "=")
 			if strings.EqualFold(name, "q") {
-				if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+				if parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil {
 					q = parsed
 				}
 			}
 		}
-		switch coding {
-		case "br":
-			return q > 0
-		case "*":
-			star = q > 0
+		qualities[coding] = q
+	}
+	quality := func(coding string) float64 {
+		if q, found := qualities[coding]; found {
+			return q
+		}
+		if q, found := qualities["*"]; found {
+			return q
+		}
+		return 0
+	}
+	best, bestQ := "", 0.0
+	if q, found := qualities["identity"]; found {
+		bestQ = q
+	}
+	for _, coding := range available {
+		if q := quality(coding); q > 0 && q > bestQ {
+			best, bestQ = coding, q
 		}
 	}
-	return star
+	return best
 }
 
 // CacheVary returns the Vary header value to key cached responses on.  It

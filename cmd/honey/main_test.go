@@ -85,12 +85,16 @@ func TestHandlerBrotliSetting(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	for setting, expected := range map[string]string{"": "br", "brotli = false": ""} {
+	for setting, expected := range map[string]string{
+		"":                             "br",
+		"brotli = false":               "gzip",
+		"brotli = false\ngzip = false": "",
+	} {
 		cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[cache]\n" + setting + "\n")
 		require.NoError(t, err)
 		proxy := httptest.NewServer(newHandler(cfg))
 		req, _ := http.NewRequest(http.MethodGet, proxy.URL+"/page", nil)
-		req.Header.Set("Accept-Encoding", "br")
+		req.Header.Set("Accept-Encoding", "gzip, br")
 		resp, err := (&http.Transport{}).RoundTrip(req)
 		require.NoError(t, err)
 		resp.Body.Close()

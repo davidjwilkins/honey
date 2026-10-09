@@ -72,12 +72,21 @@ func TestBrotliCanBeDisabled(t *testing.T) {
 	c := NewCacher(Options{DisableBrotli: true})
 	r := htmlResponse(c, compressiblePage())
 	assert.Nil(t, r.brotliBody())
+	assert.NotNil(t, r.gzip, "gzip is still used without brotli")
+	assert.Equal(t, "Accept-Encoding", r.Header().Get("Vary"))
+}
+
+func TestCompressionCanBeDisabled(t *testing.T) {
+	c := NewCacher(Options{DisableBrotli: true, DisableGzip: true})
+	r := htmlResponse(c, compressiblePage())
+	assert.Nil(t, r.brotliBody())
+	assert.Nil(t, r.gzip)
 	assert.Equal(t, "", r.Header().Get("Vary"))
 }
 
-func TestBrotliMinBytes(t *testing.T) {
-	c := NewCacher(Options{BrotliMinBytes: 100 << 10})
-	assert.Nil(t, htmlResponse(c, compressiblePage()).brotliBody(), "responses under BrotliMinBytes shouldn't be compressed")
+func TestCompressMinBytes(t *testing.T) {
+	c := NewCacher(Options{CompressMinBytes: 100 << 10})
+	assert.Nil(t, htmlResponse(c, compressiblePage()).brotliBody(), "responses under CompressMinBytes shouldn't be compressed")
 }
 
 func TestBrotliVaryIsNotPartOfCacheKey(t *testing.T) {

@@ -2,6 +2,7 @@ package cache
 
 import (
 	"bytes"
+	"compress/gzip"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,9 +13,9 @@ import (
 )
 
 const (
-	// DefaultBrotliMinBytes is the default size below which responses
+	// DefaultCompressMinBytes is the default size below which responses
 	// aren't compressed, as the saving isn't worth it.
-	DefaultBrotliMinBytes = 1 << 10
+	DefaultCompressMinBytes = 1 << 10
 
 	// fastBrotliQuality is used when a response is first cached, as the
 	// requester is waiting for it.  It is a few milliseconds for a typical
@@ -33,6 +34,14 @@ const (
 	maxRecompressQueue = 1000
 )
 
+func compressGzip(body []byte) []byte {
+	var buf bytes.Buffer
+	w, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	w.Write(body)
+	w.Close()
+	return buf.Bytes()
+}
+
 func compressBrotli(body []byte, quality int) []byte {
 	var buf bytes.Buffer
 	w := brotli.NewWriterLevel(&buf, quality)
@@ -42,7 +51,7 @@ func compressBrotli(body []byte, quality int) []byte {
 }
 
 // shouldCompress returns whether a response with the given status, headers
-// and body should be stored brotli compressed as well as unencoded.
+// and body should be stored compressed as well as unencoded.
 func shouldCompress(statusCode int, h http.Header, body []byte, minBytes int) bool {
 	if statusCode != http.StatusOK || len(body) < minBytes {
 		return false
@@ -57,34 +66,48 @@ func shouldCompress(statusCode int, h http.Header, body []byte, minBytes int) bo
 	return utilities.IsCompressible(h.Get("Content-Type"))
 }
 
-func brotliEtag(etag string) string {
+// encodedEtag returns the Etag for the response with the given Etag,
+// encoded with the given content coding.  Each encoding needs its own
+// Etag, so that a 304 never confirms a client's copy is the same as a
+// differently encoded one.
+func encodedEtag(etag, coding string) string {
 	if etag == "" {
 		return ""
 	}
-	return strings.TrimSuffix(etag, `"`) + `-br"`
+	return strings.TrimSuffix(etag, `"`) + "-" + coding + `"`
 }
 
 // Negotiate returns the headers and body to send to the client which made
-// request r: the brotli compressed body, if there is one and the client
-// accepts it, or otherwise the unencoded body.  Range requests always get
-// the unencoded body, which the range applies to.  The returned headers
-// must not be modified.
+// request r: the body in the encoding the client prefers (brotli or gzip),
+// if the response has been compressed, or otherwise the unencoded body.
+// Range requests always get the unencoded body, which the range applies
+// to.  The returned headers must not be modified.
 func Negotiate(resp Response, r *http.Request) (http.Header, []byte) {
 	impl, ok := resp.(*responseImpl)
-	if !ok {
+	if !ok || r.Header.Get("Range") != "" {
 		return resp.Header(), resp.Body()
 	}
-	compressed := impl.brotliBody()
-	if compressed == nil || r.Header.Get("Range") != "" || !utilities.AcceptsBrotli(r.Header.Get("Accept-Encoding")) {
+	compressed := map[string][]byte{}
+	var available []string
+	if body := impl.brotliBody(); body != nil {
+		compressed["br"] = body
+		available = append(available, "br")
+	}
+	if impl.gzip != nil {
+		compressed["gzip"] = impl.gzip
+		available = append(available, "gzip")
+	}
+	coding := utilities.PreferredEncoding(r.Header.Get("Accept-Encoding"), available...)
+	if coding == "" {
 		return resp.Header(), resp.Body()
 	}
 	h := resp.Header().Clone()
-	h.Set("Content-Encoding", "br")
-	h.Set("Content-Length", strconv.Itoa(len(compressed)))
-	if etag := brotliEtag(h.Get("Etag")); etag != "" {
+	h.Set("Content-Encoding", coding)
+	h.Set("Content-Length", strconv.Itoa(len(compressed[coding])))
+	if etag := encodedEtag(h.Get("Etag"), coding); etag != "" {
 		h.Set("Etag", etag)
 	}
-	return h, compressed
+	return h, compressed[coding]
 }
 
 // recompressor recompresses cached responses at bestBrotliQuality, one at

@@ -36,9 +36,11 @@ type Cache struct {
 	AllowedCookies []string
 	// StaticFiles is whether static files (images, css, js...) are cached
 	StaticFiles bool
-	// Brotli is whether compressible responses are brotli compressed
-	Brotli         bool
-	BrotliMinBytes int64
+	// Brotli and Gzip are whether compressible responses are compressed
+	// with each, for clients which accept them
+	Brotli           bool
+	Gzip             bool
+	CompressMinBytes int64
 }
 
 // Route is a rule for requests whose path starts with Match, or, if
@@ -58,13 +60,14 @@ type file struct {
 		URI string `toml:"uri"`
 	} `toml:"backend"`
 	Cache struct {
-		MaxSize        string   `toml:"maxSize"`
-		MaxObjectSize  string   `toml:"maxObjectSize"`
-		DefaultTTL     string   `toml:"defaultTTL"`
-		AllowedCookies []string `toml:"allowedCookies"`
-		StaticFiles    *bool    `toml:"staticFiles"`
-		Brotli         *bool    `toml:"brotli"`
-		BrotliMinSize  string   `toml:"brotliMinSize"`
+		MaxSize         string   `toml:"maxSize"`
+		MaxObjectSize   string   `toml:"maxObjectSize"`
+		DefaultTTL      string   `toml:"defaultTTL"`
+		AllowedCookies  []string `toml:"allowedCookies"`
+		StaticFiles     *bool    `toml:"staticFiles"`
+		Brotli          *bool    `toml:"brotli"`
+		Gzip            *bool    `toml:"gzip"`
+		CompressMinSize string   `toml:"compressMinSize"`
 	} `toml:"cache"`
 	Routes []struct {
 		Match string `toml:"match"`
@@ -135,10 +138,11 @@ func Parse(data string) (*Config, error) {
 	}
 	cfg.Cache.StaticFiles = f.Cache.StaticFiles == nil || *f.Cache.StaticFiles
 	cfg.Cache.Brotli = f.Cache.Brotli == nil || *f.Cache.Brotli
-	if f.Cache.BrotliMinSize != "" {
-		cfg.Cache.BrotliMinBytes, err = parseSize(f.Cache.BrotliMinSize)
+	cfg.Cache.Gzip = f.Cache.Gzip == nil || *f.Cache.Gzip
+	if f.Cache.CompressMinSize != "" {
+		cfg.Cache.CompressMinBytes, err = parseSize(f.Cache.CompressMinSize)
 		if err != nil {
-			return nil, fmt.Errorf("cache.brotliMinSize: %w", err)
+			return nil, fmt.Errorf("cache.compressMinSize: %w", err)
 		}
 	}
 	if f.Cache.DefaultTTL != "" {

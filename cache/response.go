@@ -50,6 +50,8 @@ type responseImpl struct {
 	// brotli is the body brotli compressed, if it is worth compressing.
 	// It is replaced with a better compressed version in the background.
 	brotli atomic.Pointer[[]byte]
+	// gzip is the body gzip compressed, if it is worth compressing
+	gzip []byte
 }
 
 // brotliBody returns the brotli compressed body, or nil if there isn't one
