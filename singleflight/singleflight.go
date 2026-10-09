@@ -1,218 +1,104 @@
+// Package singleflight lets concurrent requests for the same resource
+// share a single backend request, to avoid flooding the backend when
+// the cache is empty (e.g. after the cache has been cleared, or right
+// after a server has come online).
+//
+// One requester - the leader - fetches the resource, and finishes the
+// Flight with a Result.  Everyone else waits for the Result and then
+// writes their own response from it, so a requester's ResponseWriter is
+// only ever used by its own goroutine, and no lock is held while anyone
+// waits.
 package singleflight
 
 import (
-	"errors"
-	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/davidjwilkins/honey/cache"
-	"github.com/davidjwilkins/honey/utilities"
 )
 
-type singleflight struct {
-	cacher    cache.Cacher
-	requests  []request
-	response  cache.Response
-	done      bool
-	aborted   int          // the status code given to writers, if Abort was called
-	bypass    http.Handler // the handler writers are sent to, if Bypass was called
-	cacheable bool
-	handler   func(w http.ResponseWriter, r *http.Request)
-	sync.WaitGroup
-	sync.RWMutex
+// Result is what the leader of a Flight tells the requests waiting on it.
+// Exactly one of its fields should be set.
+type Result struct {
+	// Response is the response to share with the waiting requests (if it
+	// suits them - e.g. its Vary headers match theirs).
+	Response cache.Response
+	// Stale is set if Response is a stale response, served because the
+	// backend errored.
+	Stale bool
+	// Bypass means the response can't be shared (e.g. it is too large to
+	// cache), and each request should fetch it from the backend itself.
+	Bypass bool
+	// Retry means there is no response (e.g. the leader's client went away
+	// before it arrived), and the requests should try again.
+	Retry bool
+	// StatusCode is the error status to respond with if the backend
+	// couldn't be reached and there is no response to share.
+	StatusCode int
 }
 
-type request struct {
-	writer  http.ResponseWriter
-	request *http.Request
+// A Flight is a single backend request which other requests wait for.
+type Flight struct {
+	done   chan struct{}
+	once   sync.Once
+	result Result
 }
 
-// A Singleflight is used to prevent flooding the remote
-// server with requests when the cache is empty (e.g.
-// after the cache has been cleared, or right after a
-// server has come online).
-//
-// AddWriter should add a ResponseWriter to be written to.
-//
-// Write should write the response to all writers.
-//
-// Cacheable will return whether the response provided
-// to Write was eligible to be used for writing (e.g. the
-// response did not contain the Private cache-control directive)
-//
-// Wait should block until Write has been called and completed.
-//
-// Abort should respond to all writers with an error status code,
-// for when there is no response to write (e.g. the backend could
-// not be reached).
-//
-// Bypass should have a handler respond to each writer's request
-// itself, for when the response can't be shared (e.g. it is too
-// large to cache).
-type Singleflight interface {
-	AddWriter(w http.ResponseWriter, r *http.Request)
-	Write(r cache.Response) bool
-	Cacheable() (bool, error)
-	Wait()
-	Abort(statusCode int)
-	Bypass(handler http.Handler)
+// Done returns a channel which is closed when the Flight has finished.
+func (f *Flight) Done() <-chan struct{} {
+	return f.done
 }
 
-// NewSingleflight will create a new default singleflight to be used for
-// all requests for which cacher provides the same hash.
-func NewSingleflight(cacher cache.Cacher, r *http.Request, handler func(w http.ResponseWriter, r *http.Request)) Singleflight {
-	return &singleflight{
-		cacher:    cacher,
-		requests:  []request{},
-		done:      false,
-		cacheable: true,
-		handler:   handler,
-	}
+// Result returns the Flight's Result.  It must only be called once Done
+// is closed.
+func (f *Flight) Result() Result {
+	return f.result
 }
 
-// AddWriter add a ResponseWriter to be written to when Write is called.
-// If Write has already been called, it will call it again.
-func (m *singleflight) AddWriter(w http.ResponseWriter, r *http.Request) {
-	m.Lock()
-	if m.aborted != 0 {
-		m.Unlock()
-		http.Error(w, http.StatusText(m.aborted), m.aborted)
-		return
-	}
-	if bypass := m.bypass; bypass != nil {
-		m.Unlock()
-		bypass.ServeHTTP(w, r)
-		return
-	}
-	m.requests = append(m.requests, request{w, r})
-	done := m.done
-	m.Add(1)
-	m.Unlock()
-	if done {
-		m.Write(m.response)
-	}
+// A Group holds the Flights in progress, by key.  The zero Group is ready
+// to use.
+type Group struct {
+	mu      sync.Mutex
+	flights map[string]*Flight
 }
 
-// Cacheable returns whether the response provided to Write was eligible to
-// be used to write to all ResponseWriters.  If returns an error if Write
-// has not yet been called.
-func (m *singleflight) Cacheable() (bool, error) {
-	if m.response == nil {
-		return m.cacheable, errors.New("No response yet")
+// Join returns the Flight in progress for key, or else starts one.  If it
+// starts one, leader is true, and the caller must Finish it.
+func (g *Group) Join(key string) (f *Flight, leader bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if f, found := g.flights[key]; found {
+		return f, false
 	}
-	return m.cacheable, nil
+	if g.flights == nil {
+		g.flights = make(map[string]*Flight)
+	}
+	f = &Flight{done: make(chan struct{})}
+	g.flights[key] = f
+	return f, true
 }
 
-// Write will write the response to all ResponseWriters added
-// via AddWriter.  It will return true if it was able to write
-// the response (e.g. Cache-Control was not set to private or
-// no-store), and true otherwise.  It will set the X-Honey-Cache
-// header to MISS (MULTIPLEXED), indicating that the request was
-// not in the cache, but that this response was not (initially)
-// for this request.
-func (m *singleflight) Write(r cache.Response) bool {
-	m.Lock()
-	defer func() {
-		m.response = r
-		m.done = true
-		m.requests = []request{}
-		m.Unlock()
-	}()
-	vary := r.Header().Get("Vary")
-	if cc := r.Header().Get("Cache-Control"); strings.Contains(cc, "private") ||
-		strings.Contains(cc, "no-store") || vary == "*" {
-		m.cacheable = false
-		go func() {
-			for range m.requests {
-				m.Done()
-			}
-		}()
-		m.Wait()
-		return false
-	}
-	// Bucket the requests based on whether their headers for the response Vary
-	// are the same.  Accept-Encoding doesn't matter, as each requester gets
-	// the encoding they accept.
-	vary = utilities.CacheVary(vary)
-	hash := utilities.GetVaryHeadersHash(r.RequestHeaders(), r, m.cacher.AllowedCookies(), vary)
-	buckets := make(map[string][]request)
-	for _, req := range m.requests {
-		h := utilities.GetVaryHeadersHash(req.request.Header, req.request, m.cacher.AllowedCookies(), vary)
-		buckets[h] = append(buckets[h], req)
-	}
-	// Respond to any that match the Vary
-	for _, req := range buckets[hash] {
-		go func(req request) {
-			header, body := cache.Negotiate(r, req.request)
-			for key, values := range header {
-				for _, value := range values {
-					req.writer.Header().Add(key, value)
-				}
-			}
-			req.writer.Header().Set("X-Honey-Cache", "MISS (MULTIPLEXED)")
-			req.writer.Header().Set("Age", r.Age())
-			if isNotModified(req.request, header.Get("Etag")) {
-				req.writer.WriteHeader(http.StatusNotModified)
-			} else {
-				req.writer.WriteHeader(r.StatusCode())
-				req.writer.Write(body)
-			}
-			m.Done()
-		}(req)
-	}
-	go func() {
-		for bucket, requests := range buckets {
-			// we've already done the one with the current request's hash
-			if bucket == hash {
-				continue
-			}
-			// TODO: GET THE RESPONSE FOR EACH BUCKET
-			for _, req := range requests {
-				req.request.Header.Set("X-Honey-Vary", bucket)
-				m.handler(req.writer, req.request)
-				m.Done()
-			}
+// InFlight returns whether there is a Flight in progress for key.
+func (g *Group) InFlight(key string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, found := g.flights[key]
+	return found
+}
+
+// Finish ends Flight f, which was started for key, releasing everyone
+// waiting on it with result.  Requests which Join key afterwards start a
+// new Flight.  Only the first call to Finish for a Flight has any effect,
+// so a leader can safely Finish its Flight again as a fallback.
+func (g *Group) Finish(key string, f *Flight, result Result) {
+	f.once.Do(func() {
+		g.mu.Lock()
+		// Only remove f: once it has been removed, a new Flight may have
+		// been started for the same key.
+		if g.flights[key] == f {
+			delete(g.flights, key)
 		}
-	}()
-	m.Wait()
-
-	return true
-}
-
-// Abort responds to every writer added via AddWriter (and any added
-// afterwards) with statusCode, and releases anyone blocked in Wait.
-func (m *singleflight) Abort(statusCode int) {
-	m.Lock()
-	defer m.Unlock()
-	m.aborted = statusCode
-	m.cacheable = false
-	for _, req := range m.requests {
-		http.Error(req.writer, http.StatusText(statusCode), statusCode)
-		m.Done()
-	}
-	m.requests = []request{}
-}
-
-// Bypass has handler respond to every writer's request added via
-// AddWriter (and any added afterwards), and releases anyone blocked in
-// Wait once their request has been handled.
-func (m *singleflight) Bypass(handler http.Handler) {
-	m.Lock()
-	m.bypass = handler
-	m.cacheable = false
-	requests := m.requests
-	m.requests = []request{}
-	m.Unlock()
-	for _, req := range requests {
-		go func(req request) {
-			defer m.Done()
-			handler.ServeHTTP(req.writer, req.request)
-		}(req)
-	}
-}
-
-func isNotModified(r *http.Request, etag string) bool {
-	return r.Header.Get("If-None-Match") != "" &&
-		r.Header.Get("If-None-Match") == etag
+		g.mu.Unlock()
+		f.result = result
+		close(f.done)
+	})
 }

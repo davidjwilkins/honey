@@ -12,13 +12,12 @@ import (
 
 type FetchTestSuite struct {
 	suite.Suite
-	backend      *url.URL
-	cacher       *testCacher
-	handler      *testHandler
-	request      *http.Request
-	response     *testResponse
-	writer       *httptest.ResponseRecorder
-	singleflight *testSingleflight
+	backend  *url.URL
+	cacher   *testCacher
+	handler  *testHandler
+	request  *http.Request
+	response *testResponse
+	writer   *httptest.ResponseRecorder
 }
 
 type testHandler struct {
@@ -36,11 +35,6 @@ func (suite *FetchTestSuite) SetupTest() {
 	suite.cacher.On("Hash", suite.request).Return("test-hash")
 	suite.response.On("Body").Return([]byte("Test Response"))
 	suite.writer = httptest.NewRecorder()
-	suite.singleflight = &testSingleflight{}
-	suite.singleflight.On("Lock")
-	suite.singleflight.On("Unlock")
-	suite.singleflight.On("Done")
-	suite.singleflight.On("Wait")
 	suite.response.On("Header").Return(suite.writer.Header())
 	suite.backend, _ = url.Parse("https://www.insomniac.com")
 	suite.handler = &testHandler{}
@@ -59,8 +53,7 @@ func (suite *FetchTestSuite) TestFetchUncacheableViaCache() {
 	suite.Assert().Equal("NO-CACHE", suite.writer.Header().Get("X-Honey-Cache"), "X-Honey-Cache: NO-CACHE should be set for uncacheable requests")
 	suite.handler.AssertCalled(suite.T(), "ServeHTTP", suite.writer, suite.request)
 	suite.cacher.AssertNotCalled(suite.T(), "Hash", suite.request)
-	_, exists := singleflights.Load("test-hash")
-	suite.Assert().False(exists, "Singleflight should not be created for uncacheable requests")
+	suite.Assert().False(flights.InFlight("test-hash"), "Flights should not be started for uncacheable requests")
 }
 
 func (suite *FetchTestSuite) TestFetchUncacheableViaHeader() {
@@ -68,7 +61,7 @@ func (suite *FetchTestSuite) TestFetchUncacheableViaHeader() {
 	suite.request.Header.Set("Cache-Control", "no-cache")
 	suite.handler.On("ServeHTTP", suite.writer, mock.AnythingOfType("*http.Request"))
 	Fetch(suite.cacher, suite.handler, suite.backend)(suite.writer, suite.request)
-	defer singleflights.Delete("test-hash")
+	suite.Assert().False(flights.InFlight("test-hash"), "the leader's Flight should always be finished")
 	suite.handler.AssertCalled(suite.T(), "ServeHTTP", suite.writer, mock.MatchedBy(func(r *http.Request) bool {
 		return requestHash(suite.cacher, r) == "test-hash"
 	}))
@@ -80,16 +73,6 @@ func (suite *FetchTestSuite) TestFetchUncacheableOnlyIfCached() {
 	Fetch(suite.cacher, suite.handler, suite.backend)(suite.writer, suite.request)
 	suite.handler.AssertNotCalled(suite.T(), "ServeHTTP", suite.writer, suite.request)
 	suite.Assert().Equal(http.StatusGatewayTimeout, suite.writer.Code)
-}
-
-func (suite *FetchTestSuite) TestFetchUncacheableMultiplexed() {
-	suite.cacher.On("CanCache", suite.request).Return(true)
-	singleflights.Load(suite.singleflight)
-	suite.singleflight.On("AddWriter", suite.writer, suite.request)
-	suite.singleflight.On("Wait")
-	suite.request.Header.Set("Cache-Control", "no-cache,only-if-cached")
-	Fetch(suite.cacher, suite.handler, suite.backend)(suite.writer, suite.request)
-	suite.handler.AssertNotCalled(suite.T(), "ServeHTTP", suite.writer, suite.request)
 }
 
 func newTestValidRequest() *http.Request {

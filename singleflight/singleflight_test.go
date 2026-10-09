@@ -1,147 +1,67 @@
 package singleflight
 
 import (
-	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"sync"
 	"testing"
+	"time"
 
-	"github.com/davidjwilkins/honey/cache"
+	"github.com/stretchr/testify/assert"
 )
 
-type testHandler struct {
-	sync.Mutex
-	count int
+func TestJoinStartsOneFlightPerKey(t *testing.T) {
+	var g Group
+	a, leader := g.Join("a")
+	assert.True(t, leader)
+	again, leader := g.Join("a")
+	assert.False(t, leader)
+	assert.Same(t, a, again)
+	b, leader := g.Join("b")
+	assert.True(t, leader)
+	assert.NotSame(t, a, b)
+	assert.True(t, g.InFlight("a"))
+	assert.False(t, g.InFlight("c"))
 }
 
-func (h *testHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.Lock()
-	h.count++
-	w.Header().Set("Vary", "Accept-Language")
-	fmt.Fprintf(w, "Visitor count: %d.", h.count)
-	h.Unlock()
+func TestFinishReleasesWaiters(t *testing.T) {
+	var g Group
+	f, _ := g.Join("a")
+	var wg sync.WaitGroup
+	results := make([]Result, 10)
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			waiter, leader := g.Join("a")
+			assert.False(t, leader)
+			<-waiter.Done()
+			results[i] = waiter.Result()
+		}(i)
+	}
+	time.Sleep(50 * time.Millisecond)
+	g.Finish("a", f, Result{StatusCode: 502})
+	wg.Wait()
+	for _, result := range results {
+		assert.Equal(t, 502, result.StatusCode)
+	}
+	assert.False(t, g.InFlight("a"), "a finished Flight should be removed")
 }
 
-func testServer(count int) *httptest.Server {
-	return httptest.NewServer(&testHandler{
-		count: count,
-	})
+func TestFinishOnlyTakesEffectOnce(t *testing.T) {
+	var g Group
+	f, _ := g.Join("a")
+	g.Finish("a", f, Result{Bypass: true})
+	g.Finish("a", f, Result{Retry: true})
+	assert.Equal(t, Result{Bypass: true}, f.Result())
 }
 
-func newTestValidRequest() *http.Request {
-	url, err := url.Parse("https://www.insomniac.com")
-	if err != nil {
-		panic(err)
-	}
-	return &http.Request{
-		Method: http.MethodGet,
-		URL:    url,
-		Header: http.Header{},
-	}
-}
-
-func noopHandler(w http.ResponseWriter, r *http.Request) {
-
-}
-
-func newTestSingleflight(withWriter bool) Singleflight {
-	cacher := cache.NewDefaultCacher()
-	singleflight := NewSingleflight(cacher, newTestValidRequest(), (&testHandler{}).ServeHTTP)
-	if withWriter {
-		rec := httptest.NewRecorder()
-		singleflight.AddWriter(rec, newTestValidRequest())
-	}
-	return singleflight
-}
-
-func TestAddWriter(t *testing.T) {
-	singleflight := newTestSingleflight(false).(*singleflight)
-	if len(singleflight.requests) != 0 {
-		t.Errorf("singleflight should save no writers when initialized")
-	}
-	singleflight.AddWriter(httptest.NewRecorder(), newTestValidRequest())
-	if len(singleflight.requests) != 1 {
-		t.Errorf("AddWriter should save the writer to the singleflight")
-	}
-}
-
-func TestCanCacheReturnsErrorBeforeWrite(t *testing.T) {
-	singleflight := newTestSingleflight(false)
-	_, err := singleflight.Cacheable()
-	if err == nil {
-		t.Errorf("Cacheable should return error if Write has not been called")
-	}
-	cacher := cache.NewDefaultCacher()
-	server := testServer(0)
-	defer server.Close()
-	resp, err := http.Get(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	singleflight.Write(cacher.Standardize(resp))
-	_, err = singleflight.Cacheable()
-	if err != nil {
-		t.Errorf("Cacheable should not return error if Write has been called")
-	}
-}
-
-func TestWriteReturnsTheSameResponseToMultipleRequests(t *testing.T) {
-	server := testServer(0)
-	defer server.Close()
-	resp, err := http.Get(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	singleflight := newTestSingleflight(false)
-	rec1 := httptest.NewRecorder()
-	rec2 := httptest.NewRecorder()
-	singleflight.AddWriter(rec1, newTestValidRequest())
-	singleflight.AddWriter(rec2, newTestValidRequest())
-	singleflight.Write(cache.NewDefaultCacher().Standardize(resp))
-	response1 := string(rec1.Body.Bytes())
-	response2 := string(rec2.Body.Bytes())
-	if response1 != "Visitor count: 1." {
-		t.Errorf("Write should return the correct response")
-	}
-	if response1 != response2 {
-		t.Errorf("Write should return the same response to all writers")
-	}
-}
-
-// TODO: Figure out how to test that it is bucketing properly
-func TestWriteReturnsDifferentResponseToMultipleRequestsIfVary(t *testing.T) {
-	server := testServer(5) // set it to something different since it's a different instance
-	// than the singleflight
-	defer server.Close()
-	resp, err := http.Get(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	singleflight := newTestSingleflight(false)
-	rec1 := httptest.NewRecorder()
-	rec2 := httptest.NewRecorder()
-	rec3 := httptest.NewRecorder()
-	req1 := newTestValidRequest()
-	req2 := newTestValidRequest()
-	req3 := newTestValidRequest()
-	req1.Header.Set("Accept-Language", "en")
-	req2.Header.Set("Accept-Language", "ru")
-	req3.Header.Set("Accept-Language", "en")
-	singleflight.AddWriter(rec1, req1)
-	singleflight.AddWriter(rec2, req2)
-	singleflight.AddWriter(rec3, req3)
-	resp.Request = req1
-	singleflight.Write(cache.NewDefaultCacher().Standardize(resp))
-	response1 := string(rec1.Body.Bytes())
-	response2 := string(rec2.Body.Bytes())
-	response3 := string(rec3.Body.Bytes())
-
-	if response1 != response3 {
-		t.Errorf("Requests with identical Vary headers should get the same response. Got:\n%s\n%s", response1, response3)
-	}
-	if response1 == response2 {
-		t.Errorf("Requests with different Vary headers should get a different response. Got:\n%s\n%s", response1, response2)
-	}
+func TestFinishDoesNotRemoveNewerFlight(t *testing.T) {
+	var g Group
+	old, _ := g.Join("a")
+	g.Finish("a", old, Result{Retry: true})
+	newer, leader := g.Join("a")
+	assert.True(t, leader, "joining after a Flight finished starts a new one")
+	g.Finish("a", old, Result{Retry: true})
+	assert.True(t, g.InFlight("a"), "finishing an old Flight again mustn't remove the newer one")
+	g.Finish("a", newer, Result{Retry: true})
+	assert.False(t, g.InFlight("a"))
 }

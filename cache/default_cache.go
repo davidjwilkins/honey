@@ -159,15 +159,11 @@ func varyKey(base string) string {
 // Hash creates a unique string for a request.  It includes
 // the method, the url, and the values of any headers (and
 // allowed cookies) listed in the Vary header of the last
-// response for that url.  It also includes the X-Honey-Vary
-// header - which is used internally on multiplexed requests.
+// response for that url.
 func (c *defaultCacher) Hash(r *http.Request) string {
 	hash := baseKey(r)
 	if vary, found := c.store.get(varyKey(hash), time.Now()); found {
 		hash += utilities.GetVaryHeadersHash(r.Header, r, c.allowedCookieNames, vary.(string))
-	}
-	if vary := r.Header.Get("X-Honey-Vary"); vary != "" {
-		hash += vary
 	}
 	return hash
 }

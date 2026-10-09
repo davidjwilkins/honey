@@ -12,6 +12,7 @@ import (
 
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/singleflight"
+	"github.com/davidjwilkins/honey/utilities"
 	"github.com/vulcand/oxy/forward"
 	"github.com/vulcand/oxy/utils"
 )
@@ -48,7 +49,7 @@ func serveFromCache(c cache.Cacher, handler http.Handler) http.HandlerFunc {
 				// making this requester wait.  The original request's
 				// context is cancelled once it has been responded to, so
 				// it can't be used for the backend request.
-				go revalidateInBackground(hash, c, handler, serve, r.Clone(context.Background()))
+				go revalidateInBackground(hash, handler, r.Clone(context.Background()))
 				return
 			}
 			if responded {
@@ -68,33 +69,141 @@ func serveFromCache(c cache.Cacher, handler http.Handler) http.HandlerFunc {
 				handler.ServeHTTP(w, withBypass(r))
 				return
 			}
-			// RespondFromSingleflight will return true if there was an in-flight
-			// request with the same hash, and we were able to respond with it's
-			// response.  It will block until the in-flight request has completed.
-			responded = RespondFromSingleflight(hash, c, w, r, serve)
-			if responded {
+			// If the same resource is already being fetched, wait for it
+			f, leader := flights.Join(hash)
+			if !leader {
+				awaitFlight(w, r, f, c, handler, serve)
 				return
 			}
-			r = forBackend(r, hash, handler)
-		} else {
-			w.Header().Set("X-Honey-Cache", "NO-CACHE")
+			// The Flight is normally finished as soon as the backend
+			// responds (or errors); this makes sure nobody is left waiting
+			// whatever happens.
+			defer flights.Finish(hash, f, singleflight.Result{Retry: true})
+			handler.ServeHTTP(w, forBackend(r, hash, f))
+			return
 		}
+		w.Header().Set("X-Honey-Cache", "NO-CACHE")
 		handler.ServeHTTP(w, r)
 	}
 	return serve
 }
 
+// flights holds the backend requests in progress, which other requests
+// for the same resource wait for rather than making their own.
+var flights singleflight.Group
+
+// awaitFlight waits for Flight f, which is fetching the response to r,
+// and then responds to r according to its Result.
+func awaitFlight(w http.ResponseWriter, r *http.Request, f *singleflight.Flight, c cache.Cacher, handler http.Handler, serve http.HandlerFunc) {
+	select {
+	case <-f.Done():
+	case <-r.Context().Done():
+		return
+	}
+	result := f.Result()
+	switch {
+	case result.Bypass || (result.Response != nil && !shareable(result.Response)):
+		handler.ServeHTTP(w, withBypass(r))
+	case result.Retry || (result.Response != nil && !matchesVary(c, result.Response, r)):
+		// Try again: this will most likely be served from the cache, or
+		// start (or join) a Flight for this request's variant.  If that
+		// doesn't work either, give up on sharing.
+		if isRetry(r) {
+			handler.ServeHTTP(w, withBypass(r))
+			return
+		}
+		serve(w, withRetry(r))
+	case result.Response != nil:
+		writeShared(w, r, result.Response, result.Stale)
+	default:
+		statusCode := result.StatusCode
+		if statusCode == 0 {
+			statusCode = http.StatusBadGateway
+		}
+		http.Error(w, http.StatusText(statusCode), statusCode)
+	}
+}
+
+// shareable returns whether resp may be given to requests other than the
+// one it was fetched for.
+func shareable(resp cache.Response) bool {
+	cc := resp.Header().Get("Cache-Control")
+	if _, private := utilities.Directive(cc, "private"); private {
+		return false
+	}
+	if _, noStore := utilities.Directive(cc, "no-store"); noStore {
+		return false
+	}
+	return !headerListContains(resp.Header().Values("Vary"), "*")
+}
+
+// matchesVary returns whether r has the same values as the request resp
+// was fetched for, for the headers resp Varies on (other than
+// Accept-Encoding, which each requester gets their own of).
+func matchesVary(c cache.Cacher, resp cache.Response, r *http.Request) bool {
+	vary := utilities.CacheVary(strings.Join(resp.Header().Values("Vary"), ","))
+	if vary == "" {
+		return true
+	}
+	fetchedFor := &http.Request{Header: resp.RequestHeaders()}
+	return utilities.GetVaryHeadersHash(fetchedFor.Header, fetchedFor, c.AllowedCookies(), vary) ==
+		utilities.GetVaryHeadersHash(r.Header, r, c.AllowedCookies(), vary)
+}
+
+func headerListContains(values []string, name string) bool {
+	for _, value := range values {
+		for _, item := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(item), name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// writeShared responds to r with resp, which was fetched for another request.
+func writeShared(w http.ResponseWriter, r *http.Request, resp cache.Response, stale bool) {
+	header, body := cache.Negotiate(resp, r)
+	for key, values := range header {
+		w.Header()[key] = append([]string(nil), values...)
+	}
+	w.Header().Set("Age", resp.Age())
+	if stale {
+		w.Header().Set("Warning", staleWarning())
+		w.Header().Set("X-Honey-Cache", "STALE")
+	} else {
+		w.Header().Set("X-Honey-Cache", "MISS (MULTIPLEXED)")
+	}
+	if isNotModified(r, header.Get("Etag")) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.WriteHeader(resp.StatusCode())
+	w.Write(body)
+}
+
+type retryKey struct{}
+
+// withRetry marks r as having already waited for one Flight, so that it
+// doesn't wait for another.
+func withRetry(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), retryKey{}, true))
+}
+
+func isRetry(r *http.Request) bool {
+	retry, _ := r.Context().Value(retryKey{}).(bool)
+	return retry
+}
+
 // revalidateInBackground fetches a fresh copy of the response to r into
 // the cache, unless a request for it is already in flight.
-func revalidateInBackground(hash string, c cache.Cacher, handler http.Handler, serve http.HandlerFunc, r *http.Request) {
-	if _, inFlight := singleflights.Load(hash); inFlight {
+func revalidateInBackground(hash string, handler http.Handler, r *http.Request) {
+	f, leader := flights.Join(hash)
+	if !leader {
 		return
 	}
-	w := httptest.NewRecorder()
-	if RespondFromSingleflight(hash, c, w, r, serve) {
-		return
-	}
-	handler.ServeHTTP(w, forBackend(r, hash, handler))
+	defer flights.Finish(hash, f, singleflight.Result{Retry: true})
+	handler.ServeHTTP(httptest.NewRecorder(), forBackend(r, hash, f))
 }
 
 // conditionalHeaders make the backend respond with something other than
@@ -127,10 +236,8 @@ type flight struct {
 	// conditional holds the request's conditionalHeaders, which are not
 	// sent to the backend
 	conditional http.Header
-	// backend is the handler which sent the request to the backend, for
-	// the requests waiting on its singleflight to use if its response
-	// can't be shared with them
-	backend http.Handler
+	// flight is the Flight which the request is the leader of
+	flight *singleflight.Flight
 }
 
 type bypassKey struct{}
@@ -150,8 +257,8 @@ func isBypass(r *http.Request) bool {
 // it has none of the conditionalHeaders, so that the backend sends the
 // full response.  Whether this requester gets a 304 instead is decided
 // from the cached response (see clientRequest).
-func forBackend(r *http.Request, hash string, backend http.Handler) *http.Request {
-	f := flight{hash: hash, conditional: http.Header{}, backend: backend}
+func forBackend(r *http.Request, hash string, leading *singleflight.Flight) *http.Request {
+	f := flight{hash: hash, conditional: http.Header{}, flight: leading}
 	r = r.Clone(context.WithValue(r.Context(), flightKey{}, f))
 	for _, name := range conditionalHeaders {
 		if values, found := r.Header[name]; found {
@@ -200,7 +307,9 @@ func Forwarder(c cache.Cacher) http.Handler {
 // backendErrorHandler handles requests for which the backend could not
 // be reached.  If the cache has a response which stale-if-error allows to
 // be served, it serves that; otherwise it responds with an error.  Either
-// way, any requests waiting on the same singleflight get the same response.
+// way, any requests waiting on the same Flight get the same response -
+// unless the error was this request's client going away, in which case
+// they try again.
 type backendErrorHandler struct {
 	c cache.Cacher
 }
@@ -211,15 +320,14 @@ func (h backendErrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, e
 		return
 	}
 	hash := requestHash(h.c, r)
-	var multi singleflight.Singleflight
-	if m, found := singleflights.Load(hash); found {
-		multi = m.(singleflight.Singleflight)
-		singleflights.Delete(hash)
+	leading, _ := r.Context().Value(flightKey{}).(flight)
+	finish := func(result singleflight.Result) {
+		if leading.flight != nil {
+			flights.Finish(hash, leading.flight, result)
+		}
 	}
 	if prev, found := h.c.Load(hash, r); found && canServeStaleOnError(prev, "") {
-		if multi != nil {
-			go multi.Write(prev)
-		}
+		finish(singleflight.Result{Response: prev, Stale: true})
 		header, body := cache.Negotiate(prev, clientRequest(r))
 		for key, values := range header {
 			w.Header()[key] = append([]string(nil), values...)
@@ -232,13 +340,15 @@ func (h backendErrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, e
 		w.Write(body)
 		return
 	}
-	if multi != nil {
+	if r.Context().Err() != nil {
+		finish(singleflight.Result{Retry: true})
+	} else {
 		statusCode := http.StatusBadGateway
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			statusCode = http.StatusGatewayTimeout
 		}
-		multi.Abort(statusCode)
+		finish(singleflight.Result{StatusCode: statusCode})
 	}
 	utils.DefaultHandler.ServeHTTP(w, r, err)
 }

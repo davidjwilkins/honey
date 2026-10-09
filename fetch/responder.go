@@ -8,15 +8,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/singleflight"
 	"github.com/davidjwilkins/honey/utilities"
 )
-
-var singleflights sync.Map
 
 // RespondFromCache will see if there a response for request r which exists in cache c.
 // It returns the hash of the request, whether or not the request was responded to, and
@@ -134,24 +131,21 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 			r.Header.Set("X-Honey-Cache", "NO-CACHE")
 			return nil
 		}
-		hash := requestHash(c, r.Request)
-		m, found := singleflights.Load(hash)
-		if !found {
-			// TODO: handle this as it would be a serious error
+		leading, ok := r.Request.Context().Value(flightKey{}).(flight)
+		if !ok || leading.flight == nil {
 			return nil
 		}
-		multi := m.(singleflight.Singleflight)
+		hash := leading.hash
+		finish := func(result singleflight.Result) {
+			flights.Finish(hash, leading.flight, result)
+			if done != nil {
+				go func() { done <- true }()
+			}
+		}
 		if limiter, ok := c.(objectSizeLimiter); ok && !fitsInCache(r, limiter.MaxObjectSize()) {
 			// Stream it to this requester, and have everyone waiting for
 			// it fetch it themselves
-			singleflights.Delete(hash)
-			if f, ok := r.Request.Context().Value(flightKey{}).(flight); ok && f.backend != nil {
-				multi.Bypass(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-					f.backend.ServeHTTP(w, withBypass(req))
-				}))
-			} else {
-				multi.Abort(http.StatusBadGateway)
-			}
+			finish(singleflight.Result{Bypass: true})
 			r.Header.Set("X-Honey-Cache", "NO-CACHE")
 			return nil
 		}
@@ -194,13 +188,7 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 		if !serveStale {
 			r.Header.Set("X-Honey-Cache", "MISS")
 		}
-		go func() {
-			multi.Write(response)
-			singleflights.Delete(hash)
-			if done != nil {
-				done <- true
-			}
-		}()
+		finish(singleflight.Result{Response: response, Stale: serveStale})
 		// The request was sent to the backend without its conditional
 		// headers and Accept-Encoding; decide from the full response which
 		// encoding this client gets, and whether it should get a 304 (or
@@ -225,23 +213,6 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 		}
 		return nil
 	}
-}
-
-// RespondFromSingleflight will see if there is already a singleflight for the supplied hash.
-// If so, it will add ResponseWriter w to the singleflight, wait for the singleflight to response,
-// and then return true.  Otherwise, it will create a new singleflight for the hash, and return
-// false.
-func RespondFromSingleflight(hash string, c cache.Cacher, w http.ResponseWriter, r *http.Request, handler func(w http.ResponseWriter, r *http.Request)) (responded bool) {
-	multi := singleflight.NewSingleflight(c, r, handler)
-	m, fetching := singleflights.LoadOrStore(hash, multi)
-	if fetching {
-		multi = m.(singleflight.Singleflight)
-		multi.AddWriter(w, r)
-		multi.Wait()
-		singleflights.Delete(hash)
-		return true
-	}
-	return false
 }
 
 func isNotModified(r *http.Request, etag string) bool {
