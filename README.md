@@ -36,22 +36,31 @@ All the available settings:
 
 	[backend]
 	uri = "https://www.example.com"
+	timeout = "30s"              # how long to wait for the backend to start responding ("0" for no limit)
 
 	[cache]
 	maxSize = "256MB"            # memory for cached responses (KB, MB, GB)
 	maxObjectSize = "10MB"       # larger responses are streamed to the client, not cached
 	defaultTTL = "5m"            # freshness for responses without max-age, s-maxage or Expires
+	staleIfError = "1h"          # serve expired responses this long if the backend errors or times out
+	                             # (unless they have their own stale-if-error; off by default)
 	staticFiles = true           # cache images, css, js, fonts, media and documents
 	brotli = true                # brotli compress html, css, js, json, svg... for clients that accept it
 	gzip = true                  # gzip them for clients that accept gzip but not brotli
 	compressMinSize = "1KB"      # smaller responses aren't compressed
 	allowedCookies = ["site_lang_id"]  # Set-Cookie headers allowed through the cache
+	queryParams = ["p", "s", "ver"]    # the only query parameters which matter (unset: all of them)
 
 	# Requests not to cache. match is a path prefix, or with regex = true,
 	# a regular expression matched against the path and query string.
 	[[route]]
 	match = "/wp-admin"
 	cache = false
+
+	# Serve Prometheus metrics at http://127.0.0.1:9090/metrics (off unless set).
+	# Use a separate, private address: they shouldn't be public.
+	[metrics]
+	listen = "127.0.0.1:9090"
 
 	# Who may purge the cache, and refresh it with no-cache.  Nobody is
 	# trusted unless they are listed here.
@@ -61,6 +70,25 @@ All the available settings:
 	secretHeader = "X-Honey-Secret"
 
 Honey refuses to start if the config has settings it doesn't support.  See [`config/wordpress.toml`](config/wordpress.toml) for an example WordPress setup.
+
+## Query parameters
+
+By default every query parameter is part of the cache key, so `/page?nocache=123` is a different page to `/page`, and goes to the backend.  That lets anyone get around the cache, and tracking parameters like `utm_source` and `fbclid` split it.
+
+Setting `queryParams` lists the parameters which matter.  Any others are removed from cacheable requests before they are looked up in the cache or sent to the backend, so the backend never sees them, and the cache can't serve the wrong content because of them.  Parameters are also sorted, so their order doesn't matter.  Requests which aren't cached (e.g. those matching a `[[route]]` with `cache = false`) are left alone.
+
+For WordPress, core uses `p`, `page_id`, `s`, `paged`, `cat`, `tag`, `author`, `m`, `year`, `monthnum`, `day`, `post_type`, `cpage`, `replytocom`, `attachment_id` and `ver` (on css and js, so that an upgrade isn't served old cached files) - but check which ones your plugins use, as their parameters will stop working if they aren't listed.
+
+## Metrics
+
+With `[metrics] listen` set, `/metrics` on that address has, in the Prometheus text format:
+
+- `honey_requests_total{cache="hit|miss|multiplexed|stale|bypass|none"}`: requests, by how the cache handled them (`none` is e.g. purges and errors)
+- `honey_responses_total{code="2xx|..."}`: responses, by status class
+- `honey_backend_requests_total{code="2xx|...|error"}`, `honey_backend_response_seconds` (histogram) and `honey_backend_requests_in_flight`: requests to the backend, and how long it took to start responding
+- `honey_cache_entries`, `honey_cache_bytes` and `honey_cache_max_bytes`: how full the cache is
+
+The hit ratio is `rate(honey_requests_total{cache=~"hit|multiplexed|stale"}[5m]) / rate(honey_requests_total[5m])`.
 
 ## Purging and refreshing
 

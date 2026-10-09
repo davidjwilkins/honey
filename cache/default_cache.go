@@ -42,6 +42,11 @@ type Options struct {
 	// Larger responses are streamed to the client without being cached.
 	// Defaults to DefaultMaxObjectBytes, and is never more than MaxBytes.
 	MaxObjectBytes int64
+	// StaleIfError is how long past their freshness lifetime responses may
+	// be served if the backend errors or can't be reached, unless they
+	// have their own stale-if-error directive.  Zero means only responses
+	// with stale-if-error are served stale.
+	StaleIfError time.Duration
 	// SkipStaticFiles stops requests for static files (images, css, js,
 	// fonts, media, documents, archives...) from being cached.
 	SkipStaticFiles bool
@@ -62,6 +67,7 @@ type defaultCacher struct {
 	allowedCookies     map[string]bool
 	allowedCookieNames []string
 	defaultTTL         time.Duration
+	staleIfError       time.Duration
 	maxObjectBytes     int64
 	skipStaticFiles    bool
 	brotli             bool
@@ -94,6 +100,7 @@ func NewCacher(opts Options) *defaultCacher {
 		allowedCookies:     make(map[string]bool),
 		allowedCookieNames: []string{},
 		defaultTTL:         opts.DefaultTTL,
+		staleIfError:       opts.StaleIfError,
 		maxObjectBytes:     opts.MaxObjectBytes,
 		skipStaticFiles:    opts.SkipStaticFiles,
 		brotli:             !opts.DisableBrotli,
@@ -237,6 +244,11 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	_, sMaxAge := utilities.Directive(cc, "s-maxage")
 	if !noCache && !maxAge && !sMaxAge && r.Header.Get("Expires") == "" {
 		cc = addDirective(cc, fmt.Sprintf("max-age=%d", int(c.defaultTTL/time.Second)))
+	}
+	// https://www.rfc-editor.org/rfc/rfc5861#section-4 - the cache keeps
+	// responses for this long past their freshness, in case it needs them
+	if _, found := utilities.Directive(cc, "stale-if-error"); !found && c.staleIfError >= time.Second {
+		cc = addDirective(cc, fmt.Sprintf("stale-if-error=%d", int(c.staleIfError/time.Second)))
 	}
 	r.Header.Set("Cache-Control", cc)
 

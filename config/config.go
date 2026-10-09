@@ -19,15 +19,25 @@ import (
 // DefaultListen is the address Honey listens on if none is configured.
 const DefaultListen = ":8080"
 
+// DefaultBackendTimeout is how long Honey waits for the backend to start
+// responding, if no backend.timeout is configured.
+const DefaultBackendTimeout = 30 * time.Second
+
 // Config is a validated Honey configuration.
 type Config struct {
 	// Listen is the address to listen on, e.g. ":8080"
 	Listen string
+	// MetricsListen is the address to serve metrics on, e.g.
+	// "127.0.0.1:9090", or "" not to serve them
+	MetricsListen string
 	// Backend is the server which requests are proxied to
 	Backend *url.URL
-	Cache   Cache
-	Routes  []Route
-	Control Control
+	// BackendTimeout is how long to wait for the backend to start
+	// responding.  Zero means no limit.
+	BackendTimeout time.Duration
+	Cache          Cache
+	Routes         []Route
+	Control        Control
 }
 
 // Control says which requests are trusted to purge the cache and to make
@@ -48,7 +58,13 @@ type Cache struct {
 	MaxBytes       int64
 	MaxObjectBytes int64
 	DefaultTTL     time.Duration
+	// StaleIfError is how long responses may be served stale if the
+	// backend errors, unless they say otherwise
+	StaleIfError   time.Duration
 	AllowedCookies []string
+	// QueryParams, if not nil, are the only query parameters kept on
+	// cacheable requests (see fetch.Options)
+	QueryParams []string
 	// StaticFiles is whether static files (images, css, js...) are cached
 	StaticFiles bool
 	// Brotli and Gzip are whether compressible responses are compressed
@@ -71,18 +87,24 @@ type Route struct {
 // file is the layout of the TOML file
 type file struct {
 	Listen  string `toml:"listen"`
+	Metrics struct {
+		Listen string `toml:"listen"`
+	} `toml:"metrics"`
 	Backend struct {
-		URI string `toml:"uri"`
+		URI     string `toml:"uri"`
+		Timeout string `toml:"timeout"`
 	} `toml:"backend"`
 	Cache struct {
-		MaxSize         string   `toml:"maxSize"`
-		MaxObjectSize   string   `toml:"maxObjectSize"`
-		DefaultTTL      string   `toml:"defaultTTL"`
-		AllowedCookies  []string `toml:"allowedCookies"`
-		StaticFiles     *bool    `toml:"staticFiles"`
-		Brotli          *bool    `toml:"brotli"`
-		Gzip            *bool    `toml:"gzip"`
-		CompressMinSize string   `toml:"compressMinSize"`
+		MaxSize         string    `toml:"maxSize"`
+		MaxObjectSize   string    `toml:"maxObjectSize"`
+		DefaultTTL      string    `toml:"defaultTTL"`
+		StaleIfError    string    `toml:"staleIfError"`
+		AllowedCookies  []string  `toml:"allowedCookies"`
+		QueryParams     *[]string `toml:"queryParams"`
+		StaticFiles     *bool     `toml:"staticFiles"`
+		Brotli          *bool     `toml:"brotli"`
+		Gzip            *bool     `toml:"gzip"`
+		CompressMinSize string    `toml:"compressMinSize"`
 	} `toml:"cache"`
 	Control struct {
 		AllowIPs     []string `toml:"allowIPs"`
@@ -125,7 +147,7 @@ func Parse(data string) (*Config, error) {
 		return nil, fmt.Errorf("unsupported settings: %s", strings.Join(keys, ", "))
 	}
 
-	cfg := &Config{Listen: f.Listen}
+	cfg := &Config{Listen: f.Listen, MetricsListen: f.Metrics.Listen}
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen
 	}
@@ -141,6 +163,19 @@ func Parse(data string) (*Config, error) {
 		return nil, fmt.Errorf("backend.uri must be an http or https URL, e.g. https://www.example.com")
 	}
 
+	cfg.BackendTimeout = DefaultBackendTimeout
+	if f.Backend.Timeout != "" {
+		cfg.BackendTimeout, err = time.ParseDuration(f.Backend.Timeout)
+		if err != nil || cfg.BackendTimeout < 0 || (cfg.BackendTimeout > 0 && cfg.BackendTimeout < time.Second) {
+			return nil, fmt.Errorf("backend.timeout must be a duration of at least 1s (or \"0\" for no limit), e.g. \"30s\"")
+		}
+	}
+	if f.Cache.StaleIfError != "" {
+		cfg.Cache.StaleIfError, err = time.ParseDuration(f.Cache.StaleIfError)
+		if err != nil || cfg.Cache.StaleIfError < time.Second {
+			return nil, fmt.Errorf("cache.staleIfError must be a duration of at least 1s, e.g. \"1h\"")
+		}
+	}
 	if f.Cache.MaxSize != "" {
 		cfg.Cache.MaxBytes, err = parseSize(f.Cache.MaxSize)
 		if err != nil {
@@ -172,6 +207,9 @@ func Parse(data string) (*Config, error) {
 		}
 	}
 	cfg.Cache.AllowedCookies = f.Cache.AllowedCookies
+	if f.Cache.QueryParams != nil {
+		cfg.Cache.QueryParams = append([]string{}, *f.Cache.QueryParams...)
+	}
 
 	cfg.Control.AllowIPs, err = fetch.ParseIPs(f.Control.AllowIPs)
 	if err != nil {

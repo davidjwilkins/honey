@@ -29,19 +29,73 @@ func Fetch(c cache.Cacher, handler http.Handler, backend *url.URL) http.HandlerF
 // purge the cache (with the PURGE method), and make it fetch a fresh
 // response (with Cache-Control: no-cache or Pragma: no-cache).
 func FetchWithControl(c cache.Cacher, handler http.Handler, backend *url.URL, control Control) http.HandlerFunc {
-	serve := serveFromCache(c, handler)
+	return FetchWithOptions(c, handler, backend, Options{Control: control})
+}
+
+// Options configures FetchWithOptions.
+type Options struct {
+	// Control says which requests may purge the cache, or make it fetch
+	// fresh responses.
+	Control Control
+	// QueryParams, if not nil, are the only query parameters which matter.
+	// Any others are removed from cacheable requests before they are
+	// looked up in the cache or sent to the backend, so that they can't
+	// be used to get around the cache (e.g. ?nocache=<random>), and so
+	// that tracking parameters (e.g. utm_source) don't split the cache.
+	// Parameters are also sorted, so their order doesn't matter.  A nil
+	// QueryParams keeps every parameter.
+	QueryParams []string
+}
+
+// FetchWithOptions is like Fetch, configured by opts.
+func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, opts Options) http.HandlerFunc {
+	filterQuery := queryFilter(opts.QueryParams)
+	serve := serveFromCache(c, handler, filterQuery)
 	return func(w http.ResponseWriter, r *http.Request) {
 		SwitchBackend(r, backend)
-		if control.applyControl(c, w, r) {
+		if r.Method == MethodPurge {
+			// so that it matches the cache keys
+			filterQuery(r)
+		}
+		if opts.Control.applyControl(c, w, r) {
 			return
 		}
 		serve(w, r)
 	}
 }
 
+// queryFilter returns a function which removes the query parameters not in
+// keep from a request, and sorts the rest.  If keep is nil, it does nothing.
+func queryFilter(keep []string) func(*http.Request) {
+	if keep == nil {
+		return func(*http.Request) {}
+	}
+	kept := map[string]bool{}
+	for _, name := range keep {
+		kept[name] = true
+	}
+	return func(r *http.Request) {
+		if r.URL.RawQuery == "" {
+			return
+		}
+		query := r.URL.Query()
+		for name := range query {
+			if !kept[name] {
+				delete(query, name)
+			}
+		}
+		r.URL.RawQuery = query.Encode()
+		r.URL.ForceQuery = false
+		// The forwarder uses RequestURI, when it's set, rather than URL
+		if r.RequestURI != "" {
+			r.RequestURI = r.URL.RequestURI()
+		}
+	}
+}
+
 // serveFromCache returns a handler for requests which have already been
 // switched to the backend.
-func serveFromCache(c cache.Cacher, handler http.Handler) http.HandlerFunc {
+func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http.Request)) http.HandlerFunc {
 	var serve http.HandlerFunc
 	serve = func(w http.ResponseWriter, r *http.Request) {
 		// CanCache tells us if this *Cache* is able to cache the request.
@@ -49,6 +103,9 @@ func serveFromCache(c cache.Cacher, handler http.Handler) http.HandlerFunc {
 		// true, the request itself may still not be cacheable.
 		cacheable := c.CanCache(r)
 		if cacheable {
+			// Only cacheable requests are filtered, so that e.g. rules
+			// against caching ?preview=true still see the whole query
+			filterQuery(r)
 			// ResponeFromCache will always return the hash, and responded will
 			// tell us if we were able to respond via the cache.  It will return
 			// false if the cache entry does not yet exist, or if the request
@@ -305,9 +362,20 @@ func clientRequest(r *http.Request) *http.Request {
 // Forwarder returns a new forward.Forwarder which saves responses
 // into cache.Cacher c.  It panics if it cannot create the forwarder.
 func Forwarder(c cache.Cacher) http.Handler {
+	return NewForwarder(c, nil)
+}
+
+// NewForwarder is like Forwarder, but sends requests to the backend with
+// transport (or http.DefaultTransport, if transport is nil) - e.g. to set
+// timeouts.
+func NewForwarder(c cache.Cacher, transport http.RoundTripper) http.Handler {
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
 	forwarder, err := forward.New(
 		forward.ResponseModifier(FlushSingleflight(c, nil)),
 		forward.ErrorHandler(backendErrorHandler{c}),
+		forward.RoundTripper(transport),
 	)
 	if err != nil {
 		panic(err)

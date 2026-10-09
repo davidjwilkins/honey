@@ -6,9 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -136,4 +139,90 @@ func TestHandlerControl(t *testing.T) {
 	assert.Equal(t, http.StatusOK, status)
 	_, body = do(http.MethodGet)
 	assert.Equal(t, "2", body, "the purged page is fetched again")
+}
+
+func TestHandlerBackendTimeout(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(5 * time.Second):
+		case <-r.Context().Done():
+		}
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\ntimeout = \"1s\"\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	start := time.Now()
+	resp, err := http.Get(proxy.URL + "/page")
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusGatewayTimeout, resp.StatusCode)
+	assert.Less(t, time.Since(start), 3*time.Second)
+}
+
+func TestHandlerMetrics(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "hello")
+	}))
+	defer origin.Close()
+
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n")
+	require.NoError(t, err)
+	_, metricsHandler := newHandlers(cfg)
+	assert.Nil(t, metricsHandler, "metrics are off unless configured")
+
+	cfg, err = config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[metrics]\nlisten = \"127.0.0.1:0\"\n")
+	require.NoError(t, err)
+	handler, metricsHandler := newHandlers(cfg)
+	require.NotNil(t, metricsHandler)
+	proxy := httptest.NewServer(handler)
+	defer proxy.Close()
+	for i := 0; i < 3; i++ {
+		resp, err := http.Get(proxy.URL + "/page")
+		require.NoError(t, err)
+		resp.Body.Close()
+	}
+	req, _ := http.NewRequest("PURGE", proxy.URL+"/page", nil)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	w := httptest.NewRecorder()
+	metricsHandler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	for _, line := range []string{
+		`honey_requests_total{cache="miss"} 1`,
+		`honey_requests_total{cache="hit"} 2`,
+		`honey_requests_total{cache="none"} 1`,
+		`honey_responses_total{code="4xx"} 1`,
+		`honey_backend_requests_total{code="2xx"} 1`,
+		"honey_cache_entries 1",
+		fmt.Sprintf("honey_cache_max_bytes %d", cache.DefaultMaxBytes),
+	} {
+		assert.Contains(t, w.Body.String(), line+"\n")
+	}
+}
+
+func TestHandlerQueryParams(t *testing.T) {
+	var seen []string
+	var mu sync.Mutex
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.URL.RequestURI())
+		mu.Unlock()
+		io.WriteString(w, "hello")
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[cache]\nqueryParams = [\"p\"]\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	for _, query := range []string{"?p=1&utm_source=a", "?utm_source=b&p=1", "?p=1"} {
+		resp, err := http.Get(proxy.URL + "/page" + query)
+		require.NoError(t, err)
+		resp.Body.Close()
+	}
+	assert.Equal(t, []string{"/page?p=1"}, seen)
 }

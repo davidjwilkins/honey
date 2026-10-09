@@ -7,16 +7,22 @@ listen = ":8080"
 
 [backend]
 uri = "https://www.insomniac.com"
+timeout = "30s"             # how long to wait for WordPress to start responding
 
 [cache]
 maxSize = "256MB"           # memory for cached responses; least recently used are evicted
 maxObjectSize = "10MB"      # larger responses are streamed to the client, not cached
 defaultTTL = "5m"           # freshness for responses without max-age, s-maxage or Expires
+staleIfError = "1h"         # if WordPress errors or times out, serve expired pages this long
 staticFiles = true          # cache images, css, js, fonts, media and documents
 brotli = true               # brotli compress html, css, js, json, svg... for clients that accept it
 gzip = true                 # gzip them for clients that accept gzip but not brotli
 compressMinSize = "1KB"     # smaller responses aren't compressed
 allowedCookies = []         # cookies allowed through the cache, e.g. ["site_lang_id"]
+# The only query parameters which matter - others are removed, so that they
+# can't be used to get around the cache.  These are WordPress core's (ver is
+# on css and js); add any your plugins use before uncommenting this.
+# queryParams = ["p", "page_id", "s", "paged", "cat", "tag", "author", "m", "year", "monthnum", "day", "post_type", "cpage", "replytocom", "attachment_id", "ver"]
 
 # Don't cache previews, the RSS feed, or the admin and login pages.
 # regex = true matches against the path and query string; otherwise
@@ -25,6 +31,10 @@ allowedCookies = []         # cookies allowed through the cache, e.g. ["site_lan
 match = "(?:[?&]preview=true(?:&|$)|/(?:feed|wp-admin|wp-login))"
 regex = true
 cache = false
+
+# Prometheus metrics at http://127.0.0.1:9090/metrics - keep this private
+# [metrics]
+# listen = "127.0.0.1:9090"
 
 # Who may purge the cache (curl -X PURGE ...) and refresh it with
 # Cache-Control: no-cache.  Nobody is trusted unless listed here.  If Honey
