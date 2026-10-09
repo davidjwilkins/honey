@@ -76,5 +76,10 @@ func newHandler(cfg *config.Config) http.Handler {
 			cacher.AddSkipPrefix(route.Match)
 		}
 	}
-	return fetch.Fetch(cacher, fetch.Forwarder(cacher), cfg.Backend)
+	control := fetch.Control{
+		AllowIPs:     cfg.Control.AllowIPs,
+		Secret:       cfg.Control.Secret,
+		SecretHeader: cfg.Control.SecretHeader,
+	}
+	return fetch.FetchWithControl(cacher, fetch.Forwarder(cacher), cfg.Backend, control)
 }

@@ -16,7 +16,7 @@ Compressible responses (html, css, js, json, svg...) are served brotli compresse
 
 If will not cache responses that contain the `no-store` Cache-Control directive
 
-It will always fetch fresh resources if the `no-cache` Cache-Control directive, or if Pragma: no-cache, is set in the request
+It will fetch fresh resources if the `Cache-Control: no-cache` directive, or `Pragma: no-cache`, is set in a request from a [trusted caller](#purging-and-refreshing).  From anyone else, these are ignored (RFC 9111 lets a cache do this), so that they can't be used to send every request to the backend.
 
 Every response has an `X-Honey-Cache` header saying how it was served: `HIT`, `MISS`, `MISS (MULTIPLEXED)`, `STALE` or `NO-CACHE`.
 
@@ -53,7 +53,41 @@ All the available settings:
 	match = "/wp-admin"
 	cache = false
 
+	# Who may purge the cache, and refresh it with no-cache.  Nobody is
+	# trusted unless they are listed here.
+	[control]
+	allowIPs = ["10.0.0.0/8"]    # IP addresses or networks
+	secret = "a long random string"   # or send this in the secretHeader header
+	secretHeader = "X-Honey-Secret"
+
 Honey refuses to start if the config has settings it doesn't support.  See [`config/wordpress.toml`](config/wordpress.toml) for an example WordPress setup.
+
+## Purging and refreshing
+
+Trusted callers (see `[control]` above) can remove pages from the cache with the `PURGE` method, which is never sent to the backend:
+
+	# one page, every variant of it (encodings, Vary values, GET and HEAD)
+	curl -X PURGE -H "X-Honey-Secret: $SECRET" https://www.example.com/2018/02/my-post/
+	# everything under a path
+	curl -X PURGE -H "X-Honey-Secret: $SECRET" "https://www.example.com/category/news/*"
+	# everything
+	curl -X PURGE -H "X-Honey-Secret: $SECRET" "https://www.example.com/*"
+
+They can also make Honey fetch a fresh copy, and cache it, by sending `Cache-Control: no-cache`.  Untrusted `PURGE` requests get a `403 Forbidden`.
+
+For example, to purge posts from WordPress when they're updated, put this in a must-use plugin (e.g. `wp-content/mu-plugins/honey.php`):
+
+	<?php
+	add_action('save_post', function ($post_id) {
+		foreach ([get_permalink($post_id), home_url('/')] as $url) {
+			wp_remote_request($url, [
+				'method' => 'PURGE',
+				'headers' => ['X-Honey-Secret' => HONEY_SECRET], // define() this in wp-config.php
+			]);
+		}
+	});
+
+If Honey is behind another proxy on the same host (e.g. Caddy or nginx for TLS), every request comes from that proxy's address, so don't put it in `allowIPs`: use the secret instead.
 
 ## Using it as a library
 
@@ -68,6 +102,8 @@ Honey refuses to start if the config has settings it doesn't support.  See [`con
 	// adding site_lang_id cookie to the default
 	// cacher will allow it through the cache
 	cacher.AddAllowedCookie("site_lang_id")
+	// fetch.FetchWithControl takes a fetch.Control saying who may purge
+	// the cache; fetch.Fetch trusts nobody.
 	fetcher := fetch.Fetch(cacher, fetch.Forwarder(cacher), backend)
 	http.ListenAndServe(":8080", fetcher)
 
@@ -143,7 +179,7 @@ Honey refuses to start if the config has settings it doesn't support.  See [`con
 - [x] Handle `only-if-cached` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) 
 
 - [x] Validate response or send to backend if `must-revalidate` or `proxy-revalidate` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control)
-	- [ ] Configurable Site-wide whether to respect must-revalidate directive, or only if from list of IPs, or some sort of authentication mechanism
+	- [x] Only let trusted callers (by IP or secret header) refresh or purge the cache
 	- [ ] Configurable Per route
 
 - [X] Add the `public` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) unless `private` is received from backend.

@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/davidjwilkins/honey/fetch"
 )
 
 // DefaultListen is the address Honey listens on if none is configured.
@@ -25,7 +27,20 @@ type Config struct {
 	Backend *url.URL
 	Cache   Cache
 	Routes  []Route
+	Control Control
 }
+
+// Control says which requests are trusted to purge the cache and to make
+// it fetch fresh responses (see fetch.Control).
+type Control struct {
+	AllowIPs     []*net.IPNet
+	Secret       string
+	SecretHeader string
+}
+
+// MinSecretLength is the shortest control.secret allowed, so that it can't
+// be guessed.
+const MinSecretLength = 16
 
 // Cache configures the cache.  Zero values mean the cache package's
 // defaults.
@@ -69,6 +84,11 @@ type file struct {
 		Gzip            *bool    `toml:"gzip"`
 		CompressMinSize string   `toml:"compressMinSize"`
 	} `toml:"cache"`
+	Control struct {
+		AllowIPs     []string `toml:"allowIPs"`
+		Secret       string   `toml:"secret"`
+		SecretHeader string   `toml:"secretHeader"`
+	} `toml:"control"`
 	Routes []struct {
 		Match string `toml:"match"`
 		Regex bool   `toml:"regex"`
@@ -152,6 +172,19 @@ func Parse(data string) (*Config, error) {
 		}
 	}
 	cfg.Cache.AllowedCookies = f.Cache.AllowedCookies
+
+	cfg.Control.AllowIPs, err = fetch.ParseIPs(f.Control.AllowIPs)
+	if err != nil {
+		return nil, fmt.Errorf("control.allowIPs: %w", err)
+	}
+	if f.Control.Secret != "" && len(f.Control.Secret) < MinSecretLength {
+		return nil, fmt.Errorf("control.secret must be at least %d characters", MinSecretLength)
+	}
+	if f.Control.SecretHeader != "" && f.Control.Secret == "" {
+		return nil, fmt.Errorf("control.secretHeader is set, but control.secret isn't")
+	}
+	cfg.Control.Secret = f.Control.Secret
+	cfg.Control.SecretHeader = f.Control.SecretHeader
 
 	for i, r := range f.Routes {
 		if r.Match == "" {

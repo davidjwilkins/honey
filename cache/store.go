@@ -76,6 +76,21 @@ func (s *store) delete(key string) {
 	}
 }
 
+// deleteMatching removes every entry whose key match returns true for,
+// and returns how many it removed.
+func (s *store) deleteMatching(match func(key string) bool) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for key, el := range s.items {
+		if match(key) {
+			s.remove(el)
+			removed++
+		}
+	}
+	return removed
+}
+
 // stats returns the number of entries and their total size.
 func (s *store) stats() (entries int, bytes int64) {
 	s.mu.Lock()
