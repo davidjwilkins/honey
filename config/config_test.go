@@ -237,3 +237,17 @@ func TestParseLog(t *testing.T) {
 	_, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[log]\nformat = \"xml\"\n")
 	assert.Error(t, err)
 }
+
+func TestParseStallTimeout(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, DefaultBackendTimeout, cfg.BackendStallTimeout)
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\nstallTimeout = \"10s\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, 10*time.Second, cfg.BackendStallTimeout)
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\nstallTimeout = \"0\"\n")
+	require.NoError(t, err)
+	assert.Zero(t, cfg.BackendStallTimeout)
+	_, err = Parse("[backend]\nuri = \"https://www.example.com\"\nstallTimeout = \"5ms\"\n")
+	assert.Error(t, err)
+}

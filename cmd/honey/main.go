@@ -110,7 +110,7 @@ func newHandlers(cfg *config.Config) (handler http.Handler, metricsHandler http.
 	}
 	backendTransport := http.DefaultTransport.(*http.Transport).Clone()
 	backendTransport.ResponseHeaderTimeout = cfg.BackendTimeout
-	var transport http.RoundTripper = backendTransport
+	transport := fetch.StallTimeout(backendTransport, cfg.BackendStallTimeout)
 	var recorder *metrics.Recorder
 	if cfg.MetricsListen != "" {
 		maxBytes := cfg.Cache.MaxBytes

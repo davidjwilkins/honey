@@ -39,6 +39,7 @@ All the available settings:
 	[backend]
 	uri = "https://www.example.com"
 	timeout = "30s"              # how long to wait for the backend to start responding ("0" for no limit)
+	stallTimeout = "30s"         # how long the backend may go silent partway through a response ("0" for no limit)
 
 	[cache]
 	maxSize = "256MB"            # memory for cached responses (KB, MB, GB)

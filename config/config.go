@@ -20,7 +20,8 @@ import (
 const DefaultListen = ":8080"
 
 // DefaultBackendTimeout is how long Honey waits for the backend to start
-// responding, if no backend.timeout is configured.
+// responding, or for it to send more of a response body, if no
+// backend.timeout or backend.stallTimeout is configured.
 const DefaultBackendTimeout = 30 * time.Second
 
 // Config is a validated Honey configuration.
@@ -39,9 +40,12 @@ type Config struct {
 	// BackendTimeout is how long to wait for the backend to start
 	// responding.  Zero means no limit.
 	BackendTimeout time.Duration
-	Cache          Cache
-	Routes         []Route
-	Control        Control
+	// BackendStallTimeout is how long the backend may send nothing while a
+	// response body is being read.  Zero means no limit.
+	BackendStallTimeout time.Duration
+	Cache               Cache
+	Routes              []Route
+	Control             Control
 }
 
 // Control says which requests are trusted to purge the cache and to make
@@ -99,8 +103,9 @@ type file struct {
 		Format string `toml:"format"`
 	} `toml:"log"`
 	Backend struct {
-		URI     string `toml:"uri"`
-		Timeout string `toml:"timeout"`
+		URI          string `toml:"uri"`
+		Timeout      string `toml:"timeout"`
+		StallTimeout string `toml:"stallTimeout"`
 	} `toml:"backend"`
 	Cache struct {
 		MaxSize         string    `toml:"maxSize"`
@@ -183,6 +188,13 @@ func Parse(data string) (*Config, error) {
 		cfg.BackendTimeout, err = time.ParseDuration(f.Backend.Timeout)
 		if err != nil || cfg.BackendTimeout < 0 || (cfg.BackendTimeout > 0 && cfg.BackendTimeout < time.Second) {
 			return nil, fmt.Errorf("backend.timeout must be a duration of at least 1s (or \"0\" for no limit), e.g. \"30s\"")
+		}
+	}
+	cfg.BackendStallTimeout = DefaultBackendTimeout
+	if f.Backend.StallTimeout != "" {
+		cfg.BackendStallTimeout, err = time.ParseDuration(f.Backend.StallTimeout)
+		if err != nil || cfg.BackendStallTimeout < 0 || (cfg.BackendStallTimeout > 0 && cfg.BackendStallTimeout < time.Second) {
+			return nil, fmt.Errorf("backend.stallTimeout must be a duration of at least 1s (or \"0\" for no limit), e.g. \"30s\"")
 		}
 	}
 	if f.Cache.StaleIfError != "" {

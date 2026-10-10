@@ -2,9 +2,11 @@ package fetch
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -142,7 +144,30 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 				go func() { done <- true }()
 			}
 		}
-		if limiter, ok := c.(objectSizeLimiter); ok && !fitsInCache(r, limiter.MaxObjectSize()) {
+		maxBytes := int64(1 << 62)
+		if limiter, ok := c.(objectSizeLimiter); ok {
+			maxBytes = limiter.MaxObjectSize()
+		}
+		fits, readErr := readBody(r, maxBytes)
+		if readErr != nil {
+			// The backend failed partway through (e.g. it stalled), so there
+			// is no response to cache or share; serve a stale one if allowed
+			r.Body.Close()
+			if prev, found := c.Load(hash, r.Request); found && canServeStaleOnError(prev, "") {
+				replaceWithStale(r, prev, fmt.Sprintf("Backend response failed: %v", readErr))
+				finish(singleflight.Result{Response: prev, Stale: true})
+				return nil
+			}
+			statusCode := http.StatusBadGateway
+			var netErr net.Error
+			if errors.As(readErr, &netErr) && netErr.Timeout() {
+				statusCode = http.StatusGatewayTimeout
+			}
+			replaceWithError(r, statusCode)
+			finish(singleflight.Result{StatusCode: statusCode})
+			return nil
+		}
+		if !fits {
 			// Stream it to this requester, and have everyone waiting for
 			// it fetch it themselves
 			finish(singleflight.Result{Bypass: true})
@@ -169,20 +194,7 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 				errorCode := response.StatusCode()
 				response = prevResponse
 				// Replace the error with the stale response for this requester too
-				for key := range r.Header {
-					r.Header.Del(key)
-				}
-				for key, values := range prevResponse.Header() {
-					r.Header[key] = append([]string(nil), values...)
-				}
-				r.StatusCode = prevResponse.StatusCode()
-				r.Status = prevResponse.Status()
-				r.Body = ioutil.NopCloser(bytes.NewReader(prevResponse.Body()))
-				r.ContentLength = int64(len(prevResponse.Body()))
-				r.Header.Set("Age", prevResponse.Age())
-				r.Header.Set("Warning", staleWarning())
-				r.Header.Set("X-Honey-Cache", "STALE")
-				r.Header.Set("X-Honey-Stale", fmt.Sprintf("Backend gave HTTP Status %d", errorCode))
+				replaceWithStale(r, prevResponse, fmt.Sprintf("Backend gave HTTP Status %d", errorCode))
 			}
 		}
 		if !serveStale {
@@ -226,13 +238,13 @@ type objectSizeLimiter interface {
 	MaxObjectSize() int64
 }
 
-// fitsInCache returns whether r's body is no larger than maxBytes.  It
-// reads at most maxBytes+1 bytes of the body to find out, and replaces
-// r.Body so that the whole body can still be read.  A body which can't
-// be read doesn't fit, so that a truncated body isn't cached.
-func fitsInCache(r *http.Response, maxBytes int64) bool {
+// readBody reads up to maxBytes+1 bytes of r's body, to find out whether it
+// fits in the cache, and replaces r.Body so that the whole body can still
+// be read.  It returns an error if the body couldn't be read (e.g. the
+// backend stalled), in which case it can't be cached or used at all.
+func readBody(r *http.Response, maxBytes int64) (fits bool, err error) {
 	if r.ContentLength > maxBytes {
-		return false
+		return false, nil
 	}
 	body := r.Body
 	buffered, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
@@ -244,7 +256,40 @@ func fitsInCache(r *http.Response, maxBytes int64) bool {
 		io.Reader
 		io.Closer
 	}{io.MultiReader(bytes.NewReader(buffered), rest), body}
-	return err == nil && int64(len(buffered)) <= maxBytes
+	return err == nil && int64(len(buffered)) <= maxBytes, err
+}
+
+// replaceWithStale replaces the response r with the cached response prev,
+// marked as stale for the given reason.
+func replaceWithStale(r *http.Response, prev cache.Response, reason string) {
+	for key := range r.Header {
+		r.Header.Del(key)
+	}
+	for key, values := range prev.Header() {
+		r.Header[key] = append([]string(nil), values...)
+	}
+	r.StatusCode = prev.StatusCode()
+	r.Status = prev.Status()
+	r.Body = ioutil.NopCloser(bytes.NewReader(prev.Body()))
+	r.ContentLength = int64(len(prev.Body()))
+	r.Header.Set("Age", prev.Age())
+	r.Header.Set("Warning", staleWarning())
+	r.Header.Set("X-Honey-Cache", "STALE")
+	r.Header.Set("X-Honey-Stale", reason)
+}
+
+// replaceWithError replaces the response r with an error response.
+func replaceWithError(r *http.Response, statusCode int) {
+	for key := range r.Header {
+		r.Header.Del(key)
+	}
+	body := http.StatusText(statusCode) + "\n"
+	r.Header.Set("Content-Type", "text/plain; charset=utf-8")
+	r.Header.Set("Content-Length", fmt.Sprint(len(body)))
+	r.StatusCode = statusCode
+	r.Status = fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode))
+	r.Body = ioutil.NopCloser(strings.NewReader(body))
+	r.ContentLength = int64(len(body))
 }
 
 type errorReader struct {
