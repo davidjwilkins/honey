@@ -8,6 +8,7 @@ listen = ":8080"
 [backend]
 uri = "https://www.insomniac.com"
 timeout = "30s"             # how long to wait for WordPress to start responding
+stallTimeout = "30s"        # how long WordPress may go silent partway through a response
 
 [cache]
 maxSize = "256MB"           # memory for cached responses; least recently used are evicted

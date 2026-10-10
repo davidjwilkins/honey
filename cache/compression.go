@@ -34,19 +34,49 @@ const (
 	maxRecompressQueue = 1000
 )
 
+// Compressors allocate megabytes of tables when they are created, so they
+// are reused rather than created for each response.
+var (
+	gzipWriters = sync.Pool{New: func() interface{} {
+		w, _ := gzip.NewWriterLevel(nil, gzip.BestCompression)
+		return w
+	}}
+	fastBrotliWriters = sync.Pool{New: func() interface{} {
+		return brotli.NewWriterLevel(nil, fastBrotliQuality)
+	}}
+	bestBrotliWriters = sync.Pool{New: func() interface{} {
+		return brotli.NewWriterLevel(nil, bestBrotliQuality)
+	}}
+)
+
 func compressGzip(body []byte) []byte {
 	var buf bytes.Buffer
-	w, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	w := gzipWriters.Get().(*gzip.Writer)
+	w.Reset(&buf)
 	w.Write(body)
 	w.Close()
+	gzipWriters.Put(w)
 	return buf.Bytes()
 }
 
 func compressBrotli(body []byte, quality int) []byte {
+	pool := &fastBrotliWriters
+	if quality == bestBrotliQuality {
+		pool = &bestBrotliWriters
+	} else if quality != fastBrotliQuality {
+		// Not pooled
+		var buf bytes.Buffer
+		w := brotli.NewWriterLevel(&buf, quality)
+		w.Write(body)
+		w.Close()
+		return buf.Bytes()
+	}
 	var buf bytes.Buffer
-	w := brotli.NewWriterLevel(&buf, quality)
+	w := pool.Get().(*brotli.Writer)
+	w.Reset(&buf)
 	w.Write(body)
 	w.Close()
+	pool.Put(w)
 	return buf.Bytes()
 }
 
@@ -111,7 +141,9 @@ func Negotiate(resp Response, r *http.Request) (http.Header, []byte) {
 }
 
 // recompressor recompresses cached responses at bestBrotliQuality, one at
-// a time, in the background.  Its goroutine only runs while there is work.
+// a time, in the background.  Responses are queued the first time they are
+// served from the cache, so that only responses which are requested more
+// than once are recompressed.  Its goroutine only runs while there is work.
 type recompressor struct {
 	mu      sync.Mutex
 	queue   []*responseImpl
@@ -148,8 +180,11 @@ func (q *recompressor) run() {
 		q.queue = q.queue[1:]
 		q.mu.Unlock()
 
-		if best := compressBrotli(r.body, bestBrotliQuality); len(best) < len(r.brotliBody()) {
-			r.brotli.Store(&best)
+		// It may have been evicted or replaced while it waited
+		if !r.removed.Load() {
+			if best := compressBrotli(r.body, bestBrotliQuality); len(best) < len(r.brotliBody()) {
+				r.brotli.Store(&best)
+			}
 		}
 		q.pending.Done()
 	}

@@ -262,3 +262,27 @@ func TestHandlerAccessLog(t *testing.T) {
 	assert.Contains(t, lines[0], `"cache":"MISS"`)
 	assert.Contains(t, lines[1], `"cache":"HIT"`)
 }
+
+func TestHandlerStallTimeout(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "20")
+		io.WriteString(w, "first half")
+		w.(http.Flusher).Flush()
+		select {
+		case <-time.After(5 * time.Second):
+		case <-r.Context().Done():
+		}
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\nstallTimeout = \"1s\"\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	start := time.Now()
+	resp, err := http.Get(proxy.URL + "/page")
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusGatewayTimeout, resp.StatusCode)
+	assert.Less(t, time.Since(start), 3*time.Second)
+}

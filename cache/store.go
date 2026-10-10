@@ -103,4 +103,7 @@ func (s *store) remove(el *list.Element) {
 	entry := s.order.Remove(el).(*storeEntry)
 	delete(s.items, entry.key)
 	s.bytes -= entry.size
+	if removable, ok := entry.value.(interface{ markRemoved() }); ok {
+		removable.markRemoved()
+	}
 }

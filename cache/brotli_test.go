@@ -2,10 +2,12 @@ package cache
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/andybalholm/brotli"
@@ -53,7 +55,11 @@ func TestBrotliRecompressedInBackground(t *testing.T) {
 	request := validRequest()
 	c.Cache(c.Hash(request), r)
 	c.recompressor.wait()
+	assert.Equal(t, fast, r.brotliBody(), "responses aren't recompressed until they're served from the cache")
 
+	_, found := c.Load(c.Hash(request), request)
+	require.True(t, found)
+	c.recompressor.wait()
 	best := r.brotliBody()
 	assert.Less(t, len(best), len(fast), "the background pass should compress better")
 	assert.Equal(t, body, decode(t, best))
@@ -126,4 +132,37 @@ func TestNegotiate(t *testing.T) {
 	header, served = Negotiate(r, request)
 	assert.Equal(t, "", header.Get("Content-Encoding"), "ranges apply to the unencoded body")
 	assert.Equal(t, body, string(served))
+}
+
+func TestEvictedResponsesArentRecompressed(t *testing.T) {
+	c := NewCacher(Options{})
+	r := htmlResponse(c, compressiblePage())
+	fast := r.brotliBody()
+	request := validRequest()
+	c.Cache(c.Hash(request), r)
+	c.store.deleteMatching(func(string) bool { return true })
+	assert.True(t, r.removed.Load())
+	c.recompressor.add(r)
+	c.recompressor.wait()
+	assert.Equal(t, fast, r.brotliBody(), "a response no longer in the cache shouldn't be recompressed")
+}
+
+func TestPooledCompressorsProduceValidOutput(t *testing.T) {
+	// Writers are reused, so compress different bodies concurrently and
+	// check each decodes to its own input
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := []byte(strings.Repeat(fmt.Sprintf("<p>body %d</p>", i), 200+i))
+			assert.Equal(t, string(body), decode(t, compressBrotli(body, fastBrotliQuality)))
+			gz, err := gzip.NewReader(bytes.NewReader(compressGzip(body)))
+			require.NoError(t, err)
+			decoded, err := io.ReadAll(gz)
+			require.NoError(t, err)
+			assert.Equal(t, string(body), string(decoded))
+		}(i)
+	}
+	wg.Wait()
 }
