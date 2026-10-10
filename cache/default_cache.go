@@ -366,9 +366,6 @@ func (c *defaultCacher) Cache(hash string, r Response) {
 		removeAt = now.Add(time.Duration(keep) * time.Second)
 	}
 	c.store.set(key, r, responseSize(key, r), removeAt)
-	if impl, ok := r.(*responseImpl); ok {
-		c.recompressor.add(impl)
-	}
 }
 
 // headerListContains returns whether a comma separated header (such as
@@ -406,6 +403,10 @@ func (c *defaultCacher) Load(hash string, request *http.Request) (Response, bool
 	r, ok := c.store.get(hash, time.Now())
 	if !ok {
 		return nil, false
+	}
+	// Recompress responses which are actually being served from the cache
+	if impl, ok := r.(*responseImpl); ok && impl.loads.Add(1) == 1 {
+		c.recompressor.add(impl)
 	}
 	return r.(Response), true
 }

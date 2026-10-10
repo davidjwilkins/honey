@@ -52,6 +52,16 @@ type responseImpl struct {
 	brotli atomic.Pointer[[]byte]
 	// gzip is the body gzip compressed, if it is worth compressing
 	gzip []byte
+	// loads counts how many times the response has been loaded from the
+	// cache, and removed is set once it is no longer in the cache
+	loads   atomic.Int64
+	removed atomic.Bool
+}
+
+// markRemoved is called by the store when the response is evicted or
+// replaced, so that it isn't recompressed
+func (r *responseImpl) markRemoved() {
+	r.removed.Store(true)
 }
 
 // brotliBody returns the brotli compressed body, or nil if there isn't one
