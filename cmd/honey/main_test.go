@@ -174,14 +174,14 @@ func TestHandlerMetrics(t *testing.T) {
 
 	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n")
 	require.NoError(t, err)
-	_, metricsHandler, _ := newHandlers(cfg)
-	assert.Nil(t, metricsHandler, "metrics are off unless configured")
+	assert.Nil(t, build(cfg, time.Now()).metrics, "metrics are off unless configured")
 
 	cfg, err = config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[metrics]\nlisten = \"127.0.0.1:0\"\n")
 	require.NoError(t, err)
-	handler, metricsHandler, _ := newHandlers(cfg)
-	require.NotNil(t, metricsHandler)
-	proxy := httptest.NewServer(handler)
+	h := build(cfg, time.Now())
+	require.NotNil(t, h.metrics)
+	metricsHandler := h.metrics
+	proxy := httptest.NewServer(h.handler)
 	defer proxy.Close()
 	for i := 0; i < 3; i++ {
 		resp, err := http.Get(proxy.URL + "/page")
@@ -320,6 +320,103 @@ func TestHandlerRoutes(t *testing.T) {
 	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
 }
 
+func TestHandlerBypassCookies(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := r.Cookie("PHPSESSID"); err == nil {
+			io.WriteString(w, "personal")
+			return
+		}
+		io.WriteString(w, "public")
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[cache]\nbypassCookies = [\"PHPSESSID\"]\n" +
+		"[[route]]\nmatch = \"/uploads/\"\nbypassCookies = []\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	get := func(path string) (*http.Response, string) {
+		req, err := http.NewRequest(http.MethodGet, proxy.URL+path, nil)
+		require.NoError(t, err)
+		req.Header.Set("Cookie", "PHPSESSID=abc")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, string(body)
+	}
+	resp, body := get("/page")
+	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
+	assert.Equal(t, "personal", body)
+	get("/uploads/cat.jpg")
+	resp, _ = get("/uploads/cat.jpg")
+	assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"), "the route doesn't bypass the cache for the cookie")
+}
+
+func TestHandlerBrowserCacheControl(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "hello")
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[cache]\nbrowserCacheControl = \"no-cache\"\n" +
+		"[[route]]\nmatch = \"/assets/\"\nbrowserCacheControl = \"public, max-age=31536000, immutable\"\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	for path, want := range map[string]string{"/page": "no-cache", "/assets/app.css": "public, max-age=31536000, immutable"} {
+		resp, err := http.Get(proxy.URL + path)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, want, resp.Header.Get("Cache-Control"), path)
+	}
+}
+
+func TestHandlerAdmin(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "hello")
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n")
+	require.NoError(t, err)
+	assert.Nil(t, build(cfg, time.Now()).admin, "the admin page is off unless configured")
+
+	cfg, err = config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[admin]\nlisten = \"127.0.0.1:0\"\n")
+	require.NoError(t, err)
+	h := build(cfg, time.Now())
+	require.NotNil(t, h.admin)
+	proxy := httptest.NewServer(h.handler)
+	defer proxy.Close()
+	adminServer := httptest.NewServer(h.admin)
+	defer adminServer.Close()
+
+	cacheResult := func() string {
+		resp, err := http.Get(proxy.URL + "/blog/post")
+		require.NoError(t, err)
+		resp.Body.Close()
+		return resp.Header.Get("X-Honey-Cache")
+	}
+	cacheResult()
+	require.Equal(t, "HIT", cacheResult())
+
+	req, err := http.NewRequest(http.MethodPost, adminServer.URL+"/purge", strings.NewReader("url=%2Fblog%2F&prefix=1"))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", adminServer.URL)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	assert.Contains(t, string(body), "Purged 1 cached response for")
+	assert.Equal(t, "MISS", cacheResult())
+
+	resp, err = http.Get(adminServer.URL + "/metrics")
+	require.NoError(t, err)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	assert.Contains(t, string(body), `honey_requests_total{cache="hit"} 1`)
+}
+
 func TestCacheSurvivesRestart(t *testing.T) {
 	var hits int32
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -341,12 +438,14 @@ func TestCacheSurvivesRestart(t *testing.T) {
 		return resp.Header.Get("X-Honey-Cache")
 	}
 
-	handler, _, cacher := newHandlers(cfg)
+	h := build(cfg, time.Now())
+	handler, cacher := h.handler, h.cacher
 	assert.Equal(t, "MISS", cacheResult(handler))
 	saveCache(cacher, path)
 
 	// a new process, with an empty cache, loads the saved one
-	handler, _, cacher = newHandlers(cfg)
+	h = build(cfg, time.Now())
+	handler, cacher = h.handler, h.cacher
 	loaded, err := cacher.LoadFrom(path)
 	require.NoError(t, err)
 	assert.Equal(t, 1, loaded)
@@ -356,7 +455,7 @@ func TestCacheSurvivesRestart(t *testing.T) {
 
 func TestPersistEvery(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cache.snapshot")
-	_, _, cacher := newHandlers(&config.Config{Backend: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}})
+	cacher := build(&config.Config{Backend: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}}, time.Now()).cacher
 	stop := persistEvery(cacher, path, 50*time.Millisecond)
 	require.Eventually(t, func() bool {
 		_, err := os.Stat(path)

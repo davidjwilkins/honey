@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/davidjwilkins/honey/cache"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -326,4 +327,93 @@ func TestParsePersist(t *testing.T) {
 		_, err := Parse(data)
 		assert.Error(t, err, data)
 	}
+}
+
+func TestParseBypassCookies(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, cache.WordPressBypassCookies, cfg.Cache.BypassCookies, "WordPress's are the default")
+
+	cfg, err = Parse(`
+[backend]
+uri = "https://www.example.com"
+
+[cache]
+bypassCookies = ["PHPSESSID", "wordpress_logged_in_"]
+
+[[route]]
+match = "/wp-content/uploads/"
+bypassCookies = []
+`)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"PHPSESSID", "wordpress_logged_in_"}, cfg.Cache.BypassCookies)
+	require.NotNil(t, cfg.Routes[0].BypassCookies)
+	assert.Empty(t, *cfg.Routes[0].BypassCookies)
+
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cache]\nbypassCookies = []\n")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Cache.BypassCookies, "they can be turned off")
+}
+
+func TestParseBypassCookiesErrors(t *testing.T) {
+	for _, tc := range []struct{ config, err string }{
+		{"[cache]\nbypassCookies = [\"\"]", `cache.bypassCookies: "" isn't a cookie name`},
+		{"[cache]\nbypassCookies = [\"a=b\"]", `cache.bypassCookies: "a=b" isn't a cookie name`},
+		{"[[route]]\nmatch = \"/\"\nbypassCookies = [\"a b\"]", `route 1 ("/"): bypassCookies: "a b" isn't a cookie name`},
+		{"[cache]\nallowedCookies = [\"wordpress_logged_in_abc\"]", `cache.allowedCookies: "wordpress_logged_in_abc" is also a bypass cookie`},
+		{"[[route]]\nmatch = \"/\"\ncache = false\nbypassCookies = []", "can't have other settings"},
+	} {
+		_, err := Parse("[backend]\nuri = \"https://www.example.com\"\n" + tc.config)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}
+
+func TestParseBrowserCacheControl(t *testing.T) {
+	cfg, err := Parse(`
+[backend]
+uri = "https://www.example.com"
+
+[cache]
+browserCacheControl = "no-cache"
+
+[[route]]
+match = "\\.(css|js)\\?(.*&)?ver="
+regex = true
+browserCacheControl = "public, max-age=31536000, immutable"
+
+[[route]]
+match = "/feed/"
+browserCacheControl = "inherit"
+`)
+	require.NoError(t, err)
+	assert.Equal(t, "no-cache", cfg.Cache.BrowserCacheControl)
+	require.NotNil(t, cfg.Routes[0].BrowserCacheControl)
+	assert.Equal(t, "public, max-age=31536000, immutable", *cfg.Routes[0].BrowserCacheControl)
+	assert.True(t, cfg.Routes[0].Regex.MatchString("/wp-includes/js/jquery.min.js?ver=3.7.1"))
+	require.NotNil(t, cfg.Routes[1].BrowserCacheControl)
+	assert.Equal(t, "", *cfg.Routes[1].BrowserCacheControl, `"inherit" sends the cached response's own`)
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cache]\nbrowserCacheControl = \"inherit\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, "", cfg.Cache.BrowserCacheControl)
+
+	for _, tc := range []struct{ config, err string }{
+		{"[cache]\nbrowserCacheControl = \"max-age=60\\r\\nX-Evil: 1\"", "isn't a Cache-Control header"},
+		{"[cache]\nbrowserCacheControl = \"max age\"", "isn't a Cache-Control header"},
+		{"[[route]]\nmatch = \"/\"\nbrowserCacheControl = \"\"", `route 1 ("/"): browserCacheControl`},
+	} {
+		_, err := Parse("[backend]\nuri = \"https://www.example.com\"\n" + tc.config)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}
+
+func TestParseAdmin(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n[admin]\nlisten = \"127.0.0.1:9090\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:9090", cfg.AdminListen)
+	_, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[admin]\nlisten = \"127.0.0.1:9090\"\n[metrics]\nlisten = \"127.0.0.1:9090\"\n")
+	assert.ErrorContains(t, err, "only set admin.listen")
 }

@@ -16,7 +16,7 @@ Static files (images, css, js, fonts, media, documents) are cached like any othe
 
 Compressible responses (html, css, js, json, svg...) are served brotli compressed to clients which accept it, gzip compressed to clients which only accept gzip, and unencoded to the rest, all from the same cache entry (the client's `Accept-Encoding` q-values decide between them).  The brotli copy is made quickly (quality 6) when a response is first cached, so that the first requester isn't kept waiting, and then remade at maximum quality (11) in the background once it has been served from the cache (so pages requested only once never pay for it).  Responses with `Cache-Control: no-transform` aren't compressed.  The backend is asked for gzip (which Honey decodes) rather than the client's `Accept-Encoding`, so that the cache holds the unencoded response.
 
-If will not cache responses that contain the `no-store` Cache-Control directive
+It won't cache responses marked `no-store` or `private`, or pages for logged in users and others whose pages may be personal (see [Logged in users and sessions](#logged-in-users-and-sessions)).  Requests with an `Authorization` header aren't cached either.
 
 It will fetch fresh resources if the `Cache-Control: no-cache` directive, or `Pragma: no-cache`, is set in a request from a [trusted caller](#purging-and-refreshing).  From anyone else, these are ignored (RFC 9111 lets a cache do this), so that they can't be used to send every request to the backend.
 
@@ -65,6 +65,9 @@ All the available settings:
 	gzip = true                  # gzip them for clients that accept gzip but not brotli
 	compressMinSize = "1KB"      # smaller responses aren't compressed
 	allowedCookies = ["site_lang_id"]  # Set-Cookie headers allowed through the cache
+	bypassCookies = ["wordpress_logged_in_", "wp-postpass_", "comment_author_",
+	    "woocommerce_items_in_cart", "wp_woocommerce_session_"]  # (the default) see below
+	browserCacheControl = "no-cache"   # Cache-Control for browsers (unset: the cached response's own)
 	queryParams = ["p", "s", "ver"]    # the only query parameters which matter (unset: all of them)
 
 	# Rules for some requests. match is a path prefix, or with regex = true,
@@ -75,9 +78,11 @@ All the available settings:
 
 	[[route]]
 	match = "/wp-content/uploads/"
-	defaultTTL = "7d"            # override cache settings for these:
-	# staleIfError = "0"         #   defaultTTL, staleIfError and queryParams
+	defaultTTL = "7d"            # override cache settings for these: defaultTTL, staleIfError,
+	# staleIfError = "0"         #   queryParams, bypassCookies and browserCacheControl
 	# queryParams = ["ver"]
+	# bypassCookies = []
+	# browserCacheControl = "public, max-age=604800"   # or "inherit"
 
 	# Log each request to stdout: method, uri, status, bytes, duration_ms,
 	# cache (the X-Honey-Cache result), remote and forwarded_for.
@@ -85,10 +90,14 @@ All the available settings:
 	access = true                # off by default
 	format = "text"              # text|json
 
-	# Serve Prometheus metrics at http://127.0.0.1:9090/metrics (off unless set).
-	# Use a separate, private address: they shouldn't be public.
-	[metrics]
+	# Serve the admin page at http://127.0.0.1:9090/ (off unless set), and
+	# Prometheus metrics at /metrics.  Use a separate, private address.
+	[admin]
 	listen = "127.0.0.1:9090"
+
+	# Or just the metrics, at http://127.0.0.1:9091/metrics (off unless set)
+	[metrics]
+	listen = "127.0.0.1:9091"
 
 	# Who may purge the cache, and refresh it with no-cache.  Nobody is
 	# trusted unless they are listed here.
@@ -108,9 +117,53 @@ With `persist` set, Honey saves the cache to that file every `persistInterval` (
 - On shutdown, Honey waits for requests in progress to finish (for up to 30 seconds) before saving.
 - The systemd service and the Docker image both have a writable `/var/lib/honey` for it.  With Docker, mount a volume there: `-v honey-cache:/var/lib/honey`.
 
+## Logged in users and sessions
+
+Some visitors get pages made just for them - a logged in user's admin bar and edit links, a commenter's name and email on the comment form, a shopper's cart - which mustn't be cached and served to everyone else.  WordPress usually marks these pages `private` or `no-store`, which Honey respects, but themes and plugins don't always.
+
+So requests with any of the `bypassCookies` (cookie name prefixes) go straight to the backend, with `X-Honey-Cache: NO-CACHE`: they aren't served from the cache, and their responses aren't cached.  Responses which *set* one of them (e.g. a WooCommerce `?add-to-cart=` link starting a cart) aren't cached either, and the cookie reaches the visitor.
+
+The default covers WordPress and WooCommerce:
+
+| Cookie | Who has it |
+| --- | --- |
+| `wordpress_logged_in_` | Logged in users |
+| `wp-postpass_` | Visitors who have entered a post's password |
+| `comment_author_` | Visitors who have left a comment (the form is filled in with their name and email) |
+| `woocommerce_items_in_cart`, `wp_woocommerce_session_` | Shoppers with a cart |
+
+Add any your plugins use (e.g. a membership plugin's), or set `bypassCookies = []` to turn this off.  A route can override it - e.g. `bypassCookies = []` for `/wp-content/uploads/`, so that logged in users' images still come from the cache.
+
+Other cookies don't stop a request being cached, and they don't change which cached response it gets (unless they are in `allowedCookies` and the backend sends `Vary: Cookie`).  Cookies that the backend sets are removed from cached responses, unless they are in `allowedCookies`.
+
+## Browser caching
+
+Browsers (and any CDN in front of Honey) normally get the `Cache-Control` header Honey caches the response by: the backend's, with `public` and `max-age=<defaultTTL>` added if it didn't say.  So a page cached for 5 minutes can be kept by browsers for 5 minutes too, and purging it from Honey doesn't reach them.
+
+`browserCacheControl` replaces that header for browsers, without changing how long Honey keeps the response.  It can be set site-wide in `[cache]`, and for each `[[route]]` (where `"inherit"` sends the cached response's own).  For example:
+
+	[cache]
+	browserCacheControl = "no-cache"   # pages: browsers check back each time, and see purges straight away
+
+	# css and js with a version, e.g. /wp-includes/js/jquery/jquery.min.js?ver=3.7.1
+	[[route]]
+	match = "\\.(css|js)\\?(.*&)?ver="
+	regex = true
+	browserCacheControl = "public, max-age=31536000, immutable"
+
+	[[route]]
+	match = "/wp-content/uploads/"
+	browserCacheControl = "public, max-age=604800"
+
+With `no-cache`, browsers still keep the page, but ask Honey whether it has changed each time; Honey answers from the cache with a `304 Not Modified` if it hasn't, so this costs a quick request, not a backend one.
+
+Only successful (`200`), fresh responses which are served from the cache, or cached as they're fetched, get it: not errors or redirects, not stale responses, and not responses Honey doesn't cache (e.g. `private` ones, or for logged in users).  `Age` and `Expires` are left off, as the new header says how long browsers may keep the response from now.
+
+Be careful with `immutable` and long `max-age`s: browsers won't ask for the file again, even after a purge.  Only use them where the URL changes whenever the file does.  WordPress's `ver` is the plugin's or theme's version (or WordPress's, if none was given), so a file edited without a version bump will be stale in browsers until the `max-age` runs out.
+
 ## Routes
 
-Each `[[route]]` either stops the requests it matches from being cached (`cache = false`), or overrides some of the `[cache]` settings for them: `defaultTTL`, `staleIfError` (`"0"` turns it off) and `queryParams`.
+Each `[[route]]` either stops the requests it matches from being cached (`cache = false`), or overrides some of the `[cache]` settings for them: `defaultTTL`, `staleIfError` (`"0"` turns it off), `queryParams` and `bypassCookies`.
 
 - `cache = false` applies if any matching route says so, wherever it is in the list.
 - Otherwise the first matching route's settings apply, so list more specific routes first.
@@ -126,9 +179,15 @@ Setting `queryParams` lists the parameters which matter.  Any others are removed
 
 For WordPress, core uses `p`, `page_id`, `s`, `paged`, `cat`, `tag`, `author`, `m`, `year`, `monthnum`, `day`, `post_type`, `cpage`, `replytocom`, `attachment_id` and `ver` (on css and js, so that an upgrade isn't served old cached files) - but check which ones your plugins use, as their parameters will stop working if they aren't listed.
 
+## Admin page
+
+With `[admin] listen` set, that address serves a page showing how the cache is doing - its hit ratio, how full it is, how each request was handled, and how quickly the backend responds - with a form to purge a URL, everything under a path, or the whole cache.  It refreshes itself every few seconds.  `/metrics` is served there too.
+
+It has no login, so only listen on a private address, e.g. `127.0.0.1:9090`, and reach it with an SSH tunnel (`ssh -L 9090:127.0.0.1:9090 your-server`, then open http://localhost:9090/).  To protect it from other websites you visit, it is only served for an IP address or `localhost` (not a hostname, so that a site can't point its own hostname at it), its forms only accept posts from the page itself, and it can't be framed.  With Docker, listen on `":9090"` inside the container and publish it to the host's loopback only: `-p 127.0.0.1:9090:9090`.
+
 ## Metrics
 
-With `[metrics] listen` set, `/metrics` on that address has, in the Prometheus text format:
+With `[admin] listen` or `[metrics] listen` set, `/metrics` on that address has, in the Prometheus text format:
 
 - `honey_requests_total{cache="hit|miss|multiplexed|stale|bypass|none"}`: requests, by how the cache handled them (`none` is e.g. purges and errors)
 - `honey_responses_total{code="2xx|..."}`: responses, by status class
@@ -183,102 +242,14 @@ If Honey is behind another proxy on the same host (e.g. Caddy or nginx for TLS),
 	http.ListenAndServe(":8080", fetcher)
 
 
-### Todo
+## Ideas
 
-- [x] Handle `stale-if-error`
-	- [x] Add unit tests
-	- [x] Serve stale content when the backend can't be reached at all
-	- [ ] Configurable Site-wide (whether to respect it if present, or whether to always act as if this header were present)
-	- [ ] Configurable Per route
-	- [x] Send cached response with a [`Warning`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Warning) header if the backend gives an error after clearing the cache. 
+Things which might be worth doing next:
 
-- [ ] Implement configuration via TOML file (honey.toml?)
-	- [x] Backend, listen address, cache size, default TTL, allowed cookies, uncached routes
-	- [ ] The planned settings in `config/wordpress.toml`
+- **Revalidating with the backend:** refresh expired responses with a conditional request (`If-None-Match` / `If-Modified-Since`), so that an unchanged page costs the backend a `304` rather than a full render.
+- **A shared cache** (e.g. Redis), so that several Honey instances behind a load balancer share one cache, and purges reach all of them.
+- **TLS termination** with automatic certificates (e.g. Let's Encrypt), so that Honey can face the internet without another proxy in front.
+- **A login for the admin page**, so that it can be served somewhere other than a private address.
+- **Per-route compression settings** (brotli and gzip are site-wide for now).
 
-- [ ] Come up with a way to mark certain routes/files as [`immutable`](https://hacks.mozilla.org/2017/01/using-immutable-caching-to-speed-up-the-web/)
-
-- [ ] Web UI to configure / clear cache and view metrics
-
-- [ ] Minify html, js, css before cacheing
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] [Canonicalize](https://www.modpagespeed.com/doc/filter-canonicalize-js#sample)  popular JavaScript libraries that can be replaced with ones hosted for free by a JavaScript library hosting service
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Use http/2 push to push assets if request doesn't have an If-None-Match header
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Rewrite static assets to cookieless subdomain
-
-- [ ] Combine all google-font requests into a single one
-
-- [ ] Implement other cache backends
-	- [x] In Memory (size-bounded LRU)
-	- [ ] File
-	- [ ] Memcached
-	- [ ] Redis
-	- [ ] BoltDB
-
-	- [x] Brotli compress if requester supports it
-	- [x] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-		- [x] Site wide
-		- [ ] Per route
-
-- [ ] Implement [offline cache](https://developers.google.com/web/fundamentals/instant-and-offline/offline-cookbook/)
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Automatically fix mixed-content https issues
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Prevent hotlinking of images
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Letsencypt SSL termination
-
-- [x] Set [`Last-Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Last-Modified) header on response to the cached time if it is not already on the backend response.
-	- [ ] Configurable Site-wide
-	- [ ] Configurable Per route
-
-- [x] Handle [`If-Modified-Since`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-Modified-Since]) and [`If-Unmodified-Since`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-Unmodified-Since)
-
-- [x] If cache miss, but after refresh Etag matches, send 304 Response
-
-- [x] Handle `only-if-cached` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) 
-
-- [x] Validate response or send to backend if `must-revalidate` or `proxy-revalidate` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control)
-	- [x] Only let trusted callers (by IP or secret header) refresh or purge the cache
-	- [ ] Configurable Per route
-
-- [X] Add the `public` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) unless `private` is received from backend.
-	- [ ] Configurable Site-wide
-	- [ ] Configurable Per route
-
-- [x] Add [`Expires`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Expires) header to responses if not in response from backend.
-	- [x] Configurable Cache TTL
-	- [ ] Configurable whether to overwrite backend Expires
-	- [ ] Configure whether to serve stale content while refreshing, or multiplex requests into a single request and serve new content to all of them
-	- [ ] Configurable Site-wide
-	- [ ] Configurable Per route
-
-- [x] Add ability to configure which headers to include in the Request hash (e.g. Accept-Language)
-	- [ ] Configurable Site-wide
-	- [ ] Configurable Per route
-
-- [x] If cache miss, but after refresh Validate matches, send 304 Response
-
-- [x] Check [`Vary`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Vary) header from response and handle properly
-
-- [x] Handle `stale-while-revalidate`
-	- [ ] Configurable Site-wide (whether to respect it)
-	- [ ] Configurable Per route
-
-- [x] After fetching a route with multiplexer, check vary headers, bucket queued requests based on the header,
-	  and do a fetch for each variant.
+Dropped from the original list: HTTP/2 server push (browsers have removed it), rewriting popular JavaScript libraries to public CDNs (no faster since browsers stopped sharing caches between sites, and it leaks visitors to the CDN), minifying HTML, CSS and JS (risky, and brotli gets most of the benefit), and other page rewriting (fixing mixed content, combining Google Fonts requests, a cookieless asset domain, hotlink protection, an offline cache), which is better done in WordPress or a CDN.

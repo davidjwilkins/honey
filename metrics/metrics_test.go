@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -108,4 +109,23 @@ func TestTransportCountsBackendRequests(t *testing.T) {
 	assert.Contains(t, out, `honey_backend_response_seconds_bucket{le="0.05"} 3`+"\n", "only /slow took longer than 50ms")
 	assert.Contains(t, out, `honey_backend_response_seconds_bucket{le="0.25"} 4`+"\n")
 	assert.False(t, strings.Contains(out, "honey_cache_entries"), "cache stats are only reported if there are any")
+}
+
+func TestSnapshot(t *testing.T) {
+	m := New(func() (int, int64) { return 3, 1024 }, 4096)
+	handler := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Honey-Cache", r.URL.Query().Get("cache"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	for _, result := range []string{"HIT", "HIT", "MISS", ""} {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/?cache="+url.QueryEscape(result), nil))
+	}
+	s := m.Snapshot()
+	assert.Equal(t, map[string]uint64{"hit": 2, "miss": 1, "none": 1}, s.Requests)
+	assert.Equal(t, map[string]uint64{"2xx": 4}, s.Responses)
+	assert.Equal(t, 3, s.Entries)
+	assert.Equal(t, int64(1024), s.Bytes)
+	assert.Equal(t, int64(4096), s.MaxBytes)
+	s.Requests["hit"] = 100
+	assert.Equal(t, uint64(2), m.Snapshot().Requests["hit"], "it's a copy")
 }

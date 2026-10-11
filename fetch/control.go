@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/utilities"
 )
 
@@ -142,16 +143,55 @@ func purge(cacher interface{}, trusted bool, w http.ResponseWriter, r *http.Requ
 		http.Error(w, "This cache can't be purged", http.StatusNotImplemented)
 		return
 	}
-	u := *r.URL
-	prefix := strings.HasSuffix(u.Path, "*")
-	if prefix {
-		u.Path = strings.TrimSuffix(u.Path, "*")
-		u.RawPath = ""
-		u.RawQuery = ""
-	}
-	purged := p.Purge(&u, prefix)
+	purged := purgeURL(p, *r.URL, false)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprintf(w, "Purged %d responses\n", purged)
+}
+
+// purgeURL removes the cached responses for u - or, if prefix is set or
+// the path ends with "*", for every URL starting with u (without the "*"
+// and any query string).
+func purgeURL(p purger, u url.URL, prefix bool) int {
+	if strings.HasSuffix(u.Path, "*") {
+		prefix = true
+		u.Path = strings.TrimSuffix(u.Path, "*")
+		u.RawPath = ""
+	}
+	if prefix {
+		u.RawQuery = ""
+		u.ForceQuery = false
+	}
+	return p.Purge(&u, prefix)
+}
+
+// Purger returns a function which removes the cached responses for a URL -
+// or, if prefix is set, for every URL starting with it - as a trusted
+// PURGE request for it to FetchWithOptions(c, ..., backend, opts) would,
+// and returns how many it removed.  The URL may be a full URL (its host is
+// replaced by the backend's, as requests' are) or a path, e.g. "/blog/".
+func Purger(c cache.Cacher, backend *url.URL, opts Options) func(rawURL string, prefix bool) (int, error) {
+	filterQuery := queryFilter(c, opts.QueryParams)
+	return func(rawURL string, prefix bool) (int, error) {
+		p, ok := c.(purger)
+		if !ok {
+			return 0, fmt.Errorf("this cache can't be purged")
+		}
+		u, err := url.Parse(strings.TrimSpace(rawURL))
+		if err != nil || (u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https") || u.Opaque != "" {
+			return 0, fmt.Errorf("%q isn't a URL or path", rawURL)
+		}
+		if u.Path == "" {
+			u.Path = "/"
+		} else if !strings.HasPrefix(u.Path, "/") {
+			return 0, fmt.Errorf("%q isn't a URL or path: paths start with /", rawURL)
+		}
+		u.Fragment, u.RawFragment = "", ""
+		r := &http.Request{Method: MethodPurge, URL: u, Header: http.Header{}}
+		SwitchBackend(r, backend)
+		r = withRoute(c, r)
+		filterQuery(r)
+		return purgeURL(p, *r.URL, prefix), nil
+	}
 }
 
 func withoutDirective(cc, name string) string {

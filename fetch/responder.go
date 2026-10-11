@@ -67,6 +67,7 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 			w.Header().Set("X-Honey-Cache", "STALE")
 		} else {
 			w.Header().Set("X-Honey-Cache", "HIT")
+			setBrowserCacheControl(c, r, w.Header(), resp)
 		}
 		if isNotModified(r, header.Get("Etag")) {
 			w.WriteHeader(statusCode)
@@ -144,6 +145,13 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 				go func() { done <- true }()
 			}
 		}
+		if s, ok := c.(sessionStarter); ok && s.StartsSession(r) {
+			// It's personal: pass it (and its cookie) on to this requester
+			// only, and have everyone waiting for it fetch their own
+			finish(singleflight.Result{Bypass: true})
+			r.Header.Set("X-Honey-Cache", "NO-CACHE")
+			return nil
+		}
 		maxBytes := int64(1 << 62)
 		if limiter, ok := c.(objectSizeLimiter); ok {
 			maxBytes = limiter.MaxObjectSize()
@@ -199,6 +207,9 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 		}
 		if !serveStale {
 			r.Header.Set("X-Honey-Cache", "MISS")
+			if shareable(response) {
+				setBrowserCacheControl(c, r.Request, r.Header, response)
+			}
 		}
 		finish(singleflight.Result{Response: response, Stale: serveStale})
 		// The request was sent to the backend without its conditional
@@ -230,6 +241,12 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 func isNotModified(r *http.Request, etag string) bool {
 	return r.Header.Get("If-None-Match") != "" &&
 		r.Header.Get("If-None-Match") == etag
+}
+
+// sessionStarter is implemented by Cachers which know which cookies mark
+// a visitor whose pages may be personal
+type sessionStarter interface {
+	StartsSession(*http.Response) bool
 }
 
 // objectSizeLimiter is implemented by Cachers which limit the size of the

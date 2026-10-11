@@ -147,7 +147,13 @@ func (c *defaultCacher) LoadFrom(path string) (int, error) {
 			c.store.set(e.Key, e.Vary, e.Size, e.RemoveAt)
 			continue
 		}
-		c.store.set(e.Key, e.Response.restore(), e.Size, e.RemoveAt)
+		restored := e.Response.restore()
+		// in case it was saved by a version which stored it, or the
+		// bypass cookies have changed since
+		if !c.storable(restored) {
+			continue
+		}
+		c.store.set(e.Key, restored, e.Size, e.RemoveAt)
 		loaded++
 	}
 }

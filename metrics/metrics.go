@@ -109,6 +109,53 @@ func (f roundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
 
+// Snapshot is the counts so far
+type Snapshot struct {
+	// Requests are the requests served, by how the cache handled them:
+	// hit, miss, multiplexed, stale, bypass or none
+	Requests map[string]uint64
+	// Responses are the responses sent, by status class (e.g. 2xx)
+	Responses map[string]uint64
+	// Backend are the requests sent to the backend, by status class, or
+	// "error" if it didn't respond
+	Backend map[string]uint64
+	// BackendLatency is how long the backend took to start responding to
+	// them, in total
+	BackendLatency  time.Duration
+	BackendInFlight int64
+	// Entries and Bytes are how full the cache is, and MaxBytes its limit
+	Entries  int
+	Bytes    int64
+	MaxBytes int64
+}
+
+// Snapshot returns the counts so far.
+func (m *Recorder) Snapshot() Snapshot {
+	s := Snapshot{
+		Requests:        map[string]uint64{},
+		Responses:       map[string]uint64{},
+		Backend:         map[string]uint64{},
+		BackendInFlight: m.inFlight.Load(),
+		MaxBytes:        m.maxBytes,
+	}
+	m.mu.Lock()
+	for k, v := range m.requests {
+		s.Requests[k] = v
+	}
+	for k, v := range m.responses {
+		s.Responses[k] = v
+	}
+	for k, v := range m.backend {
+		s.Backend[k] = v
+	}
+	s.BackendLatency = m.latency
+	m.mu.Unlock()
+	if m.stats != nil {
+		s.Entries, s.Bytes = m.stats()
+	}
+	return s
+}
+
 // ServeHTTP writes the metrics in the Prometheus text format.
 func (m *Recorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder

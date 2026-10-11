@@ -59,6 +59,19 @@ type Options struct {
 	// CompressMinBytes is the smallest response which is compressed (with
 	// brotli or gzip).  Defaults to DefaultCompressMinBytes.
 	CompressMinBytes int64
+	// BypassCookies are cookie name prefixes which mark a visitor whose
+	// pages may be personal, such as a logged in user (see
+	// WordPressBypassCookies).  Requests with any of them are neither
+	// served from the cache nor cached, and responses which set one
+	// aren't cached.
+	BypassCookies []string
+	// BrowserCacheControl, if set, replaces the Cache-Control header sent
+	// to clients with successful responses which are served from (or
+	// stored in) the cache - e.g. "no-cache", so that browsers check back
+	// (cheaply, with the Etag) and see purges straight away, or "public,
+	// max-age=31536000, immutable" for versioned assets.  It doesn't
+	// change how long Honey caches them.
+	BrowserCacheControl string
 }
 
 type defaultCacher struct {
@@ -72,6 +85,8 @@ type defaultCacher struct {
 	brotli             bool
 	gzip               bool
 	compressMinBytes   int
+	bypassCookies      []string
+	browserCC          string
 	recompressor       *recompressor
 	// store holds both cached responses (keyed by their hash) and the
 	// Vary header last seen for each URL (keyed by varyKey)
@@ -105,6 +120,8 @@ func NewCacher(opts Options) *defaultCacher {
 		brotli:             !opts.DisableBrotli,
 		gzip:               !opts.DisableGzip,
 		compressMinBytes:   int(opts.CompressMinBytes),
+		bypassCookies:      append([]string(nil), opts.BypassCookies...),
+		browserCC:          opts.BrowserCacheControl,
 		recompressor:       &recompressor{},
 		store:              newStore(opts.MaxBytes),
 	}
@@ -112,9 +129,11 @@ func NewCacher(opts Options) *defaultCacher {
 
 // NewDefaultCacher returns a cacher optimized
 // for Wordpress - it will not cache the WP RSS
-// feed, the wp-admin or wp-login pages, or previews.
+// feed, the wp-admin or wp-login pages, or previews,
+// or pages for logged in users, commenters or shoppers
+// (see WordPressBypassCookies).
 func NewDefaultCacher() *defaultCacher {
-	cacher := NewCacher(Options{})
+	cacher := NewCacher(Options{BypassCookies: WordPressBypassCookies})
 	cacher.AddSkipRegex(regexp.MustCompile(`/(feed|wp-admin|wp-login)`))
 	cacher.AddSkipRegex(regexp.MustCompile(`[?&]preview=true(&|$)`))
 	return cacher
@@ -122,8 +141,8 @@ func NewDefaultCacher() *defaultCacher {
 
 // CanCache will return true if the method is a GET or
 // HEAD request, is not for a static file (if SkipStaticFiles
-// is set), does not have an Authorization header, and does not
-// match a route with NoCache set
+// is set), does not have an Authorization header or any of the
+// BypassCookies, and does not match a route with NoCache set
 func (c *defaultCacher) CanCache(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
@@ -132,6 +151,9 @@ func (c *defaultCacher) CanCache(r *http.Request) bool {
 		return false
 	}
 	if r.Header.Get("Authorization") != "" {
+		return false
+	}
+	if c.bypassCookie(r) != "" {
 		return false
 	}
 	return !c.routing(r).noCache
@@ -299,6 +321,10 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 		resp.headers.Del("Set-Cookie")
 		resp.headers.Set("Cache-Control", removeDirective(cc, `no-cache="set-cookie"`))
 	}
+	// and so does private="set-cookie"
+	if fields, private := utilities.Directive(cc, "private"); private && strings.EqualFold(fields, "set-cookie") {
+		resp.headers.Del("Set-Cookie")
+	}
 	resp.cookies = make(map[string]*http.Cookie)
 	for _, cookie := range resp.response.Cookies() {
 		resp.cookies[cookie.Name] = cookie
@@ -315,8 +341,13 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 // Cache will store the Response in the cache for later retrieval.  It is
 // kept until it can no longer be served - not even as stale content (per
 // stale-while-revalidate or stale-if-error) - or until it is evicted to
-// keep the cache within its size limit.
+// keep the cache within its size limit.  Responses which a shared cache
+// mustn't store - those marked private or no-store, or fetched for a
+// request with one of the BypassCookies - aren't stored.
 func (c *defaultCacher) Cache(hash string, r Response) {
+	if !c.storable(r) {
+		return
+	}
 	// The hash may already include the Vary values from a previous response
 	// for this URL; store the response under the key for its own Vary.
 	base := hash
