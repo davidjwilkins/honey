@@ -22,9 +22,11 @@ import (
 	"github.com/davidjwilkins/honey/accesslog"
 	"github.com/davidjwilkins/honey/admin"
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/clientip"
 	"github.com/davidjwilkins/honey/config"
 	"github.com/davidjwilkins/honey/fetch"
 	"github.com/davidjwilkins/honey/metrics"
+	"github.com/davidjwilkins/honey/warm"
 )
 
 // version is set when building a release, with
@@ -85,6 +87,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if h.warmer != nil {
+		// After loading any saved cache, so that it only fetches what's
+		// missing
+		go h.warmer.Run(ctx)
+	}
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
@@ -176,6 +183,8 @@ type honey struct {
 	// admin serves the admin page, if it is on
 	admin  http.Handler
 	cacher snapshotter
+	// warmer warms the cache from the sitemap, if it is on
+	warmer *warm.Warmer
 }
 
 // newHandler builds the caching proxy described by cfg.
@@ -187,29 +196,31 @@ func newHandler(cfg *config.Config) http.Handler {
 // started.
 func build(cfg *config.Config, started time.Time) *honey {
 	c := cache.NewCacher(cache.Options{
-		MaxBytes:            cfg.Cache.MaxBytes,
-		MaxObjectBytes:      cfg.Cache.MaxObjectBytes,
-		DefaultTTL:          cfg.Cache.DefaultTTL,
-		StaleIfError:        cfg.Cache.StaleIfError,
-		SkipStaticFiles:     !cfg.Cache.StaticFiles,
-		DisableBrotli:       !cfg.Cache.Brotli,
-		DisableGzip:         !cfg.Cache.Gzip,
-		CompressMinBytes:    cfg.Cache.CompressMinBytes,
-		BypassCookies:       cfg.Cache.BypassCookies,
-		BrowserCacheControl: cfg.Cache.BrowserCacheControl,
+		MaxBytes:             cfg.Cache.MaxBytes,
+		MaxObjectBytes:       cfg.Cache.MaxObjectBytes,
+		DefaultTTL:           cfg.Cache.DefaultTTL,
+		StaleIfError:         cfg.Cache.StaleIfError,
+		StaleWhileRevalidate: cfg.Cache.StaleWhileRevalidate,
+		SkipStaticFiles:      !cfg.Cache.StaticFiles,
+		DisableBrotli:        !cfg.Cache.Brotli,
+		DisableGzip:          !cfg.Cache.Gzip,
+		CompressMinBytes:     cfg.Cache.CompressMinBytes,
+		BypassCookies:        cfg.Cache.BypassCookies,
+		BrowserCacheControl:  cfg.Cache.BrowserCacheControl,
 	})
 	for _, name := range cfg.Cache.AllowedCookies {
 		c.AddAllowedCookie(name)
 	}
 	for _, route := range cfg.Routes {
 		r := cache.Route{
-			Regex:               route.Regex,
-			NoCache:             !route.Cache,
-			DefaultTTL:          route.DefaultTTL,
-			StaleIfError:        route.StaleIfError,
-			QueryParams:         route.QueryParams,
-			BypassCookies:       route.BypassCookies,
-			BrowserCacheControl: route.BrowserCacheControl,
+			Regex:                route.Regex,
+			NoCache:              !route.Cache,
+			DefaultTTL:           route.DefaultTTL,
+			StaleIfError:         route.StaleIfError,
+			StaleWhileRevalidate: route.StaleWhileRevalidate,
+			QueryParams:          route.QueryParams,
+			BypassCookies:        route.BypassCookies,
+			BrowserCacheControl:  route.BrowserCacheControl,
 		}
 		if route.Regex == nil {
 			r.Prefix = route.Match
@@ -233,15 +244,28 @@ func build(cfg *config.Config, started time.Time) *honey {
 		recorder = metrics.New(c.Stats, maxBytes)
 		transport = recorder.Transport(transport)
 	}
+	h := &honey{metrics: recorder, cacher: c}
 	fetchOpts := fetch.Options{
 		Control:     control,
 		QueryParams: cfg.Cache.QueryParams,
 		BackendHost: cfg.BackendHost,
+		OnPurge: func(path string, prefix, soft bool) {
+			// Everything has been purged: fill the cache again
+			if h.warmer != nil && prefix && path == "/" {
+				h.warmer.Trigger()
+			}
+		},
 	}
-	h := &honey{
-		handler: fetch.FetchWithOptions(c, fetch.NewForwarder(c, transport), cfg.Backend, fetchOpts),
-		metrics: recorder,
-		cacher:  c,
+	h.handler = fetch.FetchWithOptions(c, fetch.NewForwarder(c, transport), cfg.Backend, fetchOpts)
+	if cfg.Warm.Sitemap != nil {
+		// It requests pages from the cache itself, without the metrics or
+		// access log, so that warming isn't counted as visits
+		h.warmer = warm.New(h.handler, warm.Options{
+			Sitemap:  cfg.Warm.Sitemap,
+			Rate:     cfg.Warm.Rate,
+			MaxPages: cfg.Warm.MaxPages,
+			Interval: cfg.Warm.Interval,
+		})
 	}
 	if recorder != nil {
 		h.handler = recorder.Middleware(h.handler)
@@ -250,6 +274,8 @@ func build(cfg *config.Config, started time.Time) *honey {
 		logger := accesslog.New(accessLogOutput, accesslog.Format(cfg.AccessLogFormat))
 		h.handler = accesslog.Middleware(logger, h.handler)
 	}
+	// First, so that everything after it knows who each visitor is
+	h.handler = clientip.Middleware(cfg.TrustedProxies, h.handler)
 	if cfg.AdminListen != "" {
 		h.admin = admin.Handler(admin.Options{
 			Version: version,

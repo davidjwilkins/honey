@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/clientip"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -424,4 +425,82 @@ func TestParseBackendHost(t *testing.T) {
 	assert.Equal(t, "www.example.com", cfg.BackendHost)
 	_, err = Parse("[backend]\nuri = \"https://203.0.113.7\"\nhost = \"https://www.example.com/\"\n")
 	assert.ErrorContains(t, err, "backend.host must be a host name")
+}
+
+func TestParseStaleWhileRevalidate(t *testing.T) {
+	cfg, err := Parse(`
+[backend]
+uri = "http://127.0.0.1:8081"
+[cache]
+staleWhileRevalidate = "1d"
+[[route]]
+match = "/checkout"
+staleWhileRevalidate = "0"
+`)
+	require.NoError(t, err)
+	assert.Equal(t, 24*time.Hour, cfg.Cache.StaleWhileRevalidate)
+	require.NotNil(t, cfg.Routes[0].StaleWhileRevalidate)
+	assert.Zero(t, *cfg.Routes[0].StaleWhileRevalidate)
+
+	for _, tc := range []struct{ config, err string }{
+		{"[cache]\nstaleWhileRevalidate = \"0\"", "cache.staleWhileRevalidate must be a duration of at least 1s"},
+		{"[cache]\nstaleWhileRevalidate = \"soon\"", "cache.staleWhileRevalidate must be a duration"},
+		{"[[route]]\nmatch = \"/\"\nstaleWhileRevalidate = \"-1s\"", `route 1 ("/"): staleWhileRevalidate must be a duration`},
+	} {
+		_, err := Parse("[backend]\nuri = \"http://127.0.0.1:8081\"\n" + tc.config)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}
+
+func TestParseWarm(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"http://127.0.0.1:8081\"\n")
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Warm.Sitemap, "it's off by default")
+
+	cfg, err = Parse(`
+[backend]
+uri = "http://127.0.0.1:8081"
+[warm]
+sitemap = "https://www.example.com/wp-sitemap.xml"
+rate = 0.5
+maxPages = 500
+interval = "6h"
+`)
+	require.NoError(t, err)
+	assert.Equal(t, "https://www.example.com/wp-sitemap.xml", cfg.Warm.Sitemap.String())
+	assert.Equal(t, 0.5, cfg.Warm.Rate)
+	assert.Equal(t, 500, cfg.Warm.MaxPages)
+	assert.Equal(t, 6*time.Hour, cfg.Warm.Interval)
+
+	for _, tc := range []struct{ config, err string }{
+		{"[warm]\nrate = 5", "warm.sitemap is required"},
+		{"[warm]\nsitemap = \"/wp-sitemap.xml\"", "warm.sitemap must be the site's sitemap's full URL"},
+		{"[warm]\nsitemap = \"https://www.example.com/wp-sitemap.xml\"\nrate = 1000", "warm.rate must be"},
+		{"[warm]\nsitemap = \"https://www.example.com/wp-sitemap.xml\"\ninterval = \"5s\"", "warm.interval must be"},
+	} {
+		_, err := Parse("[backend]\nuri = \"http://127.0.0.1:8081\"\n" + tc.config)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}
+
+func TestParseTrustedProxies(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"http://127.0.0.1:8081\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, clientip.DefaultTrusted, cfg.TrustedProxies)
+
+	cfg, err = Parse("trustedProxies = [\"192.0.2.10\", \"2001:db8::/32\"]\n[backend]\nuri = \"http://127.0.0.1:8081\"\n")
+	require.NoError(t, err)
+	require.Len(t, cfg.TrustedProxies, 2)
+	assert.Equal(t, "192.0.2.10/32", cfg.TrustedProxies[0].String())
+
+	cfg, err = Parse("trustedProxies = []\n[backend]\nuri = \"http://127.0.0.1:8081\"\n")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.TrustedProxies, "none")
+
+	_, err = Parse("trustedProxies = [\"caddy\"]\n[backend]\nuri = \"http://127.0.0.1:8081\"\n")
+	assert.ErrorContains(t, err, "trustedProxies")
 }

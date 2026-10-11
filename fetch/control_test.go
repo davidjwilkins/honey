@@ -224,23 +224,54 @@ func TestPurger(t *testing.T) {
 		require.True(t, hit(path), path)
 	}
 
-	n, err := purge("https://www.public-hostname.example/page?utm_source=x&p=1#top", false)
+	n, err := purge("https://www.public-hostname.example/page?utm_source=x&p=1#top", false, false)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "the host is the backend's, and the query is filtered, as for requests")
-	n, err = purge("/search?s=honey&x=1", false)
+	n, err = purge("/search?s=honey&x=1", false, false)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "with the route's query parameters")
-	n, err = purge("/blog/", true)
+	n, err = purge("/blog/", true, false)
 	require.NoError(t, err)
 	assert.Equal(t, 2, n)
 	assert.True(t, hit("/about"))
-	n, err = purge("/*", false)
+	n, err = purge("/*", false, false)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, `a trailing "*" works as for PURGE requests`)
 	assert.False(t, hit("/about"))
 
 	for _, bad := range []string{"about", "javascript:alert(1)", "ftp://example.com/", "http://[::1"} {
-		_, err := purge(bad, false)
+		_, err := purge(bad, false, false)
 		assert.Error(t, err, bad)
 	}
+}
+
+func TestOnPurge(t *testing.T) {
+	o := noHeadersOrigin()
+	backend, err := url.Parse(o.URL)
+	require.NoError(t, err)
+	type call struct {
+		path         string
+		prefix, soft bool
+	}
+	var calls []call
+	opts := Options{
+		Control: Control{Secret: secret},
+		OnPurge: func(path string, prefix, soft bool) { calls = append(calls, call{path, prefix, soft}) },
+	}
+	c := cache.NewCacher(cache.Options{})
+	proxy := httptest.NewServer(FetchWithOptions(c, Forwarder(c), backend, opts))
+	t.Cleanup(proxy.Close)
+	t.Cleanup(o.Close)
+
+	purgeRequest(t, proxy.URL, "/blog/*", false)
+	purgeRequest(t, proxy.URL, "/page?p=1", true)
+	_, err = Purger(c, backend, opts)("/*", false, true)
+	require.NoError(t, err)
+	assert.Equal(t, []call{{"/blog/", true, false}, {"/page?p=1", false, true}, {"/", true, true}}, calls)
+
+	req, _ := http.NewRequest(MethodPurge, proxy.URL+"/", nil)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Len(t, calls, 3, "not for purges which aren't allowed")
 }

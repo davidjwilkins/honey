@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -438,6 +439,110 @@ func TestHandlerBackendHost(t *testing.T) {
 		resp.Body.Close()
 		proxy.Close()
 		assert.Equal(t, want, string(body), setting)
+	}
+}
+
+func TestHandlerWarm(t *testing.T) {
+	var hits int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		if r.URL.Path == "/wp-sitemap.xml" {
+			io.WriteString(w, `<urlset><url><loc>https://www.example.com/a/</loc></url><url><loc>https://www.example.com/b/</loc></url></urlset>`)
+			return
+		}
+		io.WriteString(w, r.Host+r.URL.Path)
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n" +
+		"[warm]\nsitemap = \"https://www.example.com/wp-sitemap.xml\"\nrate = 100\n" +
+		"[metrics]\nlisten = \"127.0.0.1:0\"\n[control]\nsecret = \"0123456789abcdef\"\n")
+	require.NoError(t, err)
+	h := build(cfg, time.Now())
+	require.NotNil(t, h.warmer)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.warmer.Run(ctx)
+
+	proxy := httptest.NewServer(h.handler)
+	defer proxy.Close()
+	request := func(method, path string) *http.Response {
+		req, err := http.NewRequest(method, proxy.URL+path, nil)
+		require.NoError(t, err)
+		req.Host = "www.example.com"
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Header.Set("X-Honey-Secret", "0123456789abcdef")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp
+	}
+	waitForHits := func(n int32) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for atomic.LoadInt32(&hits) < n && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		require.Equal(t, n, atomic.LoadInt32(&hits))
+	}
+	waitForHits(3) // the sitemap and both pages
+	for _, path := range []string{"/a/", "/b/"} {
+		assert.Equal(t, "HIT", request(http.MethodGet, path).Header.Get("X-Honey-Cache"), path)
+	}
+	w := httptest.NewRecorder()
+	h.metrics.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	assert.Contains(t, w.Body.String(), `honey_requests_total{cache="hit"} 2`+"\n", "warming isn't counted as visits")
+	assert.Contains(t, w.Body.String(), `honey_requests_total{cache="miss"} 0`+"\n")
+
+	// Purging everything warms the cache again
+	request("PURGE", "/*")
+	waitForHits(6)
+	assert.Equal(t, "HIT", request(http.MethodGet, "/a/").Header.Get("X-Honey-Cache"))
+	// but purging a page doesn't
+	request("PURGE", "/a/")
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, int32(6), atomic.LoadInt32(&hits))
+}
+
+func TestHandlerTrustedProxies(t *testing.T) {
+	var seen http.Header
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Clone()
+	}))
+	defer origin.Close()
+	defer func(w io.Writer) { accessLogOutput = w }(accessLogOutput)
+
+	for _, tc := range []struct {
+		name, setting       string
+		purge               int
+		proto, remoteLogged string
+	}{
+		// The test's requests come from 127.0.0.1, like a proxy on the
+		// same host
+		{"behind a proxy", "", http.StatusOK, "https", "203.0.113.9"},
+		{"trusting nobody", "trustedProxies = []\n", http.StatusForbidden, "http", "127.0.0.1"},
+	} {
+		var logs bytes.Buffer
+		accessLogOutput = &logs
+		cfg, err := config.Parse(tc.setting + "[backend]\nuri = \"" + origin.URL + "\"\n" +
+			"[log]\naccess = true\nformat = \"json\"\n[control]\nallowIPs = [\"203.0.113.9\"]\n")
+		require.NoError(t, err)
+		proxy := httptest.NewServer(newHandler(cfg))
+		send := func(method string) int {
+			req, err := http.NewRequest(method, proxy.URL+"/page", nil)
+			require.NoError(t, err)
+			req.Header.Set("X-Forwarded-For", "203.0.113.9")
+			req.Header.Set("X-Forwarded-Proto", "https")
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			resp.Body.Close()
+			return resp.StatusCode
+		}
+		send(http.MethodGet)
+		assert.Equal(t, tc.proto, seen.Get("X-Forwarded-Proto"), tc.name)
+		assert.Contains(t, logs.String(), `"remote":"`+tc.remoteLogged+`"`, tc.name)
+		assert.Equal(t, tc.purge, send("PURGE"), "%s: allowIPs is checked against the visitor's address", tc.name)
+		proxy.Close()
 	}
 }
 

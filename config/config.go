@@ -14,6 +14,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/clientip"
 	"github.com/davidjwilkins/honey/fetch"
 )
 
@@ -33,6 +34,10 @@ const DefaultBackendTimeout = 30 * time.Second
 type Config struct {
 	// Listen is the address to listen on, e.g. ":8080"
 	Listen string
+	// TrustedProxies are the proxies whose X-Forwarded-For and
+	// X-Forwarded-Proto headers are believed (see clientip.Middleware).
+	// Defaults to clientip.DefaultTrusted.
+	TrustedProxies []*net.IPNet
 	// MetricsListen is the address to serve metrics on, e.g.
 	// "127.0.0.1:9090", or "" not to serve them
 	MetricsListen string
@@ -57,6 +62,16 @@ type Config struct {
 	Cache               Cache
 	Routes              []Route
 	Control             Control
+	Warm                Warm
+}
+
+// Warm configures warming the cache from a sitemap (see the warm
+// package).  It is off if Sitemap is nil.
+type Warm struct {
+	Sitemap  *url.URL
+	Rate     float64
+	MaxPages int
+	Interval time.Duration
 }
 
 // Control says which requests are trusted to purge the cache and to make
@@ -80,6 +95,9 @@ type Cache struct {
 	// StaleIfError is how long responses may be served stale if the
 	// backend errors, unless they say otherwise
 	StaleIfError time.Duration
+	// StaleWhileRevalidate is how long responses may be served stale while
+	// they are refreshed in the background, unless they say otherwise
+	StaleWhileRevalidate time.Duration
 	// Persist is the file the cache is saved to (every PersistInterval, if
 	// it isn't zero, and on shutdown) and loaded from at startup, or ""
 	Persist         string
@@ -118,6 +136,9 @@ type Route struct {
 	DefaultTTL time.Duration
 	// StaleIfError overrides cache.staleIfError, if it isn't nil
 	StaleIfError *time.Duration
+	// StaleWhileRevalidate overrides cache.staleWhileRevalidate, if it
+	// isn't nil
+	StaleWhileRevalidate *time.Duration
 	// QueryParams overrides cache.queryParams, if it isn't nil
 	QueryParams *[]string
 	// BypassCookies overrides cache.bypassCookies, if it isn't nil
@@ -129,8 +150,9 @@ type Route struct {
 
 // file is the layout of the TOML file
 type file struct {
-	Listen  string `toml:"listen"`
-	Metrics struct {
+	Listen         string    `toml:"listen"`
+	TrustedProxies *[]string `toml:"trustedProxies"`
+	Metrics        struct {
 		Listen string `toml:"listen"`
 	} `toml:"metrics"`
 	Admin struct {
@@ -151,6 +173,7 @@ type file struct {
 		MaxObjectSize   string    `toml:"maxObjectSize"`
 		DefaultTTL      string    `toml:"defaultTTL"`
 		StaleIfError    string    `toml:"staleIfError"`
+		StaleWhileReval string    `toml:"staleWhileRevalidate"`
 		Persist         string    `toml:"persist"`
 		PersistInterval string    `toml:"persistInterval"`
 		AllowedCookies  []string  `toml:"allowedCookies"`
@@ -162,6 +185,12 @@ type file struct {
 		Gzip            *bool     `toml:"gzip"`
 		CompressMinSize string    `toml:"compressMinSize"`
 	} `toml:"cache"`
+	Warm struct {
+		Sitemap  string  `toml:"sitemap"`
+		Rate     float64 `toml:"rate"`
+		MaxPages int     `toml:"maxPages"`
+		Interval string  `toml:"interval"`
+	} `toml:"warm"`
 	Control struct {
 		AllowIPs     []string `toml:"allowIPs"`
 		Secret       string   `toml:"secret"`
@@ -173,6 +202,7 @@ type file struct {
 		Cache         *bool     `toml:"cache"`
 		DefaultTTL    string    `toml:"defaultTTL"`
 		StaleIfError  string    `toml:"staleIfError"`
+		StaleWhileRev string    `toml:"staleWhileRevalidate"`
 		QueryParams   *[]string `toml:"queryParams"`
 		BypassCookies *[]string `toml:"bypassCookies"`
 		BrowserCC     *string   `toml:"browserCacheControl"`
@@ -222,6 +252,13 @@ func Parse(data string) (*Config, error) {
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen
 	}
+	cfg.TrustedProxies = clientip.DefaultTrusted
+	if f.TrustedProxies != nil {
+		cfg.TrustedProxies, err = fetch.ParseIPs(*f.TrustedProxies)
+		if err != nil {
+			return nil, fmt.Errorf("trustedProxies: %w", err)
+		}
+	}
 
 	if f.Backend.URI == "" {
 		return nil, fmt.Errorf("backend.uri is required")
@@ -270,6 +307,12 @@ func Parse(data string) (*Config, error) {
 		cfg.Cache.StaleIfError, err = parseDuration(f.Cache.StaleIfError)
 		if err != nil || cfg.Cache.StaleIfError < time.Second {
 			return nil, fmt.Errorf("cache.staleIfError must be a duration of at least 1s, e.g. \"1h\"")
+		}
+	}
+	if f.Cache.StaleWhileReval != "" {
+		cfg.Cache.StaleWhileRevalidate, err = parseDuration(f.Cache.StaleWhileReval)
+		if err != nil || cfg.Cache.StaleWhileRevalidate < time.Second {
+			return nil, fmt.Errorf("cache.staleWhileRevalidate must be a duration of at least 1s, e.g. \"1d\"")
 		}
 	}
 	if f.Cache.MaxSize != "" {
@@ -326,6 +369,10 @@ func Parse(data string) (*Config, error) {
 		cfg.Cache.QueryParams = append([]string{}, *f.Cache.QueryParams...)
 	}
 
+	if err := parseWarm(cfg, f.Warm.Sitemap, f.Warm.Rate, f.Warm.MaxPages, f.Warm.Interval); err != nil {
+		return nil, err
+	}
+
 	cfg.Control.AllowIPs, err = fetch.ParseIPs(f.Control.AllowIPs)
 	if err != nil {
 		return nil, fmt.Errorf("control.allowIPs: %w", err)
@@ -363,6 +410,13 @@ func Parse(data string) (*Config, error) {
 			}
 			route.StaleIfError = &staleIfError
 		}
+		if r.StaleWhileRev != "" {
+			staleWhileRevalidate, err := parseDuration(r.StaleWhileRev)
+			if err != nil || staleWhileRevalidate < 0 {
+				return nil, fmt.Errorf("route %d (%q): staleWhileRevalidate must be a duration, e.g. \"1d\", or \"0\" to turn it off", i+1, r.Match)
+			}
+			route.StaleWhileRevalidate = &staleWhileRevalidate
+		}
 		if r.QueryParams != nil {
 			params := append([]string{}, *r.QueryParams...)
 			route.QueryParams = &params
@@ -383,17 +437,44 @@ func Parse(data string) (*Config, error) {
 			}
 			route.BrowserCacheControl = &cc
 		}
-		overrides := route.DefaultTTL != 0 || route.StaleIfError != nil || route.QueryParams != nil ||
+		overrides := route.DefaultTTL != 0 || route.StaleIfError != nil || route.StaleWhileRevalidate != nil || route.QueryParams != nil ||
 			route.BypassCookies != nil || route.BrowserCacheControl != nil
 		if !route.Cache && overrides {
 			return nil, fmt.Errorf("route %d (%q): a route with cache = false can't have other settings", i+1, r.Match)
 		}
 		if route.Cache && !overrides {
-			return nil, fmt.Errorf("route %d (%q): set cache = false, or a setting to override (defaultTTL, staleIfError, queryParams, bypassCookies or browserCacheControl)", i+1, r.Match)
+			return nil, fmt.Errorf("route %d (%q): set cache = false, or a setting to override (defaultTTL, staleIfError, staleWhileRevalidate, queryParams, bypassCookies or browserCacheControl)", i+1, r.Match)
 		}
 		cfg.Routes = append(cfg.Routes, route)
 	}
 	return cfg, nil
+}
+
+func parseWarm(cfg *Config, sitemap string, rate float64, maxPages int, interval string) error {
+	if sitemap == "" {
+		if rate != 0 || maxPages != 0 || interval != "" {
+			return fmt.Errorf("warm.sitemap is required to warm the cache")
+		}
+		return nil
+	}
+	u, err := url.Parse(sitemap)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("warm.sitemap must be the site's sitemap's full URL, e.g. \"https://www.example.com/wp-sitemap.xml\"")
+	}
+	if rate < 0 || rate > 100 {
+		return fmt.Errorf("warm.rate must be a number of pages a second, up to 100")
+	}
+	if maxPages < 0 {
+		return fmt.Errorf("warm.maxPages can't be negative")
+	}
+	cfg.Warm = Warm{Sitemap: u, Rate: rate, MaxPages: maxPages}
+	if interval != "" {
+		cfg.Warm.Interval, err = parseDuration(interval)
+		if err != nil || cfg.Warm.Interval < 0 || (cfg.Warm.Interval > 0 && cfg.Warm.Interval < time.Minute) {
+			return fmt.Errorf("warm.interval must be a duration of at least 1m (or \"0\" to only warm at startup and after purging everything), e.g. \"6h\"")
+		}
+	}
+	return nil
 }
 
 // cacheControlDirective is a Cache-Control directive, e.g. "max-age=60",

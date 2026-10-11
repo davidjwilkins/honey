@@ -89,6 +89,38 @@ func do(t *testing.T, c *http.Client, method, path string, form url.Values, head
 	return page{Response: resp, Body: string(b), Cache: resp.Header.Get("X-Honey-Cache")}
 }
 
+var (
+	scripts = regexp.MustCompile(`(?is)<(script|style)[^>]*>.*?</(script|style)>`)
+	tags    = regexp.MustCompile(`(?s)<[^>]*>`)
+	spaces  = regexp.MustCompile(`\s+`)
+)
+
+// text returns the text of the page's main element (or else body), for
+// failure messages
+func text(body string) string {
+	if i := strings.Index(body, "<main"); i >= 0 {
+		body = body[i:]
+	}
+	body = scripts.ReplaceAllString(body, " ")
+	body = spaces.ReplaceAllString(tags.ReplaceAllString(body, " "), " ")
+	if len(body) > 1500 {
+		body = body[:1500] + "..."
+	}
+	return body
+}
+
+// describe returns the headers which say how a response may be cached,
+// for failure messages
+func describe(p page) string {
+	var parts []string
+	for _, name := range []string{"Age", "Cache-Control", "Expires", "Date", "Vary", "Set-Cookie", "Etag", "X-Honey-Stale"} {
+		for _, value := range p.Header.Values(name) {
+			parts = append(parts, name+": "+value)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
 // contains checks that body contains s, without printing the whole body
 func contains(t *testing.T, body, s string, msgAndArgs ...interface{}) {
 	t.Helper()
@@ -157,6 +189,45 @@ func logIn(t *testing.T, user string) http.CookieJar {
 	return jar
 }
 
+// eventually requests path until its body contains want, and returns the
+// first response, which should be the old version served while the new
+// one was fetched
+func eventually(t *testing.T, c *http.Client, path, want string) page {
+	t.Helper()
+	first := get(t, c, path)
+	deadline := time.Now().Add(10 * time.Second)
+	for resp := first; ; resp = get(t, c, path) {
+		if strings.Contains(resp.Body, want) {
+			return first
+		}
+		if time.Now().After(deadline) {
+			assert.Fail(t, fmt.Sprintf("%s never contained %q", path, want),
+				"the last response was %d %s, with the text: %s", resp.StatusCode, resp.Cache, text(resp.Body))
+			return first
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// cached requests path until it is served from the cache, and returns
+// that response: a page which has been soft purged (e.g. the home page,
+// when a post is published) is refreshed in the background, so the
+// request after the stale one may come before the refresh is done
+func cached(t *testing.T, c *http.Client, path string) page {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp := get(t, c, path)
+		if resp.Cache == "HIT" {
+			return resp
+		}
+		if time.Now().After(deadline) {
+			require.Fail(t, fmt.Sprintf("%s was never served from the cache", path), "the last response was %d %s: %s", resp.StatusCode, resp.Cache, describe(resp))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func TestPagesAreCached(t *testing.T) {
 	c := client(nil)
 	_, path := newPost(t, "Cached post")
@@ -208,24 +279,38 @@ func TestEditingAPostPurgesIt(t *testing.T) {
 	c := client(nil)
 	id, path := newPost(t, "Before editing")
 	for _, p := range []string{path, "/", "/category/news/"} {
-		get(t, c, p)
-		require.Equal(t, "HIT", get(t, c, p).Cache, p)
+		cached(t, c, p)
 	}
 
 	wp(t, "post", "update", id, "--post_title=After editing")
 	for _, p := range []string{path, "/", "/category/news/"} {
+		// A soft purge: the old version is served once more, without
+		// waiting for WordPress, while the new one is fetched
+		first := eventually(t, c, p, "After editing")
+		assert.Equal(t, "STALE", first.Cache, p)
 		resp := get(t, c, p)
-		assert.Equal(t, "MISS", resp.Cache, p)
-		contains(t, resp.Body, "After editing", p)
+		assert.Equal(t, "HIT", resp.Cache, "%s: %s", p, describe(resp))
 		notContains(t, resp.Body, "Before editing", p)
 	}
+}
+
+func TestPasswordProtectingAPostHidesItAtOnce(t *testing.T) {
+	c := client(nil)
+	id, path := newPost(t, "Soon protected")
+	wp(t, "post", "update", id, "--post_content=Not for everyone.")
+	eventually(t, c, path, "Not for everyone.")
+	cached(t, c, path)
+
+	wp(t, "post", "update", id, "--post_password=sesame")
+	resp := get(t, c, path)
+	assert.NotEqual(t, "STALE", resp.Cache, "a hard purge: the old version is never served again")
+	notContains(t, resp.Body, "Not for everyone.")
 }
 
 func TestChangingTheSlugPurgesTheOldAddress(t *testing.T) {
 	c := client(nil)
 	id, path := newPost(t, "Moving post")
-	get(t, c, path)
-	require.Equal(t, "HIT", get(t, c, path).Cache)
+	cached(t, c, path)
 
 	wp(t, "post", "update", id, "--post_name="+strings.Trim(path, "/")+"-moved")
 	resp := get(t, c, path)
@@ -236,8 +321,7 @@ func TestChangingTheSlugPurgesTheOldAddress(t *testing.T) {
 func TestUnpublishingAPostPurgesIt(t *testing.T) {
 	c := client(nil)
 	id, path := newPost(t, "Soon a draft")
-	get(t, c, path)
-	require.Equal(t, "HIT", get(t, c, path).Cache)
+	cached(t, c, path)
 
 	wp(t, "post", "update", id, "--post_status=draft")
 	assert.Equal(t, http.StatusNotFound, get(t, c, path).StatusCode)
@@ -246,8 +330,7 @@ func TestUnpublishingAPostPurgesIt(t *testing.T) {
 func TestCommentsAppearOnceApproved(t *testing.T) {
 	id, path := newPost(t, "Commented post")
 	anonymous := client(nil)
-	get(t, anonymous, path)
-	require.Equal(t, "HIT", get(t, anonymous, path).Cache)
+	cached(t, anonymous, path)
 
 	commenter := client(newJar(t))
 	resp := do(t, commenter, http.MethodPost, "/wp-comments-post.php", url.Values{
@@ -256,9 +339,9 @@ func TestCommentsAppearOnceApproved(t *testing.T) {
 	})
 	require.Equal(t, http.StatusFound, resp.StatusCode, resp.Body)
 
+	eventually(t, anonymous, path, "What a lovely honey cache.")
 	page := get(t, anonymous, path)
-	assert.Equal(t, "MISS", page.Cache, "the plugin purged the post")
-	contains(t, page.Body, "What a lovely honey cache.")
+	assert.Equal(t, "HIT", page.Cache)
 	notContains(t, page.Body, "jane@example.com")
 
 	// The commenter's details are filled in on the form for them only
@@ -288,24 +371,46 @@ func TestChangingTheSiteTitlePurgesEverything(t *testing.T) {
 	c := client(nil)
 	_, path := newPost(t, "Titled post")
 	for _, p := range []string{path, "/"} {
-		get(t, c, p)
-		require.Equal(t, "HIT", get(t, c, p).Cache, p)
+		cached(t, c, p)
 	}
 
 	title := fmt.Sprintf("Honey test %d", time.Now().UnixNano())
 	wp(t, "option", "update", "blogname", title)
 	for _, p := range []string{path, "/"} {
-		resp := get(t, c, p)
-		assert.Equal(t, "MISS", resp.Cache, p)
-		contains(t, resp.Body, title, p)
+		first := eventually(t, c, p, title)
+		assert.Equal(t, "STALE", first.Cache, p)
+	}
+}
+
+// purgeEverything presses the plugin's "Purge cache" button as admin
+func purgeEverything(t *testing.T) {
+	t.Helper()
+	admin := client(logIn(t, "admin"))
+	dashboard := get(t, admin, "/wp-admin/")
+	link := regexp.MustCompile(`id=["']wp-admin-bar-honey-purge["']><a [^>]*href=["']([^"']+)["']`).FindStringSubmatch(dashboard.Body)
+	require.Len(t, link, 2, "the admin bar has the purge button")
+	resp := get(t, admin, strings.NewReplacer("&#038;", "&", "&amp;", "&").Replace(link[1]))
+	require.Equal(t, http.StatusFound, resp.StatusCode, resp.Body)
+}
+
+func TestWarmingAfterPurgingEverything(t *testing.T) {
+	c := client(nil)
+	_, path := newPost(t, "Warmed post")
+	purgeEverything(t)
+	// Honey fetches every page in the sitemap again, at 50 a second
+	time.Sleep(5 * time.Second)
+	for _, p := range []string{path, "/", "/hello-world/"} {
+		assert.Equal(t, "HIT", get(t, c, p).Cache, "%s was cached before anyone asked for it", p)
 	}
 }
 
 func TestPurgeButton(t *testing.T) {
 	c := client(nil)
-	_, path := newPost(t, "Purged by button")
-	get(t, c, path)
-	require.Equal(t, "HIT", get(t, c, path).Cache)
+	id, path := newPost(t, "Purged by button")
+	cached(t, c, path)
+	// Change it behind the plugin's back, so that only the button purges it
+	wp(t, "db", "query", "UPDATE wp_posts SET post_title = 'Changed quietly' WHERE ID = "+id)
+	notContains(t, get(t, c, path).Body, "Changed quietly")
 
 	admin := client(logIn(t, "admin"))
 	dashboard := get(t, admin, "/wp-admin/")
@@ -316,7 +421,9 @@ func TestPurgeButton(t *testing.T) {
 	resp := get(t, admin, purgeURL)
 	require.Equal(t, http.StatusFound, resp.StatusCode, resp.Body)
 	assert.Contains(t, resp.Header.Get("Location"), "honey-purged=1")
-	assert.Equal(t, "MISS", get(t, c, path).Cache)
+	// A hard purge: the old version is never served again (whether the
+	// page is fetched now, or the warmer already has)
+	contains(t, get(t, c, path).Body, "Changed quietly")
 
 	// Editors can't use it
 	editor := client(logIn(t, "editor"))
@@ -337,8 +444,7 @@ func TestStaticFiles(t *testing.T) {
 func TestAdminPage(t *testing.T) {
 	c := client(nil)
 	_, path := newPost(t, "Purged from the admin page")
-	get(t, c, path)
-	require.Equal(t, "HIT", get(t, c, path).Cache)
+	cached(t, c, path)
 
 	page := get(t, c, adminPage+"/")
 	require.Equal(t, http.StatusOK, page.StatusCode)
@@ -354,29 +460,28 @@ func TestApprovingACommentPurgesThePost(t *testing.T) {
 	id, path := newPost(t, "Moderated post")
 	comment := wp(t, "comment", "create", "--porcelain", "--comment_post_ID="+id, "--comment_approved=0",
 		"--comment_author=Held Back", "--comment_content=A comment awaiting moderation.")
-	get(t, c, path)
-	page := get(t, c, path)
-	require.Equal(t, "HIT", page.Cache)
+	page := cached(t, c, path)
 	notContains(t, page.Body, "A comment awaiting moderation.")
 
 	wp(t, "comment", "approve", comment)
+	first := eventually(t, c, path, "A comment awaiting moderation.")
+	assert.Equal(t, "STALE", first.Cache)
+
+	// Removing it is a hard purge: it is never served again
+	wp(t, "comment", "spam", comment)
 	page = get(t, c, path)
-	assert.Equal(t, "MISS", page.Cache)
-	contains(t, page.Body, "A comment awaiting moderation.")
+	assert.NotEqual(t, "STALE", page.Cache)
+	notContains(t, page.Body, "A comment awaiting moderation.")
 }
 
 func TestRenamingACategoryPurgesIt(t *testing.T) {
 	c := client(nil)
 	wp(t, "term", "create", "category", "Gardening", "--slug=gardening")
 	newPostIn(t, "A gardening post", "gardening")
-	get(t, c, "/category/gardening/")
-	page := get(t, c, "/category/gardening/")
+	page := cached(t, c, "/category/gardening/")
 	require.Equal(t, http.StatusOK, page.StatusCode)
-	require.Equal(t, "HIT", page.Cache)
 	contains(t, page.Body, "A gardening post")
 
 	wp(t, "term", "update", "category", "gardening", "--by=slug", "--name=Beekeeping")
-	page = get(t, c, "/category/gardening/")
-	assert.Equal(t, "MISS", page.Cache)
-	contains(t, page.Body, "Beekeeping")
+	eventually(t, c, "/category/gardening/", "Beekeeping")
 }

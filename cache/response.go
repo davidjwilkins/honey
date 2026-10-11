@@ -56,6 +56,16 @@ type responseImpl struct {
 	// cache, and removed is set once it is no longer in the cache
 	loads   atomic.Int64
 	removed atomic.Bool
+	// expired is set by a soft purge: the response is treated as stale
+	// from then on, but it can still be served while it is refreshed (per
+	// stale-while-revalidate) or if the backend fails (per stale-if-error)
+	expired atomic.Bool
+}
+
+// Expired returns whether the response has been soft purged (see
+// Cacher.Expire), and so is stale whatever its headers say.
+func (r *responseImpl) Expired() bool {
+	return r.expired.Load()
 }
 
 // markRemoved is called by the store when the response is evicted or

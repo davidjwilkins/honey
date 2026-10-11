@@ -17,6 +17,8 @@
  *     define( 'HONEY_URL', 'http://127.0.0.1:8080' );
  *     // control.secretHeader, if it isn't X-Honey-Secret
  *     define( 'HONEY_SECRET_HEADER', 'X-Honey-Secret' );
+ *     // Log what is purged, and why, to the PHP error log
+ *     define( 'HONEY_DEBUG', true );
  *
  * What it purges:
  *
@@ -34,7 +36,13 @@
  * Administrators also get a "Purge cache" button in the admin bar.
  *
  * Purges are sent when WordPress has finished handling the request, once
- * each, as PURGE requests (see Honey's README).
+ * each, as PURGE requests (see Honey's README).  Most are soft: if Honey's
+ * staleWhileRevalidate allows, the old page is served once more while the
+ * new one is fetched, so nobody waits for WordPress.  Pages which must
+ * disappear straight away are purged hard: those of a post which is
+ * unpublished, deleted or given a password, of a comment which is removed,
+ * and of a deleted term - and everything, when the "Purge cache" button is
+ * pressed.
  */
 
 namespace Honey;
@@ -44,11 +52,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class Purge {
-	/** @var array<string, bool> paths to purge => whether to purge everything under them */
+	/**
+	 * @var array<string, array{prefix: bool, hard: bool}> paths to purge,
+	 * whether to purge everything under them, and whether to purge them hard
+	 */
 	private static $paths = array();
 
-	/** @var bool whether to purge everything */
-	private static $everything = false;
+	/** @var string|null whether to purge everything: "soft", "hard" or null */
+	private static $everything = null;
 
 	/** @var bool whether the shutdown hook has been added */
 	private static $scheduled = false;
@@ -85,11 +96,11 @@ final class Purge {
 	}
 
 	/**
-	 * Purges $url - or, with $prefix, every URL starting with it.  Only
-	 * the path and query string are sent: Honey replaces the host with
-	 * its backend's, as it does for every request.
+	 * Purges $url - or, with $prefix, every URL starting with it - softly,
+	 * or with $hard, hard.  Only the path and query string are sent: Honey
+	 * purges them for every host.
 	 */
-	public static function url( $url, $prefix = false ) {
+	public static function url( $url, $prefix = false, $hard = false ) {
 		if ( ! is_string( $url ) || '' === $url ) {
 			return;
 		}
@@ -108,14 +119,26 @@ final class Purge {
 		if ( $prefix && '/' === $path ) {
 			$prefix = false;
 		}
-		self::$paths[ $path ] = $prefix || ! empty( self::$paths[ $path ] );
+		$previous             = isset( self::$paths[ $path ] ) ? self::$paths[ $path ] : array( 'prefix' => false, 'hard' => false );
+		self::$paths[ $path ] = array(
+			'prefix' => $prefix || $previous['prefix'],
+			'hard'   => $hard || $previous['hard'],
+		);
 		self::schedule();
 	}
 
-	/** Purges everything in the cache. */
-	public static function everything() {
-		self::$everything = true;
+	/** Purges everything in the cache, softly or, with $hard, hard. */
+	public static function everything( $hard = false ) {
+		// Hooks pass their own arguments, so only true means hard
+		self::$everything = true === $hard || 'hard' === self::$everything ? 'hard' : 'soft';
+		self::debug( 'purging everything for ' . ( doing_action() ? current_action() : 'the purge button' ) );
 		self::schedule();
+	}
+
+	private static function debug( $message ) {
+		if ( defined( 'HONEY_DEBUG' ) && HONEY_DEBUG ) {
+			error_log( 'Honey: ' . $message . ' (' . ( isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : 'cli' ) . ')' );
+		}
 	}
 
 	private static function schedule() {
@@ -125,8 +148,8 @@ final class Purge {
 		}
 	}
 
-	/** Purges the pages showing $post. */
-	public static function post( $post ) {
+	/** Purges the pages showing $post, softly or, with $hard, hard. */
+	public static function post( $post, $hard = false ) {
 		$post = get_post( $post );
 		if ( ! $post || wp_is_post_revision( $post ) || wp_is_post_autosave( $post ) ) {
 			return;
@@ -136,11 +159,11 @@ final class Purge {
 		}
 		// Its comment pages and paged parts are under it, e.g.
 		// /hello-world/comment-page-2/
-		self::url( get_permalink( $post ), true );
-		self::home();
+		self::url( get_permalink( $post ), true, $hard );
+		self::home( $hard );
 		$archive = get_post_type_archive_link( $post->post_type );
 		if ( $archive ) {
-			self::url( $archive, true );
+			self::url( $archive, true, $hard );
 		}
 		foreach ( get_object_taxonomies( $post->post_type, 'objects' ) as $taxonomy ) {
 			if ( ! $taxonomy->public ) {
@@ -153,41 +176,42 @@ final class Purge {
 			foreach ( $terms as $term ) {
 				$link = get_term_link( $term );
 				if ( ! is_wp_error( $link ) ) {
-					self::url( $link, true );
+					self::url( $link, true, $hard );
 				}
 			}
 		}
 		if ( post_type_supports( $post->post_type, 'author' ) ) {
-			self::url( get_author_posts_url( (int) $post->post_author ), true );
+			self::url( get_author_posts_url( (int) $post->post_author ), true, $hard );
 		}
 		if ( 'post' === $post->post_type ) {
 			$time = strtotime( $post->post_date );
 			if ( $time ) {
 				// Not under the year: with date-based permalinks, that
 				// would be every post of the year
-				self::url( get_year_link( gmdate( 'Y', $time ) ) );
-				self::url( get_month_link( gmdate( 'Y', $time ), gmdate( 'm', $time ) ) );
-				self::url( get_day_link( gmdate( 'Y', $time ), gmdate( 'm', $time ), gmdate( 'd', $time ) ) );
+				self::url( get_year_link( gmdate( 'Y', $time ) ), false, $hard );
+				self::url( get_month_link( gmdate( 'Y', $time ), gmdate( 'm', $time ) ), false, $hard );
+				self::url( get_day_link( gmdate( 'Y', $time ), gmdate( 'm', $time ), gmdate( 'd', $time ) ), false, $hard );
 			}
 		}
-		self::url( get_feed_link() );
-		self::url( get_feed_link( 'comments_' . get_default_feed() ) );
-		self::url( home_url( '/wp-sitemap' ), true );
+		self::url( get_feed_link(), false, $hard );
+		self::url( get_feed_link( 'comments_' . get_default_feed() ), false, $hard );
+		self::url( home_url( '/wp-sitemap' ), true, $hard );
 	}
 
 	/** Purges the home page (and its other pages), and the posts page. */
-	private static function home() {
-		self::url( home_url( '/' ) );
-		self::url( home_url( '/page/' ), true );
+	private static function home( $hard ) {
+		self::url( home_url( '/' ), false, $hard );
+		self::url( home_url( '/page/' ), true, $hard );
 		$posts_page = (int) get_option( 'page_for_posts' );
 		if ( $posts_page ) {
-			self::url( get_permalink( $posts_page ), true );
+			self::url( get_permalink( $posts_page ), true, $hard );
 		}
 	}
 
 	public static function post_status_changed( $new_status, $old_status, $post ) {
 		if ( 'publish' === $new_status || 'publish' === $old_status ) {
-			self::post( $post );
+			// Hard if it is no longer public: it mustn't be served again
+			self::post( $post, 'publish' !== $new_status || '' !== $post->post_password );
 		}
 	}
 
@@ -199,21 +223,21 @@ final class Purge {
 		}
 		$old = get_permalink( $before );
 		if ( $old && get_permalink( $after ) !== $old ) {
-			self::url( $old, true );
+			self::url( $old, true, true );
 		}
 	}
 
 	public static function post_deleted( $post_id, $post = null ) {
 		$post = $post ? $post : get_post( $post_id );
 		if ( $post && 'publish' === $post->post_status ) {
-			self::post( $post );
+			self::post( $post, true );
 		}
 	}
 
-	private static function comment_changed( $comment ) {
+	private static function comment_changed( $comment, $hard = false ) {
 		$comment = get_comment( $comment );
 		if ( $comment && $comment->comment_post_ID ) {
-			self::url( get_permalink( (int) $comment->comment_post_ID ), true );
+			self::url( get_permalink( (int) $comment->comment_post_ID ), true, $hard );
 		}
 	}
 
@@ -231,25 +255,30 @@ final class Purge {
 
 	public static function comment_status_changed( $new_status, $old_status, $comment ) {
 		if ( 'approved' === $new_status || 'approved' === $old_status ) {
-			self::comment_changed( $comment );
+			// Hard if it was removed (e.g. as spam)
+			self::comment_changed( $comment, 'approved' !== $new_status );
 		}
 	}
 
 	public static function comment_deleted( $comment_id, $comment = null ) {
 		if ( $comment && '1' === $comment->comment_approved ) {
-			self::comment_changed( $comment );
+			self::comment_changed( $comment, true );
 		}
 	}
 
 	public static function term_changed( $term_id, $tt_id = 0, $taxonomy = '' ) {
-		$link = get_term_link( (int) $term_id, $taxonomy );
-		if ( ! is_wp_error( $link ) ) {
-			self::url( $link, true );
-		}
+		self::term( $term_id, $taxonomy, false );
 	}
 
 	public static function term_deleted( $term_id, $taxonomy ) {
-		self::term_changed( $term_id, 0, $taxonomy );
+		self::term( $term_id, $taxonomy, true );
+	}
+
+	private static function term( $term_id, $taxonomy, $hard ) {
+		$link = get_term_link( (int) $term_id, $taxonomy );
+		if ( ! is_wp_error( $link ) ) {
+			self::url( $link, true, $hard );
+		}
 	}
 
 	/** Purges everything when a setting shown on every page changes. */
@@ -274,23 +303,29 @@ final class Purge {
 		if ( in_array( $option, $everywhere, true ) ||
 			0 === strpos( $option, 'widget_' ) ||
 			0 === strpos( $option, 'theme_mods_' ) ) {
+			self::debug( "the $option option changed" );
 			self::everything();
 		}
 	}
 
 	/** Sends the purges.  It runs once WordPress has handled the request. */
 	public static function send() {
-		$paths = array();
-		if ( self::$everything ) {
-			$paths[] = '/*';
-		} else {
-			foreach ( self::$paths as $path => $prefix ) {
+		// path => whether to purge it softly
+		$purges = array();
+		if ( 'hard' !== self::$everything ) {
+			foreach ( self::$paths as $path => $purge ) {
+				if ( 'soft' === self::$everything && ! $purge['hard'] ) {
+					continue; // purging everything softly covers it
+				}
 				// Honey purges everything starting with what precedes a *
-				$paths[] = $prefix ? $path . '*' : $path;
+				$purges[ $purge['prefix'] ? $path . '*' : $path ] = ! $purge['hard'];
 			}
 		}
+		if ( self::$everything ) {
+			$purges['/*'] = 'soft' === self::$everything;
+		}
 		self::$paths      = array();
-		self::$everything = false;
+		self::$everything = null;
 
 		$base    = untrailingslashit( defined( 'HONEY_URL' ) ? HONEY_URL : self::origin() );
 		$headers = array();
@@ -298,12 +333,13 @@ final class Purge {
 			$header             = defined( 'HONEY_SECRET_HEADER' ) && HONEY_SECRET_HEADER ? HONEY_SECRET_HEADER : 'X-Honey-Secret';
 			$headers[ $header ] = HONEY_SECRET;
 		}
-		foreach ( array_unique( $paths ) as $path ) {
+		foreach ( $purges as $path => $soft ) {
+			self::debug( ( $soft ? 'soft' : 'hard' ) . " purging $path" );
 			$response = wp_remote_request(
 				$base . $path,
 				array(
 					'method'      => 'PURGE',
-					'headers'     => $headers,
+					'headers'     => $soft ? array_merge( $headers, array( 'X-Honey-Purge' => 'soft' ) ) : $headers,
 					'timeout'     => 3,
 					'redirection' => 0,
 				)
@@ -351,7 +387,7 @@ final class Purge {
 			wp_die( esc_html__( 'Sorry, you are not allowed to do that.' ), 403 );
 		}
 		check_admin_referer( 'honey_purge_all' );
-		self::everything();
+		self::everything( true );
 		$back = wp_get_referer();
 		if ( ! $back || false === strpos( $back, admin_url() ) ) {
 			$back = admin_url();

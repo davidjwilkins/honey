@@ -11,6 +11,7 @@ x-wordpress-env: &wordpress-env
     define('HONEY_URL', 'http://honey:8080');
     define('HONEY_SECRET', 'e2e-secret-0123456789');
     define('DISABLE_WP_CRON', true);
+    define('HONEY_DEBUG', true);
 
 services:
   db:
@@ -26,7 +27,7 @@ services:
       retries: 60
 
   wordpress:
-    image: mirror.gcr.io/library/wordpress:6.8-php8.3-apache
+    image: mirror.gcr.io/library/wordpress:7.0-php8.3-apache
     depends_on:
       db:
         condition: service_healthy
@@ -49,7 +50,7 @@ services:
 
   # WP-CLI, for setting WordPress up and changing it during the tests
   cli:
-    image: mirror.gcr.io/library/wordpress:cli-2.11-php8.3
+    image: mirror.gcr.io/library/wordpress:cli-2.12-php8.3
     profiles: ["cli"]
     # www-data in the wordpress image, so that files it writes are usable
     user: "33:33"

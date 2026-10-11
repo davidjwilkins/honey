@@ -8,7 +8,7 @@ In the event of a cache miss, It multiplexes requests to the same URL into a sin
 
 Cached responses are served until they expire, according to the backend's `Cache-Control` (`s-maxage`, `max-age`) or `Expires` headers, or a configurable default TTL if it sends neither.  The cache is bounded in size, evicting the least recently used responses when it is full.
 
-If the backend sends `stale-while-revalidate`, expired responses are served immediately while they are refreshed in the background.  If it sends `stale-if-error`, expired responses are served (with a `Warning` header) when the backend errors or can't be reached.
+If the backend sends `stale-while-revalidate`, expired responses are served immediately while they are refreshed in the background.  If it sends `stale-if-error`, expired responses are served (with a `Warning` header) when the backend errors or can't be reached.  WordPress sends neither, so Honey can add them: see [Never waiting for WordPress](#never-waiting-for-wordpress).
 
 It will set an Etag on responses, and respond with an HTTP 304 Not Modified in the event that the `If-None-Match` header matches the Etag.
 
@@ -31,6 +31,7 @@ Every response has an `X-Honey-Cache` header saying how it was served: `HIT`, `M
 
 - **From source:** `go install github.com/davidjwilkins/honey/cmd/honey@latest`
 - **systemd:** [`contrib/honey.service`](contrib/honey.service) runs Honey as an unprivileged, sandboxed service, reading `/etc/honey/honey.toml`.  Instructions are at the top of the file.
+- **A whole site:** [`contrib/deploy`](contrib/deploy) runs WordPress behind Honey, behind Caddy for HTTPS, with Docker Compose.
 
 `honey -version` prints the version.  Pushing a `v*` tag builds and publishes a release.
 
@@ -46,6 +47,7 @@ A minimal config just needs a backend - the web server running WordPress, which 
 All the available settings:
 
 	listen = ":8080"             # address to listen on
+	trustedProxies = ["127.0.0.1", "10.0.0.0/8"]  # proxies in front of Honey (default: loopback and private addresses)
 
 	[backend]
 	uri = "http://127.0.0.1:8081"
@@ -59,6 +61,8 @@ All the available settings:
 	defaultTTL = "5m"            # freshness for responses without max-age, s-maxage or Expires
 	staleIfError = "1h"          # serve expired responses this long if the backend errors or times out
 	                             # (unless they have their own stale-if-error; off by default)
+	staleWhileRevalidate = "1d"  # serve expired responses this long while they're refreshed in the
+	                             # background, so visitors don't wait (unless they say otherwise; off by default)
 	persist = "/var/lib/honey/cache.snapshot"  # save the cache here, and load it at startup (off unless set)
 	persistInterval = "5m"       # how often to save it ("0": only on shutdown)
 	staticFiles = true           # cache images, css, js, fonts, media and documents
@@ -80,10 +84,18 @@ All the available settings:
 	[[route]]
 	match = "/wp-content/uploads/"
 	defaultTTL = "7d"            # override cache settings for these: defaultTTL, staleIfError,
-	# staleIfError = "0"         #   queryParams, bypassCookies and browserCacheControl
+	# staleIfError = "0"         #   staleWhileRevalidate, queryParams, bypassCookies and browserCacheControl
 	# queryParams = ["ver"]
 	# bypassCookies = []
 	# browserCacheControl = "public, max-age=604800"   # or "inherit"
+
+	# Fill the cache with the pages in the sitemap when Honey starts, and
+	# after everything is purged (off unless sitemap is set)
+	[warm]
+	sitemap = "https://www.example.com/wp-sitemap.xml"
+	rate = 2                     # pages a second
+	maxPages = 10000
+	interval = "6h"              # also this often ("0": only at startup and after purging everything)
 
 	# Log each request to stdout: method, uri, status, bytes, duration_ms,
 	# cache (the X-Honey-Cache result), remote and forwarded_for.
@@ -117,6 +129,18 @@ Responses are cached separately for each host and protocol, so e.g. a redirect f
 
 To proxy a site hosted elsewhere, whose server only answers to its own name, set `backend.host` to it: it is sent as the `Host` header instead.
 
+## Proxies in front of Honey
+
+If Honey is behind another proxy - e.g. Caddy or nginx handling HTTPS - every request comes from the proxy's address, and the proxy says who the visitor is (`X-Forwarded-For`) and whether they used HTTPS (`X-Forwarded-Proto`).  Honey believes these from `trustedProxies`, which are loopback and private addresses by default (where such a proxy usually is: on the same host, or in the same Docker or private network).  Then:
+
+- the visitor's address is the nearest one in `X-Forwarded-For` which isn't another trusted proxy, so a visitor can't claim to be someone else by sending their own;
+- `allowIPs` and the access log use it, and WordPress gets it in `X-Real-IP`;
+- the proxy's `X-Forwarded-Proto` is passed on, so WordPress knows the visitor used HTTPS.
+
+Requests from anywhere else have their forwarding headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Real-IP`, `Forwarded` and so on) removed, so that they can't pretend to have used HTTPS, or to be from an address in `allowIPs`.
+
+If the proxy is somewhere else (e.g. a CDN, or a load balancer with a public address), list its addresses in `trustedProxies`.  If nothing is in front of Honey and it's reachable from a private network you don't trust, set `trustedProxies = []`.
+
 ## Keeping the cache across restarts
 
 With `persist` set, Honey saves the cache to that file every `persistInterval` (5 minutes by default) and when it shuts down, and loads it when it starts, so a restart or deploy doesn't leave WordPress to take the full load while the cache fills up again.  Responses which expired while Honey was stopped aren't loaded, and ages carry on from when they were first cached.
@@ -125,6 +149,18 @@ With `persist` set, Honey saves the cache to that file every `persistInterval` (
 - A missing or unreadable file is logged, and Honey starts with an empty cache.  So is one saved by a version of Honey which keys responses differently.
 - On shutdown, Honey waits for requests in progress to finish (for up to 30 seconds) before saving.
 - The systemd service and the Docker image both have a writable `/var/lib/honey` for it.  With Docker, mount a volume there: `-v honey-cache:/var/lib/honey`.
+
+## Never waiting for WordPress
+
+Once a page expires, the next visitor to ask for it would normally wait while Honey fetches it from WordPress again.  With `staleWhileRevalidate` set (e.g. `"1d"`), they get the expired page straight away instead, with `X-Honey-Cache: STALE`, while Honey fetches the new one in the background for the visitors after them.  So, as long as a page is asked for at least once a day, nobody waits for WordPress to build it - and a page is never more than one refresh out of date.
+
+Purges can work the same way.  A *soft* purge marks pages as expired, rather than removing them: the next visitor gets the old version once more, while the new one is fetched.  The [WordPress plugin](#purging-from-wordpress) purges softly when posts are edited, comments are added and settings change, and hard - so that the old version is never served again - when a post is unpublished, deleted or given a password, a comment is removed, or the "Purge cache" button is pressed.  Without `staleWhileRevalidate`, a soft purge is just like a hard one (except that the old version can still be served if WordPress is down, per `staleIfError`).
+
+### Warming the cache
+
+With `[warm] sitemap` set to the site's sitemap (WordPress's is `/wp-sitemap.xml`), Honey requests every page it lists - as a visitor with no cookies would - when it starts, and again whenever everything is purged (e.g. by the plugin's "Purge cache" button, or when the theme changes), so that visitors find them cached.  Pages already in the cache (e.g. loaded from `persist`) aren't fetched again.  It goes gently, at `rate` pages a second (2 by default), and stops at `maxPages`.  With `interval` set, it does it again that often, so that pages nobody has asked for lately are refreshed too.
+
+Warming isn't counted in the metrics or the access log.  Only pages on the sitemap's scheme and host are requested.
 
 ## Logged in users and sessions
 
@@ -172,7 +208,7 @@ Be careful with `immutable` and long `max-age`s: browsers won't ask for the file
 
 ## Routes
 
-Each `[[route]]` either stops the requests it matches from being cached (`cache = false`), or overrides some of the `[cache]` settings for them: `defaultTTL`, `staleIfError` (`"0"` turns it off), `queryParams` and `bypassCookies`.
+Each `[[route]]` either stops the requests it matches from being cached (`cache = false`), or overrides some of the `[cache]` settings for them: `defaultTTL`, `staleIfError` and `staleWhileRevalidate` (`"0"` turns them off), `queryParams`, `bypassCookies` and `browserCacheControl`.
 
 - `cache = false` applies if any matching route says so, wherever it is in the list.
 - Otherwise the first matching route's settings apply, so list more specific routes first.
@@ -215,6 +251,8 @@ Trusted callers (see `[control]` above) can remove pages from the cache with the
 	curl -X PURGE -H "X-Honey-Secret: $SECRET" "https://www.example.com/category/news/*"
 	# everything
 	curl -X PURGE -H "X-Honey-Secret: $SECRET" "https://www.example.com/*"
+	# softly: the old version is served once more while the new one is fetched
+	curl -X PURGE -H "X-Honey-Secret: $SECRET" -H "X-Honey-Purge: soft" https://www.example.com/2018/02/my-post/
 
 They can also make Honey fetch a fresh copy, and cache it, by sending `Cache-Control: no-cache`.  Untrusted `PURGE` requests get a `403 Forbidden`.
 
@@ -229,18 +267,18 @@ Purges ignore the host, so they work however they reach Honey: `curl -X PURGE ht
 - When a category or tag is renamed or deleted: its archive.
 - When the theme, its customizations, menus, widgets, plugins, or the site's title, tagline, reading or permalink settings change: everything.
 
-It also adds a "Purge cache" button to the admin bar for administrators.
+It also adds a "Purge cache" button to the admin bar for administrators.  Most of its purges are soft, and some are hard (see [Never waiting for WordPress](#never-waiting-for-wordpress)).
 
 To install it, copy it to `wp-content/mu-plugins/honey-purge.php`, and add to `wp-config.php`:
 
 	define( 'HONEY_SECRET', 'a long random string' );   // Honey's control.secret
 	define( 'HONEY_URL', 'http://127.0.0.1:8080' );     // optional: where to send purges, if not the site's address
 
-If Honey is behind another proxy on the same host (e.g. Caddy or nginx for TLS), every request comes from that proxy's address, so don't put it in `allowIPs`: use the secret instead.
+If Honey is behind another proxy (e.g. Caddy or nginx for TLS), `allowIPs` is checked against the visitor's address, as long as the proxy is one of the `trustedProxies` (see [Proxies in front of Honey](#proxies-in-front-of-honey)).
 
 ## Testing
 
-`go test ./...` runs the unit tests.  [`e2e/run.sh`](e2e/run.sh) runs end-to-end tests against a real WordPress, with the purge plugin, behind Honey - checking that pages are cached, that logged in users, commenters and visitors to password-protected posts get their own pages, and that edits, comments and setting changes are purged.  It needs Docker and Go, and CI runs it on every pull request.  `HONEY_E2E_KEEP=1 e2e/run.sh` leaves it all running afterwards, on http://localhost:8080/ (log in as `admin`, password `password`) with Honey's admin page on http://127.0.0.1:9090/.
+`go test ./...` runs the unit tests.  [`e2e/run.sh`](e2e/run.sh) runs end-to-end tests against a real WordPress, with the purge plugin, behind Honey - checking that pages are cached, that logged in users, commenters and visitors to password-protected posts get their own pages, and that edits, comments and setting changes are purged.  It needs Docker and Go, and CI runs it on every pull request.  With `HONEY_E2E_WOOCOMMERCE=1`, it also installs WooCommerce (from wordpress.org) and checks that shop pages are cached, that adding to the cart starts each shopper's own session, that shoppers' pages and Store API carts are their own, and that the cart and checkout are never cached; CI does this too.  `HONEY_E2E_KEEP=1 e2e/run.sh` leaves it all running afterwards, on http://localhost:8080/ (log in as `admin`, password `password`) with Honey's admin page on http://127.0.0.1:9090/.
 
 ## Using it as a library
 

@@ -18,6 +18,7 @@ maxSize = "256MB"           # memory for cached responses; least recently used a
 maxObjectSize = "10MB"      # larger responses are streamed to the client, not cached
 defaultTTL = "5m"           # freshness for responses without max-age, s-maxage or Expires
 staleIfError = "1h"         # if WordPress errors or times out, serve expired pages this long
+staleWhileRevalidate = "1d" # serve expired pages straight away while they're refreshed, so nobody waits
 # persist = "/var/lib/honey/cache.snapshot"  # keep the cache across restarts
 staticFiles = true          # cache images, css, js, fonts, media and documents
 brotli = true               # brotli compress html, css, js, json, svg... for clients that accept it
@@ -63,6 +64,12 @@ browserCacheControl = "public, max-age=604800"
 # match = "\\.(css|js)\\?(.*&)?ver="
 # regex = true
 # browserCacheControl = "public, max-age=31536000, immutable"
+
+# Fill the cache from the sitemap when Honey starts, and after everything is
+# purged, so that visitors find pages cached
+# [warm]
+# sitemap = "https://www.example.com/wp-sitemap.xml"
+# rate = 2                  # pages a second
 
 # Log each request to stdout
 [log]

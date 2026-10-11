@@ -8,6 +8,7 @@ uri = "http://wordpress"
 [cache]
 defaultTTL = "5m"
 staleIfError = "1h"
+staleWhileRevalidate = "1d"
 
 [[route]]
 match = "(?:[?&]preview=true(?:&|$)|/(?:feed|wp-admin|wp-login))"
@@ -18,6 +19,10 @@ cache = false
 match = "/wp-content/uploads/"
 defaultTTL = "7d"
 bypassCookies = []
+
+[warm]
+sitemap = "http://localhost:8080/wp-sitemap.xml"
+rate = 50
 
 [log]
 access = true

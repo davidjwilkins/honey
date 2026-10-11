@@ -15,8 +15,8 @@ import (
 )
 
 type purgeCall struct {
-	url    string
-	prefix bool
+	url          string
+	prefix, soft bool
 }
 
 func newAdmin(t *testing.T) (http.Handler, *[]purgeCall) {
@@ -33,8 +33,8 @@ func newAdmin(t *testing.T) (http.Handler, *[]purgeCall) {
 		Backend: "https://www.example.com",
 		Started: time.Now().Add(-90 * time.Minute),
 		Metrics: m,
-		Purge: func(rawURL string, prefix bool) (int, error) {
-			calls = append(calls, purgeCall{rawURL, prefix})
+		Purge: func(rawURL string, prefix, soft bool) (int, error) {
+			calls = append(calls, purgeCall{rawURL, prefix, soft})
 			if rawURL == "bad" {
 				return 0, errors.New(`"bad" isn't a URL or path`)
 			}
@@ -120,7 +120,7 @@ func TestPurge(t *testing.T) {
 	form := url.Values{"url": {"/blog/<script>"}, "prefix": {"1"}}
 	w := do(h, http.MethodPost, "/purge", "127.0.0.1:9090", form, "Origin", "http://127.0.0.1:9090")
 	require.Equal(t, http.StatusSeeOther, w.Code)
-	assert.Equal(t, []purgeCall{{"/blog/<script>", true}}, *calls)
+	assert.Equal(t, []purgeCall{{"/blog/<script>", true, false}}, *calls)
 
 	result := w.Header().Get("Location")
 	require.True(t, strings.HasPrefix(result, "/?result="), result)
@@ -131,6 +131,12 @@ func TestPurge(t *testing.T) {
 	assert.NotContains(t, do(h, http.MethodGet, result, "127.0.0.1:9090", nil).Body.String(), "Purged 3",
 		"the result is only shown once, so reloading doesn't show it again")
 
+	w = do(h, http.MethodPost, "/purge", "127.0.0.1:9090", url.Values{"url": {"/page"}, "soft": {"1"}}, "Origin", "http://127.0.0.1:9090")
+	body = do(h, http.MethodGet, w.Header().Get("Location"), "127.0.0.1:9090", nil).Body.String()
+	assert.Contains(t, body, "Expired 3 cached responses for")
+	assert.Contains(t, body, "refreshed the next time")
+	assert.Equal(t, purgeCall{"/page", false, true}, (*calls)[1])
+
 	w = do(h, http.MethodPost, "/purge", "127.0.0.1:9090", url.Values{"url": {"bad"}}, "Sec-Fetch-Site", "same-origin")
 	require.Equal(t, http.StatusSeeOther, w.Code)
 	body = do(h, http.MethodGet, w.Header().Get("Location"), "127.0.0.1:9090", nil).Body.String()
@@ -139,7 +145,7 @@ func TestPurge(t *testing.T) {
 	w = do(h, http.MethodPost, "/purge", "127.0.0.1:9090", url.Values{"url": {" "}}, "Origin", "http://127.0.0.1:9090")
 	body = do(h, http.MethodGet, w.Header().Get("Location"), "127.0.0.1:9090", nil).Body.String()
 	assert.Contains(t, body, "Enter a URL or path to purge.")
-	assert.Len(t, *calls, 2)
+	assert.Len(t, *calls, 3)
 
 	assert.Equal(t, http.StatusMethodNotAllowed, do(h, http.MethodGet, "/purge", "127.0.0.1", nil).Code)
 }
@@ -161,7 +167,7 @@ func TestPurgeOnlyFromThePage(t *testing.T) {
 }
 
 func TestResultsAreBounded(t *testing.T) {
-	a := &admin{opts: Options{Purge: func(string, bool) (int, error) { return 1, nil }}, results: map[string]outcome{}}
+	a := &admin{opts: Options{Purge: func(string, bool, bool) (int, error) { return 1, nil }}, results: map[string]outcome{}}
 	// e.g. a script posting without following the redirects
 	for i := 0; i < maxResults*3; i++ {
 		r := httptest.NewRequest(http.MethodPost, "/purge", strings.NewReader("url=/"))

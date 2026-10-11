@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/davidjwilkins/honey/clientip"
 	"github.com/davidjwilkins/honey/internal/capture"
 )
 
@@ -51,11 +52,20 @@ func Middleware(logger *slog.Logger, next http.Handler) http.Handler {
 			slog.Int64("bytes", rw.Bytes()),
 			slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
 			slog.String("cache", rw.Cache()),
-			slog.String("remote", r.RemoteAddr),
+			slog.String("remote", remote(r)),
 		}
 		if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
 			attrs = append(attrs, slog.String("forwarded_for", forwardedFor))
 		}
 		logger.LogAttrs(r.Context(), slog.LevelInfo, "request", attrs...)
 	})
+}
+
+// remote returns the visitor's address (see clientip), or else whatever
+// sent the request
+func remote(r *http.Request) string {
+	if ip := clientip.From(r); ip != nil {
+		return ip.String()
+	}
+	return r.RemoteAddr
 }
