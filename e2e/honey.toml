@@ -20,6 +20,10 @@ match = "/wp-content/uploads/"
 defaultTTL = "7d"
 bypassCookies = []
 
+[warm]
+sitemap = "http://localhost:8080/wp-sitemap.xml"
+rate = 50
+
 [log]
 access = true
 

@@ -52,6 +52,9 @@ type Options struct {
 	// proxy a site hosted elsewhere, whose server only answers to its own
 	// name.
 	BackendHost string
+	// OnPurge, if set, is called after each purge, e.g. to warm the cache
+	// again (see the warm package).
+	OnPurge PurgeHook
 }
 
 // FetchWithOptions is like Fetch, configured by opts.
@@ -68,7 +71,7 @@ func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, op
 			// so that it matches the cache keys
 			filterQuery(r)
 		}
-		if opts.Control.applyControl(c, w, r) {
+		if opts.Control.applyControl(c, w, r, opts.OnPurge) {
 			return
 		}
 		serve(w, r)

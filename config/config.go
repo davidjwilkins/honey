@@ -57,6 +57,16 @@ type Config struct {
 	Cache               Cache
 	Routes              []Route
 	Control             Control
+	Warm                Warm
+}
+
+// Warm configures warming the cache from a sitemap (see the warm
+// package).  It is off if Sitemap is nil.
+type Warm struct {
+	Sitemap  *url.URL
+	Rate     float64
+	MaxPages int
+	Interval time.Duration
 }
 
 // Control says which requests are trusted to purge the cache and to make
@@ -169,6 +179,12 @@ type file struct {
 		Gzip            *bool     `toml:"gzip"`
 		CompressMinSize string    `toml:"compressMinSize"`
 	} `toml:"cache"`
+	Warm struct {
+		Sitemap  string  `toml:"sitemap"`
+		Rate     float64 `toml:"rate"`
+		MaxPages int     `toml:"maxPages"`
+		Interval string  `toml:"interval"`
+	} `toml:"warm"`
 	Control struct {
 		AllowIPs     []string `toml:"allowIPs"`
 		Secret       string   `toml:"secret"`
@@ -340,6 +356,10 @@ func Parse(data string) (*Config, error) {
 		cfg.Cache.QueryParams = append([]string{}, *f.Cache.QueryParams...)
 	}
 
+	if err := parseWarm(cfg, f.Warm.Sitemap, f.Warm.Rate, f.Warm.MaxPages, f.Warm.Interval); err != nil {
+		return nil, err
+	}
+
 	cfg.Control.AllowIPs, err = fetch.ParseIPs(f.Control.AllowIPs)
 	if err != nil {
 		return nil, fmt.Errorf("control.allowIPs: %w", err)
@@ -415,6 +435,33 @@ func Parse(data string) (*Config, error) {
 		cfg.Routes = append(cfg.Routes, route)
 	}
 	return cfg, nil
+}
+
+func parseWarm(cfg *Config, sitemap string, rate float64, maxPages int, interval string) error {
+	if sitemap == "" {
+		if rate != 0 || maxPages != 0 || interval != "" {
+			return fmt.Errorf("warm.sitemap is required to warm the cache")
+		}
+		return nil
+	}
+	u, err := url.Parse(sitemap)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("warm.sitemap must be the site's sitemap's full URL, e.g. \"https://www.example.com/wp-sitemap.xml\"")
+	}
+	if rate < 0 || rate > 100 {
+		return fmt.Errorf("warm.rate must be a number of pages a second, up to 100")
+	}
+	if maxPages < 0 {
+		return fmt.Errorf("warm.maxPages can't be negative")
+	}
+	cfg.Warm = Warm{Sitemap: u, Rate: rate, MaxPages: maxPages}
+	if interval != "" {
+		cfg.Warm.Interval, err = parseDuration(interval)
+		if err != nil || cfg.Warm.Interval < 0 || (cfg.Warm.Interval > 0 && cfg.Warm.Interval < time.Minute) {
+			return fmt.Errorf("warm.interval must be a duration of at least 1m (or \"0\" to only warm at startup and after purging everything), e.g. \"6h\"")
+		}
+	}
+	return nil
 }
 
 // cacheControlDirective is a Cache-Control directive, e.g. "max-age=60",

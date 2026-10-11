@@ -335,11 +335,36 @@ func TestChangingTheSiteTitlePurgesEverything(t *testing.T) {
 	}
 }
 
+// purgeEverything presses the plugin's "Purge cache" button as admin
+func purgeEverything(t *testing.T) {
+	t.Helper()
+	admin := client(logIn(t, "admin"))
+	dashboard := get(t, admin, "/wp-admin/")
+	link := regexp.MustCompile(`id=["']wp-admin-bar-honey-purge["']><a [^>]*href=["']([^"']+)["']`).FindStringSubmatch(dashboard.Body)
+	require.Len(t, link, 2, "the admin bar has the purge button")
+	resp := get(t, admin, strings.NewReplacer("&#038;", "&", "&amp;", "&").Replace(link[1]))
+	require.Equal(t, http.StatusFound, resp.StatusCode, resp.Body)
+}
+
+func TestWarmingAfterPurgingEverything(t *testing.T) {
+	c := client(nil)
+	_, path := newPost(t, "Warmed post")
+	purgeEverything(t)
+	// Honey fetches every page in the sitemap again, at 50 a second
+	time.Sleep(5 * time.Second)
+	for _, p := range []string{path, "/", "/hello-world/"} {
+		assert.Equal(t, "HIT", get(t, c, p).Cache, "%s was cached before anyone asked for it", p)
+	}
+}
+
 func TestPurgeButton(t *testing.T) {
 	c := client(nil)
-	_, path := newPost(t, "Purged by button")
+	id, path := newPost(t, "Purged by button")
 	get(t, c, path)
 	require.Equal(t, "HIT", get(t, c, path).Cache)
+	// Change it behind the plugin's back, so that only the button purges it
+	wp(t, "db", "query", "UPDATE wp_posts SET post_title = 'Changed quietly' WHERE ID = "+id)
+	notContains(t, get(t, c, path).Body, "Changed quietly")
 
 	admin := client(logIn(t, "admin"))
 	dashboard := get(t, admin, "/wp-admin/")
@@ -350,7 +375,9 @@ func TestPurgeButton(t *testing.T) {
 	resp := get(t, admin, purgeURL)
 	require.Equal(t, http.StatusFound, resp.StatusCode, resp.Body)
 	assert.Contains(t, resp.Header.Get("Location"), "honey-purged=1")
-	assert.Equal(t, "MISS", get(t, c, path).Cache)
+	// A hard purge: the old version is never served again (whether the
+	// page is fetched now, or the warmer already has)
+	contains(t, get(t, c, path).Body, "Changed quietly")
 
 	// Editors can't use it
 	editor := client(logIn(t, "editor"))

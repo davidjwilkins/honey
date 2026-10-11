@@ -65,6 +65,12 @@ browserCacheControl = "public, max-age=604800"
 # regex = true
 # browserCacheControl = "public, max-age=31536000, immutable"
 
+# Fill the cache from the sitemap when Honey starts, and after everything is
+# purged, so that visitors find pages cached
+# [warm]
+# sitemap = "https://www.example.com/wp-sitemap.xml"
+# rate = 2                  # pages a second
+
 # Log each request to stdout
 [log]
 access = true

@@ -87,6 +87,14 @@ All the available settings:
 	# bypassCookies = []
 	# browserCacheControl = "public, max-age=604800"   # or "inherit"
 
+	# Fill the cache with the pages in the sitemap when Honey starts, and
+	# after everything is purged (off unless sitemap is set)
+	[warm]
+	sitemap = "https://www.example.com/wp-sitemap.xml"
+	rate = 2                     # pages a second
+	maxPages = 10000
+	interval = "6h"              # also this often ("0": only at startup and after purging everything)
+
 	# Log each request to stdout: method, uri, status, bytes, duration_ms,
 	# cache (the X-Honey-Cache result), remote and forwarded_for.
 	[log]
@@ -133,6 +141,12 @@ With `persist` set, Honey saves the cache to that file every `persistInterval` (
 Once a page expires, the next visitor to ask for it would normally wait while Honey fetches it from WordPress again.  With `staleWhileRevalidate` set (e.g. `"1d"`), they get the expired page straight away instead, with `X-Honey-Cache: STALE`, while Honey fetches the new one in the background for the visitors after them.  So, as long as a page is asked for at least once a day, nobody waits for WordPress to build it - and a page is never more than one refresh out of date.
 
 Purges can work the same way.  A *soft* purge marks pages as expired, rather than removing them: the next visitor gets the old version once more, while the new one is fetched.  The [WordPress plugin](#purging-from-wordpress) purges softly when posts are edited, comments are added and settings change, and hard - so that the old version is never served again - when a post is unpublished, deleted or given a password, a comment is removed, or the "Purge cache" button is pressed.  Without `staleWhileRevalidate`, a soft purge is just like a hard one (except that the old version can still be served if WordPress is down, per `staleIfError`).
+
+### Warming the cache
+
+With `[warm] sitemap` set to the site's sitemap (WordPress's is `/wp-sitemap.xml`), Honey requests every page it lists - as a visitor with no cookies would - when it starts, and again whenever everything is purged (e.g. by the plugin's "Purge cache" button, or when the theme changes), so that visitors find them cached.  Pages already in the cache (e.g. loaded from `persist`) aren't fetched again.  It goes gently, at `rate` pages a second (2 by default), and stops at `maxPages`.  With `interval` set, it does it again that often, so that pages nobody has asked for lately are refreshed too.
+
+Warming isn't counted in the metrics or the access log.  Only pages on the sitemap's scheme and host are requested.
 
 ## Logged in users and sessions
 

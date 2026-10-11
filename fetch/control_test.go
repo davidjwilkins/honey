@@ -244,3 +244,34 @@ func TestPurger(t *testing.T) {
 		assert.Error(t, err, bad)
 	}
 }
+
+func TestOnPurge(t *testing.T) {
+	o := noHeadersOrigin()
+	backend, err := url.Parse(o.URL)
+	require.NoError(t, err)
+	type call struct {
+		path         string
+		prefix, soft bool
+	}
+	var calls []call
+	opts := Options{
+		Control: Control{Secret: secret},
+		OnPurge: func(path string, prefix, soft bool) { calls = append(calls, call{path, prefix, soft}) },
+	}
+	c := cache.NewCacher(cache.Options{})
+	proxy := httptest.NewServer(FetchWithOptions(c, Forwarder(c), backend, opts))
+	t.Cleanup(proxy.Close)
+	t.Cleanup(o.Close)
+
+	purgeRequest(t, proxy.URL, "/blog/*", false)
+	purgeRequest(t, proxy.URL, "/page?p=1", true)
+	_, err = Purger(c, backend, opts)("/*", false, true)
+	require.NoError(t, err)
+	assert.Equal(t, []call{{"/blog/", true, false}, {"/page?p=1", false, true}, {"/", true, true}}, calls)
+
+	req, _ := http.NewRequest(MethodPurge, proxy.URL+"/", nil)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Len(t, calls, 3, "not for purges which aren't allowed")
+}

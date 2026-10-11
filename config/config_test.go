@@ -452,3 +452,36 @@ staleWhileRevalidate = "0"
 		}
 	}
 }
+
+func TestParseWarm(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"http://127.0.0.1:8081\"\n")
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Warm.Sitemap, "it's off by default")
+
+	cfg, err = Parse(`
+[backend]
+uri = "http://127.0.0.1:8081"
+[warm]
+sitemap = "https://www.example.com/wp-sitemap.xml"
+rate = 0.5
+maxPages = 500
+interval = "6h"
+`)
+	require.NoError(t, err)
+	assert.Equal(t, "https://www.example.com/wp-sitemap.xml", cfg.Warm.Sitemap.String())
+	assert.Equal(t, 0.5, cfg.Warm.Rate)
+	assert.Equal(t, 500, cfg.Warm.MaxPages)
+	assert.Equal(t, 6*time.Hour, cfg.Warm.Interval)
+
+	for _, tc := range []struct{ config, err string }{
+		{"[warm]\nrate = 5", "warm.sitemap is required"},
+		{"[warm]\nsitemap = \"/wp-sitemap.xml\"", "warm.sitemap must be the site's sitemap's full URL"},
+		{"[warm]\nsitemap = \"https://www.example.com/wp-sitemap.xml\"\nrate = 1000", "warm.rate must be"},
+		{"[warm]\nsitemap = \"https://www.example.com/wp-sitemap.xml\"\ninterval = \"5s\"", "warm.interval must be"},
+	} {
+		_, err := Parse("[backend]\nuri = \"http://127.0.0.1:8081\"\n" + tc.config)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}
