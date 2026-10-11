@@ -46,6 +46,8 @@ type snapshotResponse struct {
 	Stored         time.Time
 	InitialAge     int
 	BaseKey        string
+	// Expired is whether it was soft purged
+	Expired bool
 }
 
 // SaveTo writes the cache's contents to the file at path, so that LoadFrom
@@ -100,6 +102,7 @@ func (c *defaultCacher) writeSnapshot(f io.Writer) (int, error) {
 				Stored:         value.now,
 				InitialAge:     value.initialAge,
 				BaseKey:        value.baseKey,
+				Expired:        value.Expired(),
 			}
 			saved++
 		default:
@@ -179,6 +182,7 @@ func (s *snapshotResponse) restore() *responseImpl {
 	if r.requestHeaders == nil {
 		r.requestHeaders = http.Header{}
 	}
+	r.expired.Store(s.Expired)
 	if s.Brotli != nil {
 		compressed := s.Brotli
 		r.brotli.Store(&compressed)

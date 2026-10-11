@@ -21,6 +21,9 @@ type Route struct {
 	DefaultTTL time.Duration
 	// StaleIfError overrides Options.StaleIfError, if it isn't nil.
 	StaleIfError *time.Duration
+	// StaleWhileRevalidate overrides Options.StaleWhileRevalidate, if it
+	// isn't nil.
+	StaleWhileRevalidate *time.Duration
 	// QueryParams overrides the query parameters kept on requests (see
 	// fetch.Options.QueryParams), if it isn't nil.
 	QueryParams *[]string

@@ -47,6 +47,14 @@ type Options struct {
 	// have their own stale-if-error directive.  Zero means only responses
 	// with stale-if-error are served stale.
 	StaleIfError time.Duration
+	// StaleWhileRevalidate is how long past their freshness lifetime
+	// responses may be served while they are refreshed in the background,
+	// unless they have their own stale-while-revalidate directive (or
+	// no-cache).  Visitors then never wait for the backend for a page
+	// which has been cached, as long as it is requested within this long
+	// of expiring.  Zero means only responses with stale-while-revalidate
+	// are.
+	StaleWhileRevalidate time.Duration
 	// SkipStaticFiles stops requests for static files (images, css, js,
 	// fonts, media, documents, archives...) from being cached.
 	SkipStaticFiles bool
@@ -80,6 +88,7 @@ type defaultCacher struct {
 	allowedCookieNames []string
 	defaultTTL         time.Duration
 	staleIfError       time.Duration
+	staleWhileReval    time.Duration
 	maxObjectBytes     int64
 	skipStaticFiles    bool
 	brotli             bool
@@ -115,6 +124,7 @@ func NewCacher(opts Options) *defaultCacher {
 		allowedCookieNames: []string{},
 		defaultTTL:         opts.DefaultTTL,
 		staleIfError:       opts.StaleIfError,
+		staleWhileReval:    opts.StaleWhileRevalidate,
 		maxObjectBytes:     opts.MaxObjectBytes,
 		skipStaticFiles:    opts.SkipStaticFiles,
 		brotli:             !opts.DisableBrotli,
@@ -266,13 +276,16 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	_, noCache := utilities.Directive(cc, "no-cache")
 	_, maxAge := utilities.Directive(cc, "max-age")
 	_, sMaxAge := utilities.Directive(cc, "s-maxage")
-	defaultTTL, staleIfError := c.defaultTTL, c.staleIfError
+	defaultTTL, staleIfError, staleWhileRevalidate := c.defaultTTL, c.staleIfError, c.staleWhileReval
 	if route := c.Route(r.Request); route != nil {
 		if route.DefaultTTL > 0 {
 			defaultTTL = route.DefaultTTL
 		}
 		if route.StaleIfError != nil {
 			staleIfError = *route.StaleIfError
+		}
+		if route.StaleWhileRevalidate != nil {
+			staleWhileRevalidate = *route.StaleWhileRevalidate
 		}
 	}
 	if !noCache && !maxAge && !sMaxAge && r.Header.Get("Expires") == "" {
@@ -282,6 +295,11 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	// responses for this long past their freshness, in case it needs them
 	if _, found := utilities.Directive(cc, "stale-if-error"); !found && staleIfError >= time.Second {
 		cc = addDirective(cc, fmt.Sprintf("stale-if-error=%d", int(staleIfError/time.Second)))
+	}
+	// https://www.rfc-editor.org/rfc/rfc5861#section-3 - but not for
+	// responses which must be revalidated before they're used
+	if _, found := utilities.Directive(cc, "stale-while-revalidate"); !found && !noCache && staleWhileRevalidate >= time.Second {
+		cc = addDirective(cc, fmt.Sprintf("stale-while-revalidate=%d", int(staleWhileRevalidate/time.Second)))
 	}
 	r.Header.Set("Cache-Control", cc)
 
@@ -463,14 +481,48 @@ func (c *defaultCacher) Load(hash string, request *http.Request) (Response, bool
 // sent to 127.0.0.1 by WordPress, for a site cached as www.example.com).
 // If one backend serves several sites, purging a path purges it on each.
 func (c *defaultCacher) Purge(u *url.URL, prefix bool) int {
-	target := withoutOrigin(u.String())
+	match := purgeMatcher(u, prefix)
 	responses := 0
 	c.store.deleteMatching(func(key string) bool {
+		matched, vary := match(key)
+		if matched && !vary {
+			responses++
+		}
+		return matched
+	})
+	return responses
+}
+
+// Expire soft purges the cached responses Purge(u, prefix) would remove:
+// they are treated as stale from now on, but they are kept, so that they
+// can still be served while they are refreshed (if they allow
+// stale-while-revalidate) or if the backend fails (if they allow
+// stale-if-error).  So visitors needn't wait for the backend after a
+// purge, as long as they can have the old version once more.  It returns
+// the number of responses expired.
+func (c *defaultCacher) Expire(u *url.URL, prefix bool) int {
+	match := purgeMatcher(u, prefix)
+	responses := 0
+	c.store.forEach(func(key string, value interface{}) {
+		if matched, vary := match(key); matched && !vary {
+			if r, ok := value.(*responseImpl); ok && !r.expired.Swap(true) {
+				responses++
+			}
+		}
+	})
+	return responses
+}
+
+// purgeMatcher returns a function which says whether a store key is for
+// u (see Purge), and whether it is a Vary record rather than a response.
+func purgeMatcher(u *url.URL, prefix bool) func(key string) (matched, vary bool) {
+	target := withoutOrigin(u.String())
+	return func(key string) (bool, bool) {
 		vary := strings.HasPrefix(key, varyKey(""))
 		key = strings.TrimPrefix(key, varyKey(""))
 		_, keyURL, found := strings.Cut(key, " :: ")
 		if !found {
-			return false
+			return false, vary
 		}
 		keyURL = withoutOrigin(keyURL)
 		var match bool
@@ -481,12 +533,8 @@ func (c *defaultCacher) Purge(u *url.URL, prefix bool) int {
 			// the headers the response Varies on (see GetVaryHeadersHash)
 			match = keyURL == target || strings.HasPrefix(keyURL, target+"::") || strings.HasPrefix(keyURL, target+" :: ")
 		}
-		if match && !vary {
-			responses++
-		}
-		return match
-	})
-	return responses
+		return match, vary
+	}
 }
 
 // withoutOrigin returns rawURL without its scheme and host, e.g. "/blog/"

@@ -8,6 +8,7 @@ uri = "http://wordpress"
 [cache]
 defaultTTL = "5m"
 staleIfError = "1h"
+staleWhileRevalidate = "1d"
 
 [[route]]
 match = "(?:[?&]preview=true(?:&|$)|/(?:feed|wp-admin|wp-login))"

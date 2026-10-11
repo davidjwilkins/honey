@@ -8,7 +8,7 @@ In the event of a cache miss, It multiplexes requests to the same URL into a sin
 
 Cached responses are served until they expire, according to the backend's `Cache-Control` (`s-maxage`, `max-age`) or `Expires` headers, or a configurable default TTL if it sends neither.  The cache is bounded in size, evicting the least recently used responses when it is full.
 
-If the backend sends `stale-while-revalidate`, expired responses are served immediately while they are refreshed in the background.  If it sends `stale-if-error`, expired responses are served (with a `Warning` header) when the backend errors or can't be reached.
+If the backend sends `stale-while-revalidate`, expired responses are served immediately while they are refreshed in the background.  If it sends `stale-if-error`, expired responses are served (with a `Warning` header) when the backend errors or can't be reached.  WordPress sends neither, so Honey can add them: see [Never waiting for WordPress](#never-waiting-for-wordpress).
 
 It will set an Etag on responses, and respond with an HTTP 304 Not Modified in the event that the `If-None-Match` header matches the Etag.
 
@@ -59,6 +59,8 @@ All the available settings:
 	defaultTTL = "5m"            # freshness for responses without max-age, s-maxage or Expires
 	staleIfError = "1h"          # serve expired responses this long if the backend errors or times out
 	                             # (unless they have their own stale-if-error; off by default)
+	staleWhileRevalidate = "1d"  # serve expired responses this long while they're refreshed in the
+	                             # background, so visitors don't wait (unless they say otherwise; off by default)
 	persist = "/var/lib/honey/cache.snapshot"  # save the cache here, and load it at startup (off unless set)
 	persistInterval = "5m"       # how often to save it ("0": only on shutdown)
 	staticFiles = true           # cache images, css, js, fonts, media and documents
@@ -80,7 +82,7 @@ All the available settings:
 	[[route]]
 	match = "/wp-content/uploads/"
 	defaultTTL = "7d"            # override cache settings for these: defaultTTL, staleIfError,
-	# staleIfError = "0"         #   queryParams, bypassCookies and browserCacheControl
+	# staleIfError = "0"         #   staleWhileRevalidate, queryParams, bypassCookies and browserCacheControl
 	# queryParams = ["ver"]
 	# bypassCookies = []
 	# browserCacheControl = "public, max-age=604800"   # or "inherit"
@@ -125,6 +127,12 @@ With `persist` set, Honey saves the cache to that file every `persistInterval` (
 - A missing or unreadable file is logged, and Honey starts with an empty cache.  So is one saved by a version of Honey which keys responses differently.
 - On shutdown, Honey waits for requests in progress to finish (for up to 30 seconds) before saving.
 - The systemd service and the Docker image both have a writable `/var/lib/honey` for it.  With Docker, mount a volume there: `-v honey-cache:/var/lib/honey`.
+
+## Never waiting for WordPress
+
+Once a page expires, the next visitor to ask for it would normally wait while Honey fetches it from WordPress again.  With `staleWhileRevalidate` set (e.g. `"1d"`), they get the expired page straight away instead, with `X-Honey-Cache: STALE`, while Honey fetches the new one in the background for the visitors after them.  So, as long as a page is asked for at least once a day, nobody waits for WordPress to build it - and a page is never more than one refresh out of date.
+
+Purges can work the same way.  A *soft* purge marks pages as expired, rather than removing them: the next visitor gets the old version once more, while the new one is fetched.  The [WordPress plugin](#purging-from-wordpress) purges softly when posts are edited, comments are added and settings change, and hard - so that the old version is never served again - when a post is unpublished, deleted or given a password, a comment is removed, or the "Purge cache" button is pressed.  Without `staleWhileRevalidate`, a soft purge is just like a hard one (except that the old version can still be served if WordPress is down, per `staleIfError`).
 
 ## Logged in users and sessions
 
@@ -172,7 +180,7 @@ Be careful with `immutable` and long `max-age`s: browsers won't ask for the file
 
 ## Routes
 
-Each `[[route]]` either stops the requests it matches from being cached (`cache = false`), or overrides some of the `[cache]` settings for them: `defaultTTL`, `staleIfError` (`"0"` turns it off), `queryParams` and `bypassCookies`.
+Each `[[route]]` either stops the requests it matches from being cached (`cache = false`), or overrides some of the `[cache]` settings for them: `defaultTTL`, `staleIfError` and `staleWhileRevalidate` (`"0"` turns them off), `queryParams`, `bypassCookies` and `browserCacheControl`.
 
 - `cache = false` applies if any matching route says so, wherever it is in the list.
 - Otherwise the first matching route's settings apply, so list more specific routes first.
@@ -215,6 +223,8 @@ Trusted callers (see `[control]` above) can remove pages from the cache with the
 	curl -X PURGE -H "X-Honey-Secret: $SECRET" "https://www.example.com/category/news/*"
 	# everything
 	curl -X PURGE -H "X-Honey-Secret: $SECRET" "https://www.example.com/*"
+	# softly: the old version is served once more while the new one is fetched
+	curl -X PURGE -H "X-Honey-Secret: $SECRET" -H "X-Honey-Purge: soft" https://www.example.com/2018/02/my-post/
 
 They can also make Honey fetch a fresh copy, and cache it, by sending `Cache-Control: no-cache`.  Untrusted `PURGE` requests get a `403 Forbidden`.
 
@@ -229,7 +239,7 @@ Purges ignore the host, so they work however they reach Honey: `curl -X PURGE ht
 - When a category or tag is renamed or deleted: its archive.
 - When the theme, its customizations, menus, widgets, plugins, or the site's title, tagline, reading or permalink settings change: everything.
 
-It also adds a "Purge cache" button to the admin bar for administrators.
+It also adds a "Purge cache" button to the admin bar for administrators.  Most of its purges are soft, and some are hard (see [Never waiting for WordPress](#never-waiting-for-wordpress)).
 
 To install it, copy it to `wp-content/mu-plugins/honey-purge.php`, and add to `wp-config.php`:
 

@@ -16,7 +16,7 @@
 </header>
 
 {{with .Purged -}}
-<p class="notice ok" role="status">Purged {{.Count}} cached response{{if ne .Count 1}}s{{end}} for <span class="mono">{{.Target}}</span>{{if .Prefix}} and everything under it{{end}}.</p>
+<p class="notice ok" role="status">{{if .Soft}}Expired{{else}}Purged{{end}} {{.Count}} cached response{{if ne .Count 1}}s{{end}} for <span class="mono">{{.Target}}</span>{{if .Prefix}} and everything under it{{end}}{{if .Soft}}: they'll be refreshed the next time they're requested{{end}}.</p>
 {{- end}}
 {{with .Problem -}}
 <p class="notice problem" role="alert">{{.}}</p>
@@ -36,6 +36,7 @@
       <button type="submit">Purge</button>
     </div>
     <label class="check"><input type="checkbox" name="prefix" value="1"> And everything under it (e.g. <span class="mono">/blog/</span> for every post)</label>
+    <label class="check"><input type="checkbox" name="soft" value="1"> Soft: serve the old version once more while the new one is fetched, so nobody waits (if <span class="mono">staleWhileRevalidate</span> allows)</label>
   </form>
   <form method="post" action="/purge" id="purge-all">
     <input type="hidden" name="url" value="/">

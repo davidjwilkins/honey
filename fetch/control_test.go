@@ -224,23 +224,23 @@ func TestPurger(t *testing.T) {
 		require.True(t, hit(path), path)
 	}
 
-	n, err := purge("https://www.public-hostname.example/page?utm_source=x&p=1#top", false)
+	n, err := purge("https://www.public-hostname.example/page?utm_source=x&p=1#top", false, false)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "the host is the backend's, and the query is filtered, as for requests")
-	n, err = purge("/search?s=honey&x=1", false)
+	n, err = purge("/search?s=honey&x=1", false, false)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "with the route's query parameters")
-	n, err = purge("/blog/", true)
+	n, err = purge("/blog/", true, false)
 	require.NoError(t, err)
 	assert.Equal(t, 2, n)
 	assert.True(t, hit("/about"))
-	n, err = purge("/*", false)
+	n, err = purge("/*", false, false)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, `a trailing "*" works as for PURGE requests`)
 	assert.False(t, hit("/about"))
 
 	for _, bad := range []string{"about", "javascript:alert(1)", "ftp://example.com/", "http://[::1"} {
-		_, err := purge(bad, false)
+		_, err := purge(bad, false, false)
 		assert.Error(t, err, bad)
 	}
 }

@@ -40,9 +40,9 @@ type Options struct {
 	// Metrics are the counts shown, and served at /metrics
 	Metrics *metrics.Recorder
 	// Purge removes the cached responses for a URL or path - or, if prefix
-	// is set, every URL starting with it - and returns how many it removed
-	// (see fetch.Purger).
-	Purge func(rawURL string, prefix bool) (int, error)
+	// is set, every URL starting with it - and returns how many it removed.
+	// With soft, it expires them instead (see fetch.Purger).
+	Purge func(rawURL string, prefix, soft bool) (int, error)
 }
 
 // Handler returns the admin page's handler.  As well as the page, it
@@ -177,6 +177,7 @@ type result struct {
 type purged struct {
 	Target string
 	Prefix bool
+	Soft   bool
 	Count  int
 }
 
@@ -264,6 +265,7 @@ func (a *admin) purge(w http.ResponseWriter, r *http.Request) {
 	}
 	target := strings.TrimSpace(r.PostFormValue("url"))
 	prefix := r.PostFormValue("prefix") != ""
+	soft := r.PostFormValue("soft") != ""
 	var result outcome
 	switch {
 	case a.opts.Purge == nil:
@@ -271,12 +273,12 @@ func (a *admin) purge(w http.ResponseWriter, r *http.Request) {
 	case target == "":
 		result.Problem = "Enter a URL or path to purge."
 	default:
-		count, err := a.opts.Purge(target, prefix)
+		count, err := a.opts.Purge(target, prefix, soft)
 		if err != nil {
 			result.Problem = fmt.Sprintf("Couldn't purge: %v", err)
 			break
 		}
-		result.Purged = &purged{Target: target, Prefix: prefix, Count: count}
+		result.Purged = &purged{Target: target, Prefix: prefix, Soft: soft, Count: count}
 	}
 	id := make([]byte, 16)
 	rand.Read(id)

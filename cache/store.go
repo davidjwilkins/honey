@@ -91,6 +91,15 @@ func (s *store) deleteMatching(match func(key string) bool) int {
 	return removed
 }
 
+// forEach calls fn for each entry, with the store locked
+func (s *store) forEach(fn func(key string, value interface{})) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, el := range s.items {
+		fn(key, el.Value.(*storeEntry).value)
+	}
+}
+
 // entries returns a copy of the entries, least recently used first.
 func (s *store) entries() []storeEntry {
 	s.mu.Lock()

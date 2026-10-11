@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/davidjwilkins/honey/cache"
@@ -149,7 +150,7 @@ func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http
 				// context is cancelled once it has been responded to, so
 				// the backend request keeps its values (e.g. its route)
 				// but not its cancellation.
-				go revalidateInBackground(hash, handler, r.Clone(context.WithoutCancel(r.Context())))
+				go revalidateInBackground(c, hash, handler, r.Clone(context.WithoutCancel(r.Context())))
 				return
 			}
 			if responded {
@@ -297,11 +298,19 @@ func isRetry(r *http.Request) bool {
 }
 
 // revalidateInBackground fetches a fresh copy of the response to r into
-// the cache, unless a request for it is already in flight.
-func revalidateInBackground(hash string, handler http.Handler, r *http.Request) {
+// the cache, unless a request for it is already in flight, or one has just
+// finished (e.g. r found the stale response just before another request's
+// refresh replaced it).
+func revalidateInBackground(c cache.Cacher, hash string, handler http.Handler, r *http.Request) {
 	f, leader := flights.Join(hash)
 	if !leader {
 		return
+	}
+	if resp, found := c.Load(hash, r); found {
+		if age, err := strconv.Atoi(resp.Age()); err == nil && age < freshnessLifetime(resp) {
+			flights.Finish(hash, f, singleflight.Result{Retry: true})
+			return
+		}
 	}
 	defer flights.Finish(hash, f, singleflight.Result{Retry: true})
 	handler.ServeHTTP(httptest.NewRecorder(), forBackend(r, hash, f))

@@ -157,6 +157,25 @@ func logIn(t *testing.T, user string) http.CookieJar {
 	return jar
 }
 
+// eventually requests path until its body contains want, and returns the
+// first response, which should be the old version served while the new
+// one was fetched
+func eventually(t *testing.T, c *http.Client, path, want string) page {
+	t.Helper()
+	first := get(t, c, path)
+	deadline := time.Now().Add(10 * time.Second)
+	for resp := first; ; resp = get(t, c, path) {
+		if strings.Contains(resp.Body, want) {
+			return first
+		}
+		if time.Now().After(deadline) {
+			assert.Fail(t, fmt.Sprintf("%s never contained %q", path, want))
+			return first
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func TestPagesAreCached(t *testing.T) {
 	c := client(nil)
 	_, path := newPost(t, "Cached post")
@@ -214,11 +233,27 @@ func TestEditingAPostPurgesIt(t *testing.T) {
 
 	wp(t, "post", "update", id, "--post_title=After editing")
 	for _, p := range []string{path, "/", "/category/news/"} {
+		// A soft purge: the old version is served once more, without
+		// waiting for WordPress, while the new one is fetched
+		first := eventually(t, c, p, "After editing")
+		assert.Equal(t, "STALE", first.Cache, p)
 		resp := get(t, c, p)
-		assert.Equal(t, "MISS", resp.Cache, p)
-		contains(t, resp.Body, "After editing", p)
+		assert.Equal(t, "HIT", resp.Cache, p)
 		notContains(t, resp.Body, "Before editing", p)
 	}
+}
+
+func TestPasswordProtectingAPostHidesItAtOnce(t *testing.T) {
+	c := client(nil)
+	id, path := newPost(t, "Soon protected")
+	wp(t, "post", "update", id, "--post_content=Not for everyone.")
+	eventually(t, c, path, "Not for everyone.")
+	require.Equal(t, "HIT", get(t, c, path).Cache)
+
+	wp(t, "post", "update", id, "--post_password=sesame")
+	resp := get(t, c, path)
+	assert.NotEqual(t, "STALE", resp.Cache, "a hard purge: the old version is never served again")
+	notContains(t, resp.Body, "Not for everyone.")
 }
 
 func TestChangingTheSlugPurgesTheOldAddress(t *testing.T) {
@@ -256,9 +291,9 @@ func TestCommentsAppearOnceApproved(t *testing.T) {
 	})
 	require.Equal(t, http.StatusFound, resp.StatusCode, resp.Body)
 
+	eventually(t, anonymous, path, "What a lovely honey cache.")
 	page := get(t, anonymous, path)
-	assert.Equal(t, "MISS", page.Cache, "the plugin purged the post")
-	contains(t, page.Body, "What a lovely honey cache.")
+	assert.Equal(t, "HIT", page.Cache)
 	notContains(t, page.Body, "jane@example.com")
 
 	// The commenter's details are filled in on the form for them only
@@ -295,9 +330,8 @@ func TestChangingTheSiteTitlePurgesEverything(t *testing.T) {
 	title := fmt.Sprintf("Honey test %d", time.Now().UnixNano())
 	wp(t, "option", "update", "blogname", title)
 	for _, p := range []string{path, "/"} {
-		resp := get(t, c, p)
-		assert.Equal(t, "MISS", resp.Cache, p)
-		contains(t, resp.Body, title, p)
+		first := eventually(t, c, p, title)
+		assert.Equal(t, "STALE", first.Cache, p)
 	}
 }
 
@@ -360,9 +394,14 @@ func TestApprovingACommentPurgesThePost(t *testing.T) {
 	notContains(t, page.Body, "A comment awaiting moderation.")
 
 	wp(t, "comment", "approve", comment)
+	first := eventually(t, c, path, "A comment awaiting moderation.")
+	assert.Equal(t, "STALE", first.Cache)
+
+	// Removing it is a hard purge: it is never served again
+	wp(t, "comment", "spam", comment)
 	page = get(t, c, path)
-	assert.Equal(t, "MISS", page.Cache)
-	contains(t, page.Body, "A comment awaiting moderation.")
+	assert.NotEqual(t, "STALE", page.Cache)
+	notContains(t, page.Body, "A comment awaiting moderation.")
 }
 
 func TestRenamingACategoryPurgesIt(t *testing.T) {
@@ -376,7 +415,5 @@ func TestRenamingACategoryPurgesIt(t *testing.T) {
 	contains(t, page.Body, "A gardening post")
 
 	wp(t, "term", "update", "category", "gardening", "--by=slug", "--name=Beekeeping")
-	page = get(t, c, "/category/gardening/")
-	assert.Equal(t, "MISS", page.Cache)
-	contains(t, page.Body, "Beekeeping")
+	eventually(t, c, "/category/gardening/", "Beekeeping")
 }

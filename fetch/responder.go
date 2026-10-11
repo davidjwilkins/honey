@@ -39,7 +39,7 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 		return hash, false, false
 	}
 	age, _ := strconv.Atoi(resp.Age())
-	lifetime := utilities.FreshnessLifetime(resp.Header())
+	lifetime := freshnessLifetime(resp)
 	statusCode := http.StatusNotModified
 	if age >= lifetime {
 		// https://tools.ietf.org/html/rfc5861#section-3
@@ -107,7 +107,21 @@ func canServeStaleOnError(prev cache.Response, errorCacheControl string) bool {
 	if err != nil {
 		return false
 	}
-	return age-utilities.FreshnessLifetime(prev.Header()) < staleIfError
+	return age-freshnessLifetime(prev) < staleIfError
+}
+
+// expirer is implemented by Responses which can be soft purged
+type expirer interface {
+	Expired() bool
+}
+
+// freshnessLifetime returns how many seconds resp is fresh for, from when
+// it was fetched: 0 if it has been soft purged.
+func freshnessLifetime(resp cache.Response) int {
+	if e, ok := resp.(expirer); ok && e.Expired() {
+		return 0
+	}
+	return utilities.FreshnessLifetime(resp.Header())
 }
 
 // staleWarning is the Warning header value set on stale responses

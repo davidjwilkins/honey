@@ -425,3 +425,30 @@ func TestParseBackendHost(t *testing.T) {
 	_, err = Parse("[backend]\nuri = \"https://203.0.113.7\"\nhost = \"https://www.example.com/\"\n")
 	assert.ErrorContains(t, err, "backend.host must be a host name")
 }
+
+func TestParseStaleWhileRevalidate(t *testing.T) {
+	cfg, err := Parse(`
+[backend]
+uri = "http://127.0.0.1:8081"
+[cache]
+staleWhileRevalidate = "1d"
+[[route]]
+match = "/checkout"
+staleWhileRevalidate = "0"
+`)
+	require.NoError(t, err)
+	assert.Equal(t, 24*time.Hour, cfg.Cache.StaleWhileRevalidate)
+	require.NotNil(t, cfg.Routes[0].StaleWhileRevalidate)
+	assert.Zero(t, *cfg.Routes[0].StaleWhileRevalidate)
+
+	for _, tc := range []struct{ config, err string }{
+		{"[cache]\nstaleWhileRevalidate = \"0\"", "cache.staleWhileRevalidate must be a duration of at least 1s"},
+		{"[cache]\nstaleWhileRevalidate = \"soon\"", "cache.staleWhileRevalidate must be a duration"},
+		{"[[route]]\nmatch = \"/\"\nstaleWhileRevalidate = \"-1s\"", `route 1 ("/"): staleWhileRevalidate must be a duration`},
+	} {
+		_, err := Parse("[backend]\nuri = \"http://127.0.0.1:8081\"\n" + tc.config)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}

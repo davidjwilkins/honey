@@ -19,6 +19,12 @@ const DefaultSecretHeader = "X-Honey-Secret"
 // MethodPurge is the request method which removes responses from the cache.
 const MethodPurge = "PURGE"
 
+// PurgeModeHeader is the request header which makes a PURGE request soft
+// (with the value "soft"): the responses are expired rather than removed,
+// so that they can be served once more while they are refreshed (see
+// cache's Expire).
+const PurgeModeHeader = "X-Honey-Purge"
+
 // Control says which requests are trusted to control the cache: to purge
 // responses from it, and to make it fetch a fresh response with
 // Cache-Control: no-cache or Pragma: no-cache.  Requests from anyone else
@@ -102,6 +108,12 @@ type purger interface {
 	Purge(u *url.URL, prefix bool) int
 }
 
+// expirePurger is implemented by Cachers which can also soft purge
+type expirePurger interface {
+	purger
+	Expire(u *url.URL, prefix bool) int
+}
+
 // applyControl handles the parts of r which only trusted requests may use.
 // It responds to PURGE requests itself, returning true if it did.  For
 // untrusted requests, it removes no-cache, so that they are served from the
@@ -143,15 +155,21 @@ func purge(cacher interface{}, trusted bool, w http.ResponseWriter, r *http.Requ
 		http.Error(w, "This cache can't be purged", http.StatusNotImplemented)
 		return
 	}
-	purged := purgeURL(p, *r.URL, false)
+	soft := strings.EqualFold(r.Header.Get(PurgeModeHeader), "soft")
+	purged := purgeURL(p, *r.URL, false, soft)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if soft {
+		fmt.Fprintf(w, "Expired %d responses\n", purged)
+		return
+	}
 	fmt.Fprintf(w, "Purged %d responses\n", purged)
 }
 
 // purgeURL removes the cached responses for u - or, if prefix is set or
 // the path ends with "*", for every URL starting with u (without the "*"
-// and any query string).
-func purgeURL(p purger, u url.URL, prefix bool) int {
+// and any query string).  With soft, it expires them instead, if the
+// cache can.
+func purgeURL(p purger, u url.URL, prefix, soft bool) int {
 	if strings.HasSuffix(u.Path, "*") {
 		prefix = true
 		u.Path = strings.TrimSuffix(u.Path, "*")
@@ -161,17 +179,21 @@ func purgeURL(p purger, u url.URL, prefix bool) int {
 		u.RawQuery = ""
 		u.ForceQuery = false
 	}
+	if e, ok := p.(expirePurger); ok && soft {
+		return e.Expire(&u, prefix)
+	}
 	return p.Purge(&u, prefix)
 }
 
 // Purger returns a function which removes the cached responses for a URL -
 // or, if prefix is set, for every URL starting with it - as a trusted
 // PURGE request for it to FetchWithOptions(c, ..., backend, opts) would,
-// and returns how many it removed.  The URL may be a full URL (its host is
-// replaced by the backend's, as requests' are) or a path, e.g. "/blog/".
-func Purger(c cache.Cacher, backend *url.URL, opts Options) func(rawURL string, prefix bool) (int, error) {
+// and returns how many it removed.  With soft, it expires them instead
+// (see PurgeModeHeader).  The URL may be a full URL or a path, e.g.
+// "/blog/": either way, every host's responses for the path are purged.
+func Purger(c cache.Cacher, backend *url.URL, opts Options) func(rawURL string, prefix, soft bool) (int, error) {
 	filterQuery := queryFilter(c, opts.QueryParams)
-	return func(rawURL string, prefix bool) (int, error) {
+	return func(rawURL string, prefix, soft bool) (int, error) {
 		p, ok := c.(purger)
 		if !ok {
 			return 0, fmt.Errorf("this cache can't be purged")
@@ -190,7 +212,7 @@ func Purger(c cache.Cacher, backend *url.URL, opts Options) func(rawURL string, 
 		SwitchBackend(r, backend)
 		r = withRoute(c, r)
 		filterQuery(r)
-		return purgeURL(p, *r.URL, prefix), nil
+		return purgeURL(p, *r.URL, prefix, soft), nil
 	}
 }
 

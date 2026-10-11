@@ -80,6 +80,9 @@ type Cache struct {
 	// StaleIfError is how long responses may be served stale if the
 	// backend errors, unless they say otherwise
 	StaleIfError time.Duration
+	// StaleWhileRevalidate is how long responses may be served stale while
+	// they are refreshed in the background, unless they say otherwise
+	StaleWhileRevalidate time.Duration
 	// Persist is the file the cache is saved to (every PersistInterval, if
 	// it isn't zero, and on shutdown) and loaded from at startup, or ""
 	Persist         string
@@ -118,6 +121,9 @@ type Route struct {
 	DefaultTTL time.Duration
 	// StaleIfError overrides cache.staleIfError, if it isn't nil
 	StaleIfError *time.Duration
+	// StaleWhileRevalidate overrides cache.staleWhileRevalidate, if it
+	// isn't nil
+	StaleWhileRevalidate *time.Duration
 	// QueryParams overrides cache.queryParams, if it isn't nil
 	QueryParams *[]string
 	// BypassCookies overrides cache.bypassCookies, if it isn't nil
@@ -151,6 +157,7 @@ type file struct {
 		MaxObjectSize   string    `toml:"maxObjectSize"`
 		DefaultTTL      string    `toml:"defaultTTL"`
 		StaleIfError    string    `toml:"staleIfError"`
+		StaleWhileReval string    `toml:"staleWhileRevalidate"`
 		Persist         string    `toml:"persist"`
 		PersistInterval string    `toml:"persistInterval"`
 		AllowedCookies  []string  `toml:"allowedCookies"`
@@ -173,6 +180,7 @@ type file struct {
 		Cache         *bool     `toml:"cache"`
 		DefaultTTL    string    `toml:"defaultTTL"`
 		StaleIfError  string    `toml:"staleIfError"`
+		StaleWhileRev string    `toml:"staleWhileRevalidate"`
 		QueryParams   *[]string `toml:"queryParams"`
 		BypassCookies *[]string `toml:"bypassCookies"`
 		BrowserCC     *string   `toml:"browserCacheControl"`
@@ -272,6 +280,12 @@ func Parse(data string) (*Config, error) {
 			return nil, fmt.Errorf("cache.staleIfError must be a duration of at least 1s, e.g. \"1h\"")
 		}
 	}
+	if f.Cache.StaleWhileReval != "" {
+		cfg.Cache.StaleWhileRevalidate, err = parseDuration(f.Cache.StaleWhileReval)
+		if err != nil || cfg.Cache.StaleWhileRevalidate < time.Second {
+			return nil, fmt.Errorf("cache.staleWhileRevalidate must be a duration of at least 1s, e.g. \"1d\"")
+		}
+	}
 	if f.Cache.MaxSize != "" {
 		cfg.Cache.MaxBytes, err = parseSize(f.Cache.MaxSize)
 		if err != nil {
@@ -363,6 +377,13 @@ func Parse(data string) (*Config, error) {
 			}
 			route.StaleIfError = &staleIfError
 		}
+		if r.StaleWhileRev != "" {
+			staleWhileRevalidate, err := parseDuration(r.StaleWhileRev)
+			if err != nil || staleWhileRevalidate < 0 {
+				return nil, fmt.Errorf("route %d (%q): staleWhileRevalidate must be a duration, e.g. \"1d\", or \"0\" to turn it off", i+1, r.Match)
+			}
+			route.StaleWhileRevalidate = &staleWhileRevalidate
+		}
 		if r.QueryParams != nil {
 			params := append([]string{}, *r.QueryParams...)
 			route.QueryParams = &params
@@ -383,13 +404,13 @@ func Parse(data string) (*Config, error) {
 			}
 			route.BrowserCacheControl = &cc
 		}
-		overrides := route.DefaultTTL != 0 || route.StaleIfError != nil || route.QueryParams != nil ||
+		overrides := route.DefaultTTL != 0 || route.StaleIfError != nil || route.StaleWhileRevalidate != nil || route.QueryParams != nil ||
 			route.BypassCookies != nil || route.BrowserCacheControl != nil
 		if !route.Cache && overrides {
 			return nil, fmt.Errorf("route %d (%q): a route with cache = false can't have other settings", i+1, r.Match)
 		}
 		if route.Cache && !overrides {
-			return nil, fmt.Errorf("route %d (%q): set cache = false, or a setting to override (defaultTTL, staleIfError, queryParams, bypassCookies or browserCacheControl)", i+1, r.Match)
+			return nil, fmt.Errorf("route %d (%q): set cache = false, or a setting to override (defaultTTL, staleIfError, staleWhileRevalidate, queryParams, bypassCookies or browserCacheControl)", i+1, r.Match)
 		}
 		cfg.Routes = append(cfg.Routes, route)
 	}
