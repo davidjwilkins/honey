@@ -242,102 +242,14 @@ If Honey is behind another proxy on the same host (e.g. Caddy or nginx for TLS),
 	http.ListenAndServe(":8080", fetcher)
 
 
-### Todo
+## Ideas
 
-- [x] Handle `stale-if-error`
-	- [x] Add unit tests
-	- [x] Serve stale content when the backend can't be reached at all
-	- [ ] Configurable Site-wide (whether to respect it if present, or whether to always act as if this header were present)
-	- [ ] Configurable Per route
-	- [x] Send cached response with a [`Warning`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Warning) header if the backend gives an error after clearing the cache. 
+Things which might be worth doing next:
 
-- [ ] Implement configuration via TOML file (honey.toml?)
-	- [x] Backend, listen address, cache size, default TTL, allowed cookies, uncached routes
-	- [ ] The planned settings in `config/wordpress.toml`
+- **Revalidating with the backend:** refresh expired responses with a conditional request (`If-None-Match` / `If-Modified-Since`), so that an unchanged page costs the backend a `304` rather than a full render.
+- **A shared cache** (e.g. Redis), so that several Honey instances behind a load balancer share one cache, and purges reach all of them.
+- **TLS termination** with automatic certificates (e.g. Let's Encrypt), so that Honey can face the internet without another proxy in front.
+- **A login for the admin page**, so that it can be served somewhere other than a private address.
+- **Per-route compression settings** (brotli and gzip are site-wide for now).
 
-- [ ] Come up with a way to mark certain routes/files as [`immutable`](https://hacks.mozilla.org/2017/01/using-immutable-caching-to-speed-up-the-web/)
-
-- [ ] Web UI to configure / clear cache and view metrics
-
-- [ ] Minify html, js, css before cacheing
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] [Canonicalize](https://www.modpagespeed.com/doc/filter-canonicalize-js#sample)  popular JavaScript libraries that can be replaced with ones hosted for free by a JavaScript library hosting service
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Use http/2 push to push assets if request doesn't have an If-None-Match header
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Rewrite static assets to cookieless subdomain
-
-- [ ] Combine all google-font requests into a single one
-
-- [ ] Implement other cache backends
-	- [x] In Memory (size-bounded LRU)
-	- [ ] File
-	- [ ] Memcached
-	- [ ] Redis
-	- [ ] BoltDB
-
-	- [x] Brotli compress if requester supports it
-	- [x] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-		- [x] Site wide
-		- [ ] Per route
-
-- [ ] Implement [offline cache](https://developers.google.com/web/fundamentals/instant-and-offline/offline-cookbook/)
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Automatically fix mixed-content https issues
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Prevent hotlinking of images
-	- [ ] Implement it
-	- [ ] Make this configurable (whether to do it, site wide and per route)
-
-- [ ] Letsencypt SSL termination
-
-- [x] Set [`Last-Modified`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Last-Modified) header on response to the cached time if it is not already on the backend response.
-	- [ ] Configurable Site-wide
-	- [ ] Configurable Per route
-
-- [x] Handle [`If-Modified-Since`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-Modified-Since]) and [`If-Unmodified-Since`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/If-Unmodified-Since)
-
-- [x] If cache miss, but after refresh Etag matches, send 304 Response
-
-- [x] Handle `only-if-cached` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) 
-
-- [x] Validate response or send to backend if `must-revalidate` or `proxy-revalidate` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control)
-	- [x] Only let trusted callers (by IP or secret header) refresh or purge the cache
-	- [ ] Configurable Per route
-
-- [X] Add the `public` [Cache-Control directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) unless `private` is received from backend.
-	- [ ] Configurable Site-wide
-	- [ ] Configurable Per route
-
-- [x] Add [`Expires`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Expires) header to responses if not in response from backend.
-	- [x] Configurable Cache TTL
-	- [ ] Configurable whether to overwrite backend Expires
-	- [ ] Configure whether to serve stale content while refreshing, or multiplex requests into a single request and serve new content to all of them
-	- [ ] Configurable Site-wide
-	- [ ] Configurable Per route
-
-- [x] Add ability to configure which headers to include in the Request hash (e.g. Accept-Language)
-	- [ ] Configurable Site-wide
-	- [ ] Configurable Per route
-
-- [x] If cache miss, but after refresh Validate matches, send 304 Response
-
-- [x] Check [`Vary`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Vary) header from response and handle properly
-
-- [x] Handle `stale-while-revalidate`
-	- [ ] Configurable Site-wide (whether to respect it)
-	- [ ] Configurable Per route
-
-- [x] After fetching a route with multiplexer, check vary headers, bucket queued requests based on the header,
-	  and do a fetch for each variant.
+Dropped from the original list: HTTP/2 server push (browsers have removed it), rewriting popular JavaScript libraries to public CDNs (no faster since browsers stopped sharing caches between sites, and it leaks visitors to the CDN), minifying HTML, CSS and JS (risky, and brotli gets most of the benefit), and other page rewriting (fixing mixed content, combining Google Fonts requests, a cookieless asset domain, hotlink protection, an offline cache), which is better done in WordPress or a CDN.
