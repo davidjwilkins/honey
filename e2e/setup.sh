@@ -20,6 +20,8 @@ if [ -n "${HONEY_E2E_WOOCOMMERCE:-}" ]; then
   # Skip the setup wizard, which the first admin page redirects to
   wp option update woocommerce_onboarding_profile '{"skipped":true}' --format=json
   wp transient delete _wc_activation_redirect || true
+  # New stores start in "coming soon" mode, hiding the shop from visitors
+  wp option update woocommerce_coming_soon no
   # The shop, cart, checkout and account pages
   wp wc tool run install_pages --user=admin
   wp wc product create --user=admin --name="Honey jar" --slug=honey-jar --regular_price=9.99 --status=publish

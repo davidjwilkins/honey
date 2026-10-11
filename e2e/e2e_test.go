@@ -89,6 +89,26 @@ func do(t *testing.T, c *http.Client, method, path string, form url.Values, head
 	return page{Response: resp, Body: string(b), Cache: resp.Header.Get("X-Honey-Cache")}
 }
 
+var (
+	scripts = regexp.MustCompile(`(?is)<(script|style)[^>]*>.*?</(script|style)>`)
+	tags    = regexp.MustCompile(`(?s)<[^>]*>`)
+	spaces  = regexp.MustCompile(`\s+`)
+)
+
+// text returns the text of the page's main element (or else body), for
+// failure messages
+func text(body string) string {
+	if i := strings.Index(body, "<main"); i >= 0 {
+		body = body[i:]
+	}
+	body = scripts.ReplaceAllString(body, " ")
+	body = spaces.ReplaceAllString(tags.ReplaceAllString(body, " "), " ")
+	if len(body) > 1500 {
+		body = body[:1500] + "..."
+	}
+	return body
+}
+
 // contains checks that body contains s, without printing the whole body
 func contains(t *testing.T, body, s string, msgAndArgs ...interface{}) {
 	t.Helper()
@@ -169,7 +189,8 @@ func eventually(t *testing.T, c *http.Client, path, want string) page {
 			return first
 		}
 		if time.Now().After(deadline) {
-			assert.Fail(t, fmt.Sprintf("%s never contained %q", path, want))
+			assert.Fail(t, fmt.Sprintf("%s never contained %q", path, want),
+				"the last response was %d %s, with the text: %s", resp.StatusCode, resp.Cache, text(resp.Body))
 			return first
 		}
 		time.Sleep(50 * time.Millisecond)
