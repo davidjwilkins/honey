@@ -31,5 +31,7 @@ cd ..
 if ! go test -tags e2e -count=1 -v ./e2e; then
   echo "--- what was purged and warmed, and PHP errors:"
   compose logs honey wordpress 2>&1 | grep -E "Honey: |PURGE|warm|PHP (Fatal|Warning)" | tail -150
+  echo "--- Honey's last requests:"
+  compose logs honey 2>&1 | grep -v PURGE | tail -250
   exit 1
 fi

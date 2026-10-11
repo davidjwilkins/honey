@@ -109,6 +109,18 @@ func text(body string) string {
 	return body
 }
 
+// describe returns the headers which say how a response may be cached,
+// for failure messages
+func describe(p page) string {
+	var parts []string
+	for _, name := range []string{"Age", "Cache-Control", "Expires", "Date", "Vary", "Set-Cookie", "Etag", "X-Honey-Stale"} {
+		for _, value := range p.Header.Values(name) {
+			parts = append(parts, name+": "+value)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
 // contains checks that body contains s, without printing the whole body
 func contains(t *testing.T, body, s string, msgAndArgs ...interface{}) {
 	t.Helper()
@@ -259,7 +271,7 @@ func TestEditingAPostPurgesIt(t *testing.T) {
 		first := eventually(t, c, p, "After editing")
 		assert.Equal(t, "STALE", first.Cache, p)
 		resp := get(t, c, p)
-		assert.Equal(t, "HIT", resp.Cache, p)
+		assert.Equal(t, "HIT", resp.Cache, "%s: %s", p, describe(resp))
 		notContains(t, resp.Body, "Before editing", p)
 	}
 }
