@@ -19,6 +19,10 @@ import (
 // DefaultListen is the address Honey listens on if none is configured.
 const DefaultListen = ":8080"
 
+// DefaultPersistInterval is how often the cache is saved, if
+// cache.persist is set and cache.persistInterval isn't.
+const DefaultPersistInterval = 5 * time.Minute
+
 // DefaultBackendTimeout is how long Honey waits for the backend to start
 // responding, or for it to send more of a response body, if no
 // backend.timeout or backend.stallTimeout is configured.
@@ -68,8 +72,12 @@ type Cache struct {
 	DefaultTTL     time.Duration
 	// StaleIfError is how long responses may be served stale if the
 	// backend errors, unless they say otherwise
-	StaleIfError   time.Duration
-	AllowedCookies []string
+	StaleIfError time.Duration
+	// Persist is the file the cache is saved to (every PersistInterval, if
+	// it isn't zero, and on shutdown) and loaded from at startup, or ""
+	Persist         string
+	PersistInterval time.Duration
+	AllowedCookies  []string
 	// QueryParams, if not nil, are the only query parameters kept on
 	// cacheable requests (see fetch.Options)
 	QueryParams []string
@@ -118,6 +126,8 @@ type file struct {
 		MaxObjectSize   string    `toml:"maxObjectSize"`
 		DefaultTTL      string    `toml:"defaultTTL"`
 		StaleIfError    string    `toml:"staleIfError"`
+		Persist         string    `toml:"persist"`
+		PersistInterval string    `toml:"persistInterval"`
 		AllowedCookies  []string  `toml:"allowedCookies"`
 		QueryParams     *[]string `toml:"queryParams"`
 		StaticFiles     *bool     `toml:"staticFiles"`
@@ -205,6 +215,18 @@ func Parse(data string) (*Config, error) {
 		if err != nil || cfg.BackendStallTimeout < 0 || (cfg.BackendStallTimeout > 0 && cfg.BackendStallTimeout < time.Second) {
 			return nil, fmt.Errorf("backend.stallTimeout must be a duration of at least 1s (or \"0\" for no limit), e.g. \"30s\"")
 		}
+	}
+	cfg.Cache.Persist = f.Cache.Persist
+	if f.Cache.PersistInterval != "" {
+		if cfg.Cache.Persist == "" {
+			return nil, fmt.Errorf("cache.persistInterval is set, but cache.persist isn't")
+		}
+		cfg.Cache.PersistInterval, err = parseDuration(f.Cache.PersistInterval)
+		if err != nil || cfg.Cache.PersistInterval < 0 || (cfg.Cache.PersistInterval > 0 && cfg.Cache.PersistInterval < time.Second) {
+			return nil, fmt.Errorf("cache.persistInterval must be a duration of at least 1s (or \"0\" to only save on shutdown), e.g. \"5m\"")
+		}
+	} else if cfg.Cache.Persist != "" {
+		cfg.Cache.PersistInterval = DefaultPersistInterval
 	}
 	if f.Cache.StaleIfError != "" {
 		cfg.Cache.StaleIfError, err = parseDuration(f.Cache.StaleIfError)

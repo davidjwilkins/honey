@@ -91,6 +91,17 @@ func (s *store) deleteMatching(match func(key string) bool) int {
 	return removed
 }
 
+// entries returns a copy of the entries, least recently used first.
+func (s *store) entries() []storeEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries := make([]storeEntry, 0, len(s.items))
+	for el := s.order.Back(); el != nil; el = el.Prev() {
+		entries = append(entries, *el.Value.(*storeEntry))
+	}
+	return entries
+}
+
 // stats returns the number of entries and their total size.
 func (s *store) stats() (entries int, bytes int64) {
 	s.mu.Lock()

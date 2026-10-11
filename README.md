@@ -58,6 +58,8 @@ All the available settings:
 	defaultTTL = "5m"            # freshness for responses without max-age, s-maxage or Expires
 	staleIfError = "1h"          # serve expired responses this long if the backend errors or times out
 	                             # (unless they have their own stale-if-error; off by default)
+	persist = "/var/lib/honey/cache.snapshot"  # save the cache here, and load it at startup (off unless set)
+	persistInterval = "5m"       # how often to save it ("0": only on shutdown)
 	staticFiles = true           # cache images, css, js, fonts, media and documents
 	brotli = true                # brotli compress html, css, js, json, svg... for clients that accept it
 	gzip = true                  # gzip them for clients that accept gzip but not brotli
@@ -96,6 +98,15 @@ All the available settings:
 	secretHeader = "X-Honey-Secret"
 
 Honey refuses to start if the config has settings it doesn't support.  See [`config/wordpress.toml`](config/wordpress.toml) for an example WordPress setup.
+
+## Keeping the cache across restarts
+
+With `persist` set, Honey saves the cache to that file every `persistInterval` (5 minutes by default) and when it shuts down, and loads it when it starts, so a restart or deploy doesn't leave WordPress to take the full load while the cache fills up again.  Responses which expired while Honey was stopped aren't loaded, and ages carry on from when they were first cached.
+
+- The file is replaced atomically, so it is never left half written, and only its owner can read it.
+- A missing or unreadable file is logged, and Honey starts with an empty cache.
+- On shutdown, Honey waits for requests in progress to finish (for up to 30 seconds) before saving.
+- The systemd service and the Docker image both have a writable `/var/lib/honey` for it.  With Docker, mount a volume there: `-v honey-cache:/var/lib/honey`.
 
 ## Routes
 

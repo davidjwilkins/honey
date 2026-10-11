@@ -303,3 +303,27 @@ func TestParseDuration(t *testing.T) {
 		assert.Error(t, err, input)
 	}
 }
+
+func TestParsePersist(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Cache.Persist, "the cache isn't saved unless configured")
+	assert.Zero(t, cfg.Cache.PersistInterval)
+
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cache]\npersist = \"/var/lib/honey/cache\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, "/var/lib/honey/cache", cfg.Cache.Persist)
+	assert.Equal(t, DefaultPersistInterval, cfg.Cache.PersistInterval)
+
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cache]\npersist = \"/c\"\npersistInterval = \"0\"\n")
+	require.NoError(t, err)
+	assert.Zero(t, cfg.Cache.PersistInterval, "0 means only saving on shutdown")
+
+	for _, data := range []string{
+		"[backend]\nuri = \"https://www.example.com\"\n[cache]\npersistInterval = \"5m\"\n",
+		"[backend]\nuri = \"https://www.example.com\"\n[cache]\npersist = \"/c\"\npersistInterval = \"10ms\"\n",
+	} {
+		_, err := Parse(data)
+		assert.Error(t, err, data)
+	}
+}
