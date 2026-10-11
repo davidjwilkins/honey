@@ -35,7 +35,7 @@ jobs:
             mkdir "dist/${name}"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
               -ldflags "-s -w -X main.version=${version}" -o "dist/${name}/${binary}" ./cmd/honey
-            cp README.md config/wordpress.toml contrib/honey.service "dist/${name}/"
+            cp README.md config/wordpress.toml contrib/honey.service contrib/wordpress/honey-purge.php "dist/${name}/"
             tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           done
           cd dist && sha256sum *.tar.gz > checksums.txt

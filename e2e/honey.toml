@@ -1,0 +1,29 @@
+# Honey in front of the end-to-end tests' WordPress: like
+# config/wordpress.toml, with a local backend and purging allowed.
+listen = ":8080"
+
+[backend]
+uri = "http://wordpress"
+
+[cache]
+defaultTTL = "5m"
+staleIfError = "1h"
+
+[[route]]
+match = "(?:[?&]preview=true(?:&|$)|/(?:feed|wp-admin|wp-login))"
+regex = true
+cache = false
+
+[[route]]
+match = "/wp-content/uploads/"
+defaultTTL = "7d"
+bypassCookies = []
+
+[log]
+access = true
+
+[admin]
+listen = ":9090"
+
+[control]
+secret = "e2e-secret-0123456789"

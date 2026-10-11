@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	snapshotMagic   = "honey cache snapshot"
-	snapshotVersion = 1
+	snapshotMagic = "honey cache snapshot"
+	// Version 2 keys responses by the host the client asked for, rather
+	// than the backend's, so version 1's keys would never match
+	snapshotVersion = 2
 )
 
 type snapshotHeader struct {

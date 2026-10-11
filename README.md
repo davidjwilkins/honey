@@ -24,7 +24,7 @@ Every response has an `X-Honey-Cache` header saying how it was served: `HIT`, `M
 
 ## Installing
 
-- **Binaries:** download one for Linux, macOS or Windows from the [releases](https://github.com/davidjwilkins/honey/releases), each with this README, an example config and a systemd service.  Check it against `checksums.txt`.
+- **Binaries:** download one for Linux, macOS or Windows from the [releases](https://github.com/davidjwilkins/honey/releases), each with this README, an example config, a systemd service and the [WordPress purge plugin](#purging-from-wordpress).  Check it against `checksums.txt`.
 - **Docker:** `docker build -t honey .` builds an 18MB image (a static binary on [distroless](https://github.com/GoogleContainerTools/distroless), running as a non-root user), which reads its config from `/etc/honey/honey.toml`:
 
 		docker run -d -p 8080:8080 -v "$PWD/honey.toml:/etc/honey/honey.toml:ro" honey
@@ -38,17 +38,18 @@ Every response has an `X-Honey-Cache` header saying how it was served: `HIT`, `M
 
 	honey -config honey.toml
 
-A minimal config just needs a backend:
+A minimal config just needs a backend - the web server running WordPress, which Honey sits in front of:
 
 	[backend]
-	uri = "https://www.example.com"
+	uri = "http://127.0.0.1:8081"
 
 All the available settings:
 
 	listen = ":8080"             # address to listen on
 
 	[backend]
-	uri = "https://www.example.com"
+	uri = "http://127.0.0.1:8081"
+	host = "www.example.com"     # the Host header to send it (unset: the one the client sent)
 	timeout = "30s"              # how long to wait for the backend to start responding ("0" for no limit)
 	stallTimeout = "30s"         # how long the backend may go silent partway through a response ("0" for no limit)
 
@@ -108,12 +109,20 @@ All the available settings:
 
 Honey refuses to start if the config has settings it doesn't support.  See [`config/wordpress.toml`](config/wordpress.toml) for an example WordPress setup.
 
+## Hosts
+
+Honey passes the backend the `Host` header clients send (e.g. `www.example.com`), as WordPress redirects requests for any other host to its own address.  The backend also gets `X-Forwarded-Host` (the same host, replacing any the client sent) and `X-Forwarded-Proto` (`http` or `https`, unless a proxy in front of Honey has already set it).
+
+Responses are cached separately for each host and protocol, so e.g. a redirect from `example.com` to `www.example.com` is only served for `example.com`.
+
+To proxy a site hosted elsewhere, whose server only answers to its own name, set `backend.host` to it: it is sent as the `Host` header instead.
+
 ## Keeping the cache across restarts
 
 With `persist` set, Honey saves the cache to that file every `persistInterval` (5 minutes by default) and when it shuts down, and loads it when it starts, so a restart or deploy doesn't leave WordPress to take the full load while the cache fills up again.  Responses which expired while Honey was stopped aren't loaded, and ages carry on from when they were first cached.
 
 - The file is replaced atomically, so it is never left half written, and only its owner can read it.
-- A missing or unreadable file is logged, and Honey starts with an empty cache.
+- A missing or unreadable file is logged, and Honey starts with an empty cache.  So is one saved by a version of Honey which keys responses differently.
 - On shutdown, Honey waits for requests in progress to finish (for up to 30 seconds) before saving.
 - The systemd service and the Docker image both have a writable `/var/lib/honey` for it.  With Docker, mount a volume there: `-v honey-cache:/var/lib/honey`.
 
@@ -209,19 +218,29 @@ Trusted callers (see `[control]` above) can remove pages from the cache with the
 
 They can also make Honey fetch a fresh copy, and cache it, by sending `Cache-Control: no-cache`.  Untrusted `PURGE` requests get a `403 Forbidden`.
 
-For example, to purge posts from WordPress when they're updated, put this in a must-use plugin (e.g. `wp-content/mu-plugins/honey.php`):
+Purges ignore the host, so they work however they reach Honey: `curl -X PURGE http://127.0.0.1:8080/blog/*` purges `/blog/` for every host Honey caches.
 
-	<?php
-	add_action('save_post', function ($post_id) {
-		foreach ([get_permalink($post_id), home_url('/')] as $url) {
-			wp_remote_request($url, [
-				'method' => 'PURGE',
-				'headers' => ['X-Honey-Secret' => HONEY_SECRET], // define() this in wp-config.php
-			]);
-		}
-	});
+### Purging from WordPress
+
+[`contrib/wordpress/honey-purge.php`](contrib/wordpress/honey-purge.php) is a must-use plugin which purges pages when they change, so that visitors see edits straight away:
+
+- When a post or page is published, updated, unpublished or deleted: it, its comment pages, the home page, and the archives which list it (its categories and tags, author, date and post type), and the feeds and sitemaps.  If its address changed, the old one too.
+- When a comment is approved, edited or removed: its post.
+- When a category or tag is renamed or deleted: its archive.
+- When the theme, its customizations, menus, widgets, plugins, or the site's title, tagline, reading or permalink settings change: everything.
+
+It also adds a "Purge cache" button to the admin bar for administrators.
+
+To install it, copy it to `wp-content/mu-plugins/honey-purge.php`, and add to `wp-config.php`:
+
+	define( 'HONEY_SECRET', 'a long random string' );   // Honey's control.secret
+	define( 'HONEY_URL', 'http://127.0.0.1:8080' );     // optional: where to send purges, if not the site's address
 
 If Honey is behind another proxy on the same host (e.g. Caddy or nginx for TLS), every request comes from that proxy's address, so don't put it in `allowIPs`: use the secret instead.
+
+## Testing
+
+`go test ./...` runs the unit tests.  [`e2e/run.sh`](e2e/run.sh) runs end-to-end tests against a real WordPress, with the purge plugin, behind Honey - checking that pages are cached, that logged in users, commenters and visitors to password-protected posts get their own pages, and that edits, comments and setting changes are purged.  It needs Docker and Go, and CI runs it on every pull request.  `HONEY_E2E_KEEP=1 e2e/run.sh` leaves it all running afterwards, on http://localhost:8080/ (log in as `admin`, password `password`) with Honey's admin page on http://127.0.0.1:9090/.
 
 ## Using it as a library
 

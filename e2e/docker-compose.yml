@@ -1,0 +1,65 @@
+# A real WordPress behind Honey, for the end-to-end tests: see run.sh.
+# Images come from Google's mirror of Docker Hub, which doesn't rate limit.
+name: honey-e2e
+
+x-wordpress-env: &wordpress-env
+  WORDPRESS_DB_HOST: db
+  WORDPRESS_DB_USER: wordpress
+  WORDPRESS_DB_PASSWORD: wordpress
+  WORDPRESS_DB_NAME: wordpress
+  WORDPRESS_CONFIG_EXTRA: |
+    define('HONEY_URL', 'http://honey:8080');
+    define('HONEY_SECRET', 'e2e-secret-0123456789');
+    define('DISABLE_WP_CRON', true);
+
+services:
+  db:
+    image: mirror.gcr.io/library/mariadb:11.4
+    environment:
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: wordpress
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      retries: 60
+
+  wordpress:
+    image: mirror.gcr.io/library/wordpress:6.8-php8.3-apache
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *wordpress-env
+    volumes:
+      - wordpress:/var/www/html
+      - ../contrib/wordpress/honey-purge.php:/var/www/html/wp-content/mu-plugins/honey-purge.php:ro
+
+  honey:
+    # built by run.sh
+    image: honey:e2e
+    depends_on:
+      - wordpress
+    command: ["-config", "/etc/honey/honey.toml"]
+    volumes:
+      - ./honey.toml:/etc/honey/honey.toml:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9090:9090"
+
+  # WP-CLI, for setting WordPress up and changing it during the tests
+  cli:
+    image: mirror.gcr.io/library/wordpress:cli-2.11-php8.3
+    profiles: ["cli"]
+    # www-data in the wordpress image, so that files it writes are usable
+    user: "33:33"
+    environment:
+      <<: *wordpress-env
+      HOME: /tmp
+    volumes:
+      - wordpress:/var/www/html
+      - ../contrib/wordpress/honey-purge.php:/var/www/html/wp-content/mu-plugins/honey-purge.php:ro
+      - ./setup.sh:/setup.sh:ro
+
+volumes:
+  wordpress:

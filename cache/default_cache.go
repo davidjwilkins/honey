@@ -171,8 +171,22 @@ func (c *defaultCacher) AddSkipRegex(regex *regexp.Regexp) {
 	c.AddRoute(Route{Regex: regex, NoCache: true})
 }
 
+// baseKey identifies the resource r is for: its method, and its URL as the
+// client asked for it - with the host and scheme it sent the request to,
+// which fetch.SwitchBackend records in X-Forwarded-Host and
+// X-Forwarded-Proto before replacing them with the backend's.
 func baseKey(r *http.Request) string {
-	return fmt.Sprintf("%s :: %s", r.Method, r.URL.String())
+	u := *r.URL
+	if host := r.Header.Get("X-Forwarded-Host"); host != "" {
+		u.Host = strings.ToLower(host)
+	} else if r.Host != "" {
+		u.Host = strings.ToLower(r.Host)
+	}
+	switch proto := strings.ToLower(r.Header.Get("X-Forwarded-Proto")); proto {
+	case "http", "https":
+		u.Scheme = proto
+	}
+	return fmt.Sprintf("%s :: %s", r.Method, u.String())
 }
 
 func varyKey(base string) string {
@@ -439,13 +453,17 @@ func (c *defaultCacher) Load(hash string, request *http.Request) (Response, bool
 	return r.(Response), true
 }
 
-// Purge removes every cached response for u - every method, and every
-// variant of it (for responses which Vary).  If prefix is true, it removes
-// every cached response whose URL starts with u instead (e.g. everything
-// under https://www.example.com/blog/).  It returns the number of
-// responses removed.
+// Purge removes every cached response for u's path and query - every
+// method, every host and scheme, and every variant of it (for responses
+// which Vary).  If prefix is true, it removes every cached response whose
+// path starts with u's instead (e.g. everything under /blog/).  It returns
+// the number of responses removed.
+//
+// The host is ignored so that purges work however they reach Honey (e.g.
+// sent to 127.0.0.1 by WordPress, for a site cached as www.example.com).
+// If one backend serves several sites, purging a path purges it on each.
 func (c *defaultCacher) Purge(u *url.URL, prefix bool) int {
-	target := u.String()
+	target := withoutOrigin(u.String())
 	responses := 0
 	c.store.deleteMatching(func(key string) bool {
 		vary := strings.HasPrefix(key, varyKey(""))
@@ -454,6 +472,7 @@ func (c *defaultCacher) Purge(u *url.URL, prefix bool) int {
 		if !found {
 			return false
 		}
+		keyURL = withoutOrigin(keyURL)
 		var match bool
 		if prefix {
 			match = strings.HasPrefix(keyURL, target)
@@ -468,6 +487,33 @@ func (c *defaultCacher) Purge(u *url.URL, prefix bool) int {
 		return match
 	})
 	return responses
+}
+
+// withoutOrigin returns rawURL without its scheme and host, e.g. "/blog/"
+// for "https://www.example.com/blog/" (and any text after the URL, such as
+// a variant key's Vary values)
+func withoutOrigin(rawURL string) string {
+	scheme := strings.Index(rawURL, "://")
+	if scheme < 0 {
+		return rawURL
+	}
+	rest := rawURL[scheme+len("://"):]
+	path := strings.IndexAny(rest, "/?:")
+	if path < 0 {
+		return "/"
+	}
+	// A port isn't the path
+	if rest[path] == ':' {
+		if end := strings.IndexAny(rest[path:], "/?"); end >= 0 {
+			path += end
+		} else {
+			return "/"
+		}
+	}
+	if rest[path] == '?' {
+		return "/" + rest[path:]
+	}
+	return rest[path:]
 }
 
 // Stats returns the number of entries in the cache, and their approximate

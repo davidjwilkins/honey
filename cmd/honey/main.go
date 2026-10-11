@@ -236,6 +236,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 	fetchOpts := fetch.Options{
 		Control:     control,
 		QueryParams: cfg.Cache.QueryParams,
+		BackendHost: cfg.BackendHost,
 	}
 	h := &honey{
 		handler: fetch.FetchWithOptions(c, fetch.NewForwarder(c, transport), cfg.Backend, fetchOpts),

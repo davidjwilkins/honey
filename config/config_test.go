@@ -13,7 +13,7 @@ func TestLoadExampleConfig(t *testing.T) {
 	cfg, err := Load("wordpress.toml")
 	require.NoError(t, err)
 	assert.Equal(t, ":8080", cfg.Listen)
-	assert.Equal(t, "https://www.insomniac.com", cfg.Backend.String())
+	assert.Equal(t, "http://127.0.0.1:8081", cfg.Backend.String())
 	assert.Equal(t, int64(256<<20), cfg.Cache.MaxBytes)
 	assert.Equal(t, 5*time.Minute, cfg.Cache.DefaultTTL)
 	require.Len(t, cfg.Routes, 2)
@@ -416,4 +416,12 @@ func TestParseAdmin(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:9090", cfg.AdminListen)
 	_, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[admin]\nlisten = \"127.0.0.1:9090\"\n[metrics]\nlisten = \"127.0.0.1:9090\"\n")
 	assert.ErrorContains(t, err, "only set admin.listen")
+}
+
+func TestParseBackendHost(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://203.0.113.7\"\nhost = \"www.example.com\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, "www.example.com", cfg.BackendHost)
+	_, err = Parse("[backend]\nuri = \"https://203.0.113.7\"\nhost = \"https://www.example.com/\"\n")
+	assert.ErrorContains(t, err, "backend.host must be a host name")
 }

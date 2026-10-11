@@ -417,6 +417,30 @@ func TestHandlerAdmin(t *testing.T) {
 	assert.Contains(t, string(body), `honey_requests_total{cache="hit"} 1`)
 }
 
+func TestHandlerBackendHost(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, r.Host+" "+r.Header.Get("X-Forwarded-Host"))
+	}))
+	defer origin.Close()
+	for setting, want := range map[string]string{
+		"":                             "www.example.com www.example.com",
+		"host = \"origin.internal\"\n": "origin.internal www.example.com",
+	} {
+		cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n" + setting)
+		require.NoError(t, err)
+		proxy := httptest.NewServer(newHandler(cfg))
+		req, err := http.NewRequest(http.MethodGet, proxy.URL+"/", nil)
+		require.NoError(t, err)
+		req.Host = "www.example.com"
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		proxy.Close()
+		assert.Equal(t, want, string(body), setting)
+	}
+}
+
 func TestCacheSurvivesRestart(t *testing.T) {
 	var hits int32
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -432,7 +456,12 @@ func TestCacheSurvivesRestart(t *testing.T) {
 	cacheResult := func(handler http.Handler) string {
 		proxy := httptest.NewServer(handler)
 		defer proxy.Close()
-		resp, err := http.Get(proxy.URL + "/page")
+		req, err := http.NewRequest(http.MethodGet, proxy.URL+"/page", nil)
+		require.NoError(t, err)
+		// The new process listens on a different port, but the site's
+		// address is the same
+		req.Host = "www.example.com"
+		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		resp.Body.Close()
 		return resp.Header.Get("X-Honey-Cache")
