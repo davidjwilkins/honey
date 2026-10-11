@@ -16,7 +16,7 @@ Static files (images, css, js, fonts, media, documents) are cached like any othe
 
 Compressible responses (html, css, js, json, svg...) are served brotli compressed to clients which accept it, gzip compressed to clients which only accept gzip, and unencoded to the rest, all from the same cache entry (the client's `Accept-Encoding` q-values decide between them).  The brotli copy is made quickly (quality 6) when a response is first cached, so that the first requester isn't kept waiting, and then remade at maximum quality (11) in the background once it has been served from the cache (so pages requested only once never pay for it).  Responses with `Cache-Control: no-transform` aren't compressed.  The backend is asked for gzip (which Honey decodes) rather than the client's `Accept-Encoding`, so that the cache holds the unencoded response.
 
-If will not cache responses that contain the `no-store` Cache-Control directive
+It won't cache responses marked `no-store` or `private`, or pages for logged in users and others whose pages may be personal (see [Logged in users and sessions](#logged-in-users-and-sessions)).  Requests with an `Authorization` header aren't cached either.
 
 It will fetch fresh resources if the `Cache-Control: no-cache` directive, or `Pragma: no-cache`, is set in a request from a [trusted caller](#purging-and-refreshing).  From anyone else, these are ignored (RFC 9111 lets a cache do this), so that they can't be used to send every request to the backend.
 
@@ -65,6 +65,8 @@ All the available settings:
 	gzip = true                  # gzip them for clients that accept gzip but not brotli
 	compressMinSize = "1KB"      # smaller responses aren't compressed
 	allowedCookies = ["site_lang_id"]  # Set-Cookie headers allowed through the cache
+	bypassCookies = ["wordpress_logged_in_", "wp-postpass_", "comment_author_",
+	    "woocommerce_items_in_cart", "wp_woocommerce_session_"]  # (the default) see below
 	queryParams = ["p", "s", "ver"]    # the only query parameters which matter (unset: all of them)
 
 	# Rules for some requests. match is a path prefix, or with regex = true,
@@ -75,9 +77,10 @@ All the available settings:
 
 	[[route]]
 	match = "/wp-content/uploads/"
-	defaultTTL = "7d"            # override cache settings for these:
-	# staleIfError = "0"         #   defaultTTL, staleIfError and queryParams
+	defaultTTL = "7d"            # override cache settings for these: defaultTTL,
+	# staleIfError = "0"         #   staleIfError, queryParams and bypassCookies
 	# queryParams = ["ver"]
+	# bypassCookies = []
 
 	# Log each request to stdout: method, uri, status, bytes, duration_ms,
 	# cache (the X-Honey-Cache result), remote and forwarded_for.
@@ -108,9 +111,28 @@ With `persist` set, Honey saves the cache to that file every `persistInterval` (
 - On shutdown, Honey waits for requests in progress to finish (for up to 30 seconds) before saving.
 - The systemd service and the Docker image both have a writable `/var/lib/honey` for it.  With Docker, mount a volume there: `-v honey-cache:/var/lib/honey`.
 
+## Logged in users and sessions
+
+Some visitors get pages made just for them - a logged in user's admin bar and edit links, a commenter's name and email on the comment form, a shopper's cart - which mustn't be cached and served to everyone else.  WordPress usually marks these pages `private` or `no-store`, which Honey respects, but themes and plugins don't always.
+
+So requests with any of the `bypassCookies` (cookie name prefixes) go straight to the backend, with `X-Honey-Cache: NO-CACHE`: they aren't served from the cache, and their responses aren't cached.  Responses which *set* one of them (e.g. a WooCommerce `?add-to-cart=` link starting a cart) aren't cached either, and the cookie reaches the visitor.
+
+The default covers WordPress and WooCommerce:
+
+| Cookie | Who has it |
+| --- | --- |
+| `wordpress_logged_in_` | Logged in users |
+| `wp-postpass_` | Visitors who have entered a post's password |
+| `comment_author_` | Visitors who have left a comment (the form is filled in with their name and email) |
+| `woocommerce_items_in_cart`, `wp_woocommerce_session_` | Shoppers with a cart |
+
+Add any your plugins use (e.g. a membership plugin's), or set `bypassCookies = []` to turn this off.  A route can override it - e.g. `bypassCookies = []` for `/wp-content/uploads/`, so that logged in users' images still come from the cache.
+
+Other cookies don't stop a request being cached, and they don't change which cached response it gets (unless they are in `allowedCookies` and the backend sends `Vary: Cookie`).  Cookies that the backend sets are removed from cached responses, unless they are in `allowedCookies`.
+
 ## Routes
 
-Each `[[route]]` either stops the requests it matches from being cached (`cache = false`), or overrides some of the `[cache]` settings for them: `defaultTTL`, `staleIfError` (`"0"` turns it off) and `queryParams`.
+Each `[[route]]` either stops the requests it matches from being cached (`cache = false`), or overrides some of the `[cache]` settings for them: `defaultTTL`, `staleIfError` (`"0"` turns it off), `queryParams` and `bypassCookies`.
 
 - `cache = false` applies if any matching route says so, wherever it is in the list.
 - Otherwise the first matching route's settings apply, so list more specific routes first.

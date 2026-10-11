@@ -163,17 +163,19 @@ func newHandlers(cfg *config.Config) (handler http.Handler, metricsHandler http.
 		DisableBrotli:    !cfg.Cache.Brotli,
 		DisableGzip:      !cfg.Cache.Gzip,
 		CompressMinBytes: cfg.Cache.CompressMinBytes,
+		BypassCookies:    cfg.Cache.BypassCookies,
 	})
 	for _, name := range cfg.Cache.AllowedCookies {
 		c.AddAllowedCookie(name)
 	}
 	for _, route := range cfg.Routes {
 		r := cache.Route{
-			Regex:        route.Regex,
-			NoCache:      !route.Cache,
-			DefaultTTL:   route.DefaultTTL,
-			StaleIfError: route.StaleIfError,
-			QueryParams:  route.QueryParams,
+			Regex:         route.Regex,
+			NoCache:       !route.Cache,
+			DefaultTTL:    route.DefaultTTL,
+			StaleIfError:  route.StaleIfError,
+			QueryParams:   route.QueryParams,
+			BypassCookies: route.BypassCookies,
 		}
 		if route.Regex == nil {
 			r.Prefix = route.Match

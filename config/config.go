@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/fetch"
 )
 
@@ -78,6 +79,11 @@ type Cache struct {
 	Persist         string
 	PersistInterval time.Duration
 	AllowedCookies  []string
+	// BypassCookies are cookie name prefixes which mark visitors whose
+	// pages may be personal, and so aren't cached (see
+	// cache.Options.BypassCookies).  Defaults to
+	// cache.WordPressBypassCookies.
+	BypassCookies []string
 	// QueryParams, if not nil, are the only query parameters kept on
 	// cacheable requests (see fetch.Options)
 	QueryParams []string
@@ -104,6 +110,8 @@ type Route struct {
 	StaleIfError *time.Duration
 	// QueryParams overrides cache.queryParams, if it isn't nil
 	QueryParams *[]string
+	// BypassCookies overrides cache.bypassCookies, if it isn't nil
+	BypassCookies *[]string
 }
 
 // file is the layout of the TOML file
@@ -129,6 +137,7 @@ type file struct {
 		Persist         string    `toml:"persist"`
 		PersistInterval string    `toml:"persistInterval"`
 		AllowedCookies  []string  `toml:"allowedCookies"`
+		BypassCookies   *[]string `toml:"bypassCookies"`
 		QueryParams     *[]string `toml:"queryParams"`
 		StaticFiles     *bool     `toml:"staticFiles"`
 		Brotli          *bool     `toml:"brotli"`
@@ -141,12 +150,13 @@ type file struct {
 		SecretHeader string   `toml:"secretHeader"`
 	} `toml:"control"`
 	Routes []struct {
-		Match        string    `toml:"match"`
-		Regex        bool      `toml:"regex"`
-		Cache        *bool     `toml:"cache"`
-		DefaultTTL   string    `toml:"defaultTTL"`
-		StaleIfError string    `toml:"staleIfError"`
-		QueryParams  *[]string `toml:"queryParams"`
+		Match         string    `toml:"match"`
+		Regex         bool      `toml:"regex"`
+		Cache         *bool     `toml:"cache"`
+		DefaultTTL    string    `toml:"defaultTTL"`
+		StaleIfError  string    `toml:"staleIfError"`
+		QueryParams   *[]string `toml:"queryParams"`
+		BypassCookies *[]string `toml:"bypassCookies"`
 	} `toml:"route"`
 }
 
@@ -265,6 +275,18 @@ func Parse(data string) (*Config, error) {
 		}
 	}
 	cfg.Cache.AllowedCookies = f.Cache.AllowedCookies
+	cfg.Cache.BypassCookies = append([]string{}, cache.WordPressBypassCookies...)
+	if f.Cache.BypassCookies != nil {
+		cfg.Cache.BypassCookies, err = cookiePrefixes("cache.bypassCookies", *f.Cache.BypassCookies)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, name := range cfg.Cache.AllowedCookies {
+		if hasAnyPrefix(name, cfg.Cache.BypassCookies) {
+			return nil, fmt.Errorf("cache.allowedCookies: %q is also a bypass cookie", name)
+		}
+	}
 	if f.Cache.QueryParams != nil {
 		cfg.Cache.QueryParams = append([]string{}, *f.Cache.QueryParams...)
 	}
@@ -310,16 +332,44 @@ func Parse(data string) (*Config, error) {
 			params := append([]string{}, *r.QueryParams...)
 			route.QueryParams = &params
 		}
-		overrides := route.DefaultTTL != 0 || route.StaleIfError != nil || route.QueryParams != nil
+		if r.BypassCookies != nil {
+			prefixes, err := cookiePrefixes(fmt.Sprintf("route %d (%q): bypassCookies", i+1, r.Match), *r.BypassCookies)
+			if err != nil {
+				return nil, err
+			}
+			route.BypassCookies = &prefixes
+		}
+		overrides := route.DefaultTTL != 0 || route.StaleIfError != nil || route.QueryParams != nil || route.BypassCookies != nil
 		if !route.Cache && overrides {
 			return nil, fmt.Errorf("route %d (%q): a route with cache = false can't have other settings", i+1, r.Match)
 		}
 		if route.Cache && !overrides {
-			return nil, fmt.Errorf("route %d (%q): set cache = false, or a setting to override (defaultTTL, staleIfError or queryParams)", i+1, r.Match)
+			return nil, fmt.Errorf("route %d (%q): set cache = false, or a setting to override (defaultTTL, staleIfError, queryParams or bypassCookies)", i+1, r.Match)
 		}
 		cfg.Routes = append(cfg.Routes, route)
 	}
 	return cfg, nil
+}
+
+// cookiePrefixes validates a list of cookie name prefixes
+func cookiePrefixes(setting string, prefixes []string) ([]string, error) {
+	for _, prefix := range prefixes {
+		// An empty prefix would match every cookie, and these characters
+		// can't be in a cookie name
+		if prefix == "" || strings.ContainsAny(prefix, "=; \t") {
+			return nil, fmt.Errorf("%s: %q isn't a cookie name (or the start of one)", setting, prefix)
+		}
+	}
+	return append([]string{}, prefixes...), nil
+}
+
+func hasAnyPrefix(name string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 var sizeUnits = map[string]int64{

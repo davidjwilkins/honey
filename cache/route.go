@@ -24,6 +24,8 @@ type Route struct {
 	// QueryParams overrides the query parameters kept on requests (see
 	// fetch.Options.QueryParams), if it isn't nil.
 	QueryParams *[]string
+	// BypassCookies overrides Options.BypassCookies, if it isn't nil.
+	BypassCookies *[]string
 }
 
 func (route *Route) matches(r *http.Request) bool {

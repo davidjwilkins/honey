@@ -320,6 +320,39 @@ func TestHandlerRoutes(t *testing.T) {
 	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
 }
 
+func TestHandlerBypassCookies(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := r.Cookie("PHPSESSID"); err == nil {
+			io.WriteString(w, "personal")
+			return
+		}
+		io.WriteString(w, "public")
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[cache]\nbypassCookies = [\"PHPSESSID\"]\n" +
+		"[[route]]\nmatch = \"/uploads/\"\nbypassCookies = []\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	get := func(path string) (*http.Response, string) {
+		req, err := http.NewRequest(http.MethodGet, proxy.URL+path, nil)
+		require.NoError(t, err)
+		req.Header.Set("Cookie", "PHPSESSID=abc")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, string(body)
+	}
+	resp, body := get("/page")
+	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
+	assert.Equal(t, "personal", body)
+	get("/uploads/cat.jpg")
+	resp, _ = get("/uploads/cat.jpg")
+	assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"), "the route doesn't bypass the cache for the cookie")
+}
+
 func TestCacheSurvivesRestart(t *testing.T) {
 	var hits int32
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
