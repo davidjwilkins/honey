@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -172,12 +174,12 @@ func TestHandlerMetrics(t *testing.T) {
 
 	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n")
 	require.NoError(t, err)
-	_, metricsHandler := newHandlers(cfg)
+	_, metricsHandler, _ := newHandlers(cfg)
 	assert.Nil(t, metricsHandler, "metrics are off unless configured")
 
 	cfg, err = config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[metrics]\nlisten = \"127.0.0.1:0\"\n")
 	require.NoError(t, err)
-	handler, metricsHandler := newHandlers(cfg)
+	handler, metricsHandler, _ := newHandlers(cfg)
 	require.NotNil(t, metricsHandler)
 	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
@@ -285,4 +287,84 @@ func TestHandlerStallTimeout(t *testing.T) {
 	resp.Body.Close()
 	assert.Equal(t, http.StatusGatewayTimeout, resp.StatusCode)
 	assert.Less(t, time.Since(start), 3*time.Second)
+}
+
+func TestHandlerRoutes(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, r.URL.RequestURI())
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[cache]\nqueryParams = []\n" +
+		"[[route]]\nmatch = \"/uploads/\"\ndefaultTTL = \"7d\"\n" +
+		"[[route]]\nmatch = \"/search\"\nqueryParams = [\"s\"]\n" +
+		"[[route]]\nmatch = \"/admin\"\ncache = false\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	get := func(path string) (*http.Response, string) {
+		resp, err := http.Get(proxy.URL + path)
+		require.NoError(t, err)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, string(body)
+	}
+	resp, _ := get("/uploads/photo.jpg")
+	assert.Equal(t, "public, max-age=604800", resp.Header.Get("Cache-Control"))
+	_, body := get("/search?s=honey&x=1")
+	assert.Equal(t, "/search?s=honey", body)
+	_, body = get("/page?s=honey")
+	assert.Equal(t, "/page", body)
+	get("/admin")
+	resp, _ = get("/admin")
+	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
+}
+
+func TestCacheSurvivesRestart(t *testing.T) {
+	var hits int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Cache-Control", "max-age=3600")
+		io.WriteString(w, "hello")
+	}))
+	defer origin.Close()
+	path := filepath.Join(t.TempDir(), "cache.snapshot")
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[cache]\npersist = \"" + path + "\"\n")
+	require.NoError(t, err)
+
+	cacheResult := func(handler http.Handler) string {
+		proxy := httptest.NewServer(handler)
+		defer proxy.Close()
+		resp, err := http.Get(proxy.URL + "/page")
+		require.NoError(t, err)
+		resp.Body.Close()
+		return resp.Header.Get("X-Honey-Cache")
+	}
+
+	handler, _, cacher := newHandlers(cfg)
+	assert.Equal(t, "MISS", cacheResult(handler))
+	saveCache(cacher, path)
+
+	// a new process, with an empty cache, loads the saved one
+	handler, _, cacher = newHandlers(cfg)
+	loaded, err := cacher.LoadFrom(path)
+	require.NoError(t, err)
+	assert.Equal(t, 1, loaded)
+	assert.Equal(t, "HIT", cacheResult(handler))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&hits))
+}
+
+func TestPersistEvery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache.snapshot")
+	_, _, cacher := newHandlers(&config.Config{Backend: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}})
+	stop := persistEvery(cacher, path, 50*time.Millisecond)
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	}, 2*time.Second, 10*time.Millisecond, "the cache should be saved periodically")
+	stop()
+
+	// nothing happens without a path or an interval
+	persistEvery(cacher, "", time.Millisecond)()
+	persistEvery(cacher, path, 0)()
 }

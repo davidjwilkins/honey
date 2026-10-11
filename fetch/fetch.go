@@ -49,10 +49,11 @@ type Options struct {
 
 // FetchWithOptions is like Fetch, configured by opts.
 func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, opts Options) http.HandlerFunc {
-	filterQuery := queryFilter(opts.QueryParams)
+	filterQuery := queryFilter(c, opts.QueryParams)
 	serve := serveFromCache(c, handler, filterQuery)
 	return func(w http.ResponseWriter, r *http.Request) {
 		SwitchBackend(r, backend)
+		r = withRoute(c, r)
 		if r.Method == MethodPurge {
 			// so that it matches the cache keys
 			filterQuery(r)
@@ -64,19 +65,40 @@ func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, op
 	}
 }
 
-// queryFilter returns a function which removes the query parameters not in
-// keep from a request, and sorts the rest.  If keep is nil, it does nothing.
-func queryFilter(keep []string) func(*http.Request) {
-	if keep == nil {
-		return func(*http.Request) {}
+// router is implemented by Cachers with per-route settings
+type router interface {
+	WithRoute(r *http.Request) *http.Request
+	Route(r *http.Request) *cache.Route
+}
+
+// withRoute records the route which applies to r, if c has routes, before
+// r is rewritten.
+func withRoute(c cache.Cacher, r *http.Request) *http.Request {
+	if rt, ok := c.(router); ok {
+		return rt.WithRoute(r)
 	}
-	kept := map[string]bool{}
-	for _, name := range keep {
-		kept[name] = true
-	}
+	return r
+}
+
+// queryFilter returns a function which removes the query parameters not
+// kept from a request, and sorts the rest.  The parameters kept are those
+// of the request's route, or else keep.  If neither lists any, it does
+// nothing.
+func queryFilter(c cache.Cacher, keep []string) func(*http.Request) {
+	rt, _ := c.(router)
 	return func(r *http.Request) {
-		if r.URL.RawQuery == "" {
+		params := keep
+		if rt != nil {
+			if route := rt.Route(r); route != nil && route.QueryParams != nil {
+				params = *route.QueryParams
+			}
+		}
+		if params == nil || r.URL.RawQuery == "" {
 			return
+		}
+		kept := make(map[string]bool, len(params))
+		for _, name := range params {
+			kept[name] = true
 		}
 		query := r.URL.Query()
 		for name := range query {
@@ -116,8 +138,9 @@ func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http
 				// The stale response has been sent; refresh it without
 				// making this requester wait.  The original request's
 				// context is cancelled once it has been responded to, so
-				// it can't be used for the backend request.
-				go revalidateInBackground(hash, handler, r.Clone(context.Background()))
+				// the backend request keeps its values (e.g. its route)
+				// but not its cancellation.
+				go revalidateInBackground(hash, handler, r.Clone(context.WithoutCancel(r.Context())))
 				return
 			}
 			if responded {

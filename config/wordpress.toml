@@ -15,6 +15,7 @@ maxSize = "256MB"           # memory for cached responses; least recently used a
 maxObjectSize = "10MB"      # larger responses are streamed to the client, not cached
 defaultTTL = "5m"           # freshness for responses without max-age, s-maxage or Expires
 staleIfError = "1h"         # if WordPress errors or times out, serve expired pages this long
+# persist = "/var/lib/honey/cache.snapshot"  # keep the cache across restarts
 staticFiles = true          # cache images, css, js, fonts, media and documents
 brotli = true               # brotli compress html, css, js, json, svg... for clients that accept it
 gzip = true                 # gzip them for clients that accept gzip but not brotli
@@ -32,6 +33,14 @@ allowedCookies = []         # cookies allowed through the cache, e.g. ["site_lan
 match = "(?:[?&]preview=true(?:&|$)|/(?:feed|wp-admin|wp-login))"
 regex = true
 cache = false
+
+# Uploaded media rarely changes, so cache it for a week (unless WordPress,
+# or the web server in front of it, says otherwise).  Routes can override
+# defaultTTL, staleIfError and queryParams; the first matching route's
+# settings apply, but cache = false applies wherever it is in the list.
+[[route]]
+match = "/wp-content/uploads/"
+defaultTTL = "7d"
 
 # Log each request to stdout
 [log]

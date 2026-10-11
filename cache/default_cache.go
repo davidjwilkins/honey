@@ -62,8 +62,7 @@ type Options struct {
 }
 
 type defaultCacher struct {
-	skipPrefixes       []string
-	skipRegex          []*regexp.Regexp
+	routes             []*Route
 	allowedCookies     map[string]bool
 	allowedCookieNames []string
 	defaultTTL         time.Duration
@@ -124,8 +123,7 @@ func NewDefaultCacher() *defaultCacher {
 // CanCache will return true if the method is a GET or
 // HEAD request, is not for a static file (if SkipStaticFiles
 // is set), does not have an Authorization header, and does not
-// match any of the skip rules added with AddSkipPrefix
-// or AddSkipRegex
+// match a route with NoCache set
 func (c *defaultCacher) CanCache(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
@@ -136,29 +134,19 @@ func (c *defaultCacher) CanCache(r *http.Request) bool {
 	if r.Header.Get("Authorization") != "" {
 		return false
 	}
-	for _, prefix := range c.skipPrefixes {
-		if strings.HasPrefix(r.URL.Path, prefix) {
-			return false
-		}
-	}
-	for _, regex := range c.skipRegex {
-		if regex.MatchString(r.URL.RequestURI()) {
-			return false
-		}
-	}
-	return true
+	return !c.routing(r).noCache
 }
 
 // AddSkipPrefix prevents requests whose path starts with prefix
 // from being cached.
 func (c *defaultCacher) AddSkipPrefix(prefix string) {
-	c.skipPrefixes = append(c.skipPrefixes, prefix)
+	c.AddRoute(Route{Prefix: prefix, NoCache: true})
 }
 
 // AddSkipRegex prevents requests whose path and query string
 // (e.g. /page?preview=true) match regex from being cached.
 func (c *defaultCacher) AddSkipRegex(regex *regexp.Regexp) {
-	c.skipRegex = append(c.skipRegex, regex)
+	c.AddRoute(Route{Regex: regex, NoCache: true})
 }
 
 func baseKey(r *http.Request) string {
@@ -242,13 +230,22 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	_, noCache := utilities.Directive(cc, "no-cache")
 	_, maxAge := utilities.Directive(cc, "max-age")
 	_, sMaxAge := utilities.Directive(cc, "s-maxage")
+	defaultTTL, staleIfError := c.defaultTTL, c.staleIfError
+	if route := c.Route(r.Request); route != nil {
+		if route.DefaultTTL > 0 {
+			defaultTTL = route.DefaultTTL
+		}
+		if route.StaleIfError != nil {
+			staleIfError = *route.StaleIfError
+		}
+	}
 	if !noCache && !maxAge && !sMaxAge && r.Header.Get("Expires") == "" {
-		cc = addDirective(cc, fmt.Sprintf("max-age=%d", int(c.defaultTTL/time.Second)))
+		cc = addDirective(cc, fmt.Sprintf("max-age=%d", int(defaultTTL/time.Second)))
 	}
 	// https://www.rfc-editor.org/rfc/rfc5861#section-4 - the cache keeps
 	// responses for this long past their freshness, in case it needs them
-	if _, found := utilities.Directive(cc, "stale-if-error"); !found && c.staleIfError >= time.Second {
-		cc = addDirective(cc, fmt.Sprintf("stale-if-error=%d", int(c.staleIfError/time.Second)))
+	if _, found := utilities.Directive(cc, "stale-if-error"); !found && staleIfError >= time.Second {
+		cc = addDirective(cc, fmt.Sprintf("stale-if-error=%d", int(staleIfError/time.Second)))
 	}
 	r.Header.Set("Cache-Control", cc)
 

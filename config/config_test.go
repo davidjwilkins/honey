@@ -15,7 +15,9 @@ func TestLoadExampleConfig(t *testing.T) {
 	assert.Equal(t, "https://www.insomniac.com", cfg.Backend.String())
 	assert.Equal(t, int64(256<<20), cfg.Cache.MaxBytes)
 	assert.Equal(t, 5*time.Minute, cfg.Cache.DefaultTTL)
-	require.Len(t, cfg.Routes, 1)
+	require.Len(t, cfg.Routes, 2)
+	assert.Equal(t, "/wp-content/uploads/", cfg.Routes[1].Match)
+	assert.Equal(t, 7*24*time.Hour, cfg.Routes[1].DefaultTTL)
 	for _, uri := range []string{"/feed", "/wp-admin/edit.php", "/wp-login.php", "/post?preview=true", "/post?p=1&preview=true"} {
 		assert.True(t, cfg.Routes[0].Regex.MatchString(uri), uri)
 	}
@@ -108,8 +110,11 @@ func TestParseErrors(t *testing.T) {
 		"old brotliMinSize":   backend + "[cache]\nbrotliMinSize = \"1KB\"\n",
 		"bad compressMinSize": backend + "[cache]\ncompressMinSize = \"small\"\n",
 		"bad ttl":             backend + "[cache]\ndefaultTTL = \"5\"\n",
-		"route without cache": backend + "[[route]]\nmatch = \"/a\"\n",
+		"route doing nothing": backend + "[[route]]\nmatch = \"/a\"\n",
 		"route caching":       backend + "[[route]]\nmatch = \"/a\"\ncache = true\n",
+		"no-cache overrides":  backend + "[[route]]\nmatch = \"/a\"\ncache = false\ndefaultTTL = \"1h\"\n",
+		"bad route ttl":       backend + "[[route]]\nmatch = \"/a\"\ndefaultTTL = \"soon\"\n",
+		"bad route stale":     backend + "[[route]]\nmatch = \"/a\"\nstaleIfError = \"-1h\"\n",
 		"route without match": backend + "[[route]]\ncache = false\n",
 		"bad route regex":     backend + "[[route]]\nmatch = \"(\"\nregex = true\ncache = false\n",
 	}
@@ -250,4 +255,75 @@ func TestParseStallTimeout(t *testing.T) {
 	assert.Zero(t, cfg.BackendStallTimeout)
 	_, err = Parse("[backend]\nuri = \"https://www.example.com\"\nstallTimeout = \"5ms\"\n")
 	assert.Error(t, err)
+}
+
+func TestParseRouteSettings(t *testing.T) {
+	cfg, err := Parse(`
+[backend]
+uri = "https://www.example.com"
+
+[[route]]
+match = "/wp-content/"
+defaultTTL = "7d"
+
+[[route]]
+match = "/checkout"
+staleIfError = "0"
+
+[[route]]
+match = "^/search"
+regex = true
+queryParams = ["s", "paged"]
+
+[[route]]
+match = "/wp-admin"
+cache = false
+`)
+	require.NoError(t, err)
+	require.Len(t, cfg.Routes, 4)
+	assert.Equal(t, 7*24*time.Hour, cfg.Routes[0].DefaultTTL)
+	assert.True(t, cfg.Routes[0].Cache)
+	assert.Nil(t, cfg.Routes[0].StaleIfError)
+	require.NotNil(t, cfg.Routes[1].StaleIfError)
+	assert.Zero(t, *cfg.Routes[1].StaleIfError, "0 turns serving stale off for the route")
+	require.NotNil(t, cfg.Routes[2].QueryParams)
+	assert.Equal(t, []string{"s", "paged"}, *cfg.Routes[2].QueryParams)
+	assert.NotNil(t, cfg.Routes[2].Regex)
+	assert.False(t, cfg.Routes[3].Cache)
+}
+
+func TestParseDuration(t *testing.T) {
+	for input, expected := range map[string]time.Duration{"90s": 90 * time.Second, "1h30m": 90 * time.Minute, "7d": 7 * 24 * time.Hour, "0": 0, "0d": 0} {
+		d, err := parseDuration(input)
+		assert.NoError(t, err, input)
+		assert.Equal(t, expected, d, input)
+	}
+	for _, input := range []string{"", "d", "1.5d", "-1d", "7days", "soon"} {
+		_, err := parseDuration(input)
+		assert.Error(t, err, input)
+	}
+}
+
+func TestParsePersist(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Cache.Persist, "the cache isn't saved unless configured")
+	assert.Zero(t, cfg.Cache.PersistInterval)
+
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cache]\npersist = \"/var/lib/honey/cache\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, "/var/lib/honey/cache", cfg.Cache.Persist)
+	assert.Equal(t, DefaultPersistInterval, cfg.Cache.PersistInterval)
+
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cache]\npersist = \"/c\"\npersistInterval = \"0\"\n")
+	require.NoError(t, err)
+	assert.Zero(t, cfg.Cache.PersistInterval, "0 means only saving on shutdown")
+
+	for _, data := range []string{
+		"[backend]\nuri = \"https://www.example.com\"\n[cache]\npersistInterval = \"5m\"\n",
+		"[backend]\nuri = \"https://www.example.com\"\n[cache]\npersist = \"/c\"\npersistInterval = \"10ms\"\n",
+	} {
+		_, err := Parse(data)
+		assert.Error(t, err, data)
+	}
 }

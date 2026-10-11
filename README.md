@@ -22,9 +22,20 @@ It will fetch fresh resources if the `Cache-Control: no-cache` directive, or `Pr
 
 Every response has an `X-Honey-Cache` header saying how it was served: `HIT`, `MISS`, `MISS (MULTIPLEXED)`, `STALE` or `NO-CACHE`.
 
+## Installing
+
+- **Binaries:** download one for Linux, macOS or Windows from the [releases](https://github.com/davidjwilkins/honey/releases), each with this README, an example config and a systemd service.  Check it against `checksums.txt`.
+- **Docker:** `docker build -t honey .` builds an 18MB image (a static binary on [distroless](https://github.com/GoogleContainerTools/distroless), running as a non-root user), which reads its config from `/etc/honey/honey.toml`:
+
+		docker run -d -p 8080:8080 -v "$PWD/honey.toml:/etc/honey/honey.toml:ro" honey
+
+- **From source:** `go install github.com/davidjwilkins/honey/cmd/honey@latest`
+- **systemd:** [`contrib/honey.service`](contrib/honey.service) runs Honey as an unprivileged, sandboxed service, reading `/etc/honey/honey.toml`.  Instructions are at the top of the file.
+
+`honey -version` prints the version.  Pushing a `v*` tag builds and publishes a release.
+
 ## Running it
 
-	go install github.com/davidjwilkins/honey/cmd/honey@latest
 	honey -config honey.toml
 
 A minimal config just needs a backend:
@@ -47,6 +58,8 @@ All the available settings:
 	defaultTTL = "5m"            # freshness for responses without max-age, s-maxage or Expires
 	staleIfError = "1h"          # serve expired responses this long if the backend errors or times out
 	                             # (unless they have their own stale-if-error; off by default)
+	persist = "/var/lib/honey/cache.snapshot"  # save the cache here, and load it at startup (off unless set)
+	persistInterval = "5m"       # how often to save it ("0": only on shutdown)
 	staticFiles = true           # cache images, css, js, fonts, media and documents
 	brotli = true                # brotli compress html, css, js, json, svg... for clients that accept it
 	gzip = true                  # gzip them for clients that accept gzip but not brotli
@@ -54,11 +67,17 @@ All the available settings:
 	allowedCookies = ["site_lang_id"]  # Set-Cookie headers allowed through the cache
 	queryParams = ["p", "s", "ver"]    # the only query parameters which matter (unset: all of them)
 
-	# Requests not to cache. match is a path prefix, or with regex = true,
+	# Rules for some requests. match is a path prefix, or with regex = true,
 	# a regular expression matched against the path and query string.
 	[[route]]
 	match = "/wp-admin"
-	cache = false
+	cache = false                # don't cache these
+
+	[[route]]
+	match = "/wp-content/uploads/"
+	defaultTTL = "7d"            # override cache settings for these:
+	# staleIfError = "0"         #   defaultTTL, staleIfError and queryParams
+	# queryParams = ["ver"]
 
 	# Log each request to stdout: method, uri, status, bytes, duration_ms,
 	# cache (the X-Honey-Cache result), remote and forwarded_for.
@@ -79,6 +98,25 @@ All the available settings:
 	secretHeader = "X-Honey-Secret"
 
 Honey refuses to start if the config has settings it doesn't support.  See [`config/wordpress.toml`](config/wordpress.toml) for an example WordPress setup.
+
+## Keeping the cache across restarts
+
+With `persist` set, Honey saves the cache to that file every `persistInterval` (5 minutes by default) and when it shuts down, and loads it when it starts, so a restart or deploy doesn't leave WordPress to take the full load while the cache fills up again.  Responses which expired while Honey was stopped aren't loaded, and ages carry on from when they were first cached.
+
+- The file is replaced atomically, so it is never left half written, and only its owner can read it.
+- A missing or unreadable file is logged, and Honey starts with an empty cache.
+- On shutdown, Honey waits for requests in progress to finish (for up to 30 seconds) before saving.
+- The systemd service and the Docker image both have a writable `/var/lib/honey` for it.  With Docker, mount a volume there: `-v honey-cache:/var/lib/honey`.
+
+## Routes
+
+Each `[[route]]` either stops the requests it matches from being cached (`cache = false`), or overrides some of the `[cache]` settings for them: `defaultTTL`, `staleIfError` (`"0"` turns it off) and `queryParams`.
+
+- `cache = false` applies if any matching route says so, wherever it is in the list.
+- Otherwise the first matching route's settings apply, so list more specific routes first.
+- Routes are matched against the request as the client sent it, before Honey removes query parameters.
+
+Durations can be given in days, e.g. `"7d"`, as well as e.g. `"90s"` or `"1h30m"`.
 
 ## Query parameters
 
