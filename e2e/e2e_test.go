@@ -209,6 +209,25 @@ func eventually(t *testing.T, c *http.Client, path, want string) page {
 	}
 }
 
+// cached requests path until it is served from the cache, and returns
+// that response: a page which has been soft purged (e.g. the home page,
+// when a post is published) is refreshed in the background, so the
+// request after the stale one may come before the refresh is done
+func cached(t *testing.T, c *http.Client, path string) page {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp := get(t, c, path)
+		if resp.Cache == "HIT" {
+			return resp
+		}
+		if time.Now().After(deadline) {
+			require.Fail(t, fmt.Sprintf("%s was never served from the cache", path), "the last response was %d %s: %s", resp.StatusCode, resp.Cache, describe(resp))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func TestPagesAreCached(t *testing.T) {
 	c := client(nil)
 	_, path := newPost(t, "Cached post")
@@ -260,8 +279,7 @@ func TestEditingAPostPurgesIt(t *testing.T) {
 	c := client(nil)
 	id, path := newPost(t, "Before editing")
 	for _, p := range []string{path, "/", "/category/news/"} {
-		get(t, c, p)
-		require.Equal(t, "HIT", get(t, c, p).Cache, p)
+		cached(t, c, p)
 	}
 
 	wp(t, "post", "update", id, "--post_title=After editing")
@@ -281,7 +299,7 @@ func TestPasswordProtectingAPostHidesItAtOnce(t *testing.T) {
 	id, path := newPost(t, "Soon protected")
 	wp(t, "post", "update", id, "--post_content=Not for everyone.")
 	eventually(t, c, path, "Not for everyone.")
-	require.Equal(t, "HIT", get(t, c, path).Cache)
+	cached(t, c, path)
 
 	wp(t, "post", "update", id, "--post_password=sesame")
 	resp := get(t, c, path)
@@ -292,8 +310,7 @@ func TestPasswordProtectingAPostHidesItAtOnce(t *testing.T) {
 func TestChangingTheSlugPurgesTheOldAddress(t *testing.T) {
 	c := client(nil)
 	id, path := newPost(t, "Moving post")
-	get(t, c, path)
-	require.Equal(t, "HIT", get(t, c, path).Cache)
+	cached(t, c, path)
 
 	wp(t, "post", "update", id, "--post_name="+strings.Trim(path, "/")+"-moved")
 	resp := get(t, c, path)
@@ -304,8 +321,7 @@ func TestChangingTheSlugPurgesTheOldAddress(t *testing.T) {
 func TestUnpublishingAPostPurgesIt(t *testing.T) {
 	c := client(nil)
 	id, path := newPost(t, "Soon a draft")
-	get(t, c, path)
-	require.Equal(t, "HIT", get(t, c, path).Cache)
+	cached(t, c, path)
 
 	wp(t, "post", "update", id, "--post_status=draft")
 	assert.Equal(t, http.StatusNotFound, get(t, c, path).StatusCode)
@@ -314,8 +330,7 @@ func TestUnpublishingAPostPurgesIt(t *testing.T) {
 func TestCommentsAppearOnceApproved(t *testing.T) {
 	id, path := newPost(t, "Commented post")
 	anonymous := client(nil)
-	get(t, anonymous, path)
-	require.Equal(t, "HIT", get(t, anonymous, path).Cache)
+	cached(t, anonymous, path)
 
 	commenter := client(newJar(t))
 	resp := do(t, commenter, http.MethodPost, "/wp-comments-post.php", url.Values{
@@ -356,8 +371,7 @@ func TestChangingTheSiteTitlePurgesEverything(t *testing.T) {
 	c := client(nil)
 	_, path := newPost(t, "Titled post")
 	for _, p := range []string{path, "/"} {
-		get(t, c, p)
-		require.Equal(t, "HIT", get(t, c, p).Cache, p)
+		cached(t, c, p)
 	}
 
 	title := fmt.Sprintf("Honey test %d", time.Now().UnixNano())
@@ -393,8 +407,7 @@ func TestWarmingAfterPurgingEverything(t *testing.T) {
 func TestPurgeButton(t *testing.T) {
 	c := client(nil)
 	id, path := newPost(t, "Purged by button")
-	get(t, c, path)
-	require.Equal(t, "HIT", get(t, c, path).Cache)
+	cached(t, c, path)
 	// Change it behind the plugin's back, so that only the button purges it
 	wp(t, "db", "query", "UPDATE wp_posts SET post_title = 'Changed quietly' WHERE ID = "+id)
 	notContains(t, get(t, c, path).Body, "Changed quietly")
@@ -431,8 +444,7 @@ func TestStaticFiles(t *testing.T) {
 func TestAdminPage(t *testing.T) {
 	c := client(nil)
 	_, path := newPost(t, "Purged from the admin page")
-	get(t, c, path)
-	require.Equal(t, "HIT", get(t, c, path).Cache)
+	cached(t, c, path)
 
 	page := get(t, c, adminPage+"/")
 	require.Equal(t, http.StatusOK, page.StatusCode)
@@ -448,9 +460,7 @@ func TestApprovingACommentPurgesThePost(t *testing.T) {
 	id, path := newPost(t, "Moderated post")
 	comment := wp(t, "comment", "create", "--porcelain", "--comment_post_ID="+id, "--comment_approved=0",
 		"--comment_author=Held Back", "--comment_content=A comment awaiting moderation.")
-	get(t, c, path)
-	page := get(t, c, path)
-	require.Equal(t, "HIT", page.Cache)
+	page := cached(t, c, path)
 	notContains(t, page.Body, "A comment awaiting moderation.")
 
 	wp(t, "comment", "approve", comment)
@@ -468,10 +478,8 @@ func TestRenamingACategoryPurgesIt(t *testing.T) {
 	c := client(nil)
 	wp(t, "term", "create", "category", "Gardening", "--slug=gardening")
 	newPostIn(t, "A gardening post", "gardening")
-	get(t, c, "/category/gardening/")
-	page := get(t, c, "/category/gardening/")
+	page := cached(t, c, "/category/gardening/")
 	require.Equal(t, http.StatusOK, page.StatusCode)
-	require.Equal(t, "HIT", page.Cache)
 	contains(t, page.Body, "A gardening post")
 
 	wp(t, "term", "update", "category", "gardening", "--by=slug", "--name=Beekeeping")

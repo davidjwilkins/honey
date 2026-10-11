@@ -58,8 +58,7 @@ func TestShopPagesAreCached(t *testing.T) {
 func TestAddingToCartStartsASession(t *testing.T) {
 	id := woocommerce(t)
 	anonymous := client(nil)
-	get(t, anonymous, "/product/honey-jar/")
-	require.Equal(t, "HIT", get(t, anonymous, "/product/honey-jar/").Cache)
+	cached(t, anonymous, "/product/honey-jar/")
 
 	var sessions []string
 	for i := 0; i < 2; i++ {
