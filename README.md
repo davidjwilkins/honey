@@ -24,7 +24,7 @@ Every response has an `X-Honey-Cache` header saying how it was served: `HIT`, `M
 
 ## Installing
 
-- **Binaries:** download one for Linux, macOS or Windows from the [releases](https://github.com/davidjwilkins/honey/releases), each with this README, an example config and a systemd service.  Check it against `checksums.txt`.
+- **Binaries:** download one for Linux, macOS or Windows from the [releases](https://github.com/davidjwilkins/honey/releases), each with this README, an example config, a systemd service and the [WordPress purge plugin](#purging-from-wordpress).  Check it against `checksums.txt`.
 - **Docker:** `docker build -t honey .` builds an 18MB image (a static binary on [distroless](https://github.com/GoogleContainerTools/distroless), running as a non-root user), which reads its config from `/etc/honey/honey.toml`:
 
 		docker run -d -p 8080:8080 -v "$PWD/honey.toml:/etc/honey/honey.toml:ro" honey
@@ -218,17 +218,23 @@ Trusted callers (see `[control]` above) can remove pages from the cache with the
 
 They can also make Honey fetch a fresh copy, and cache it, by sending `Cache-Control: no-cache`.  Untrusted `PURGE` requests get a `403 Forbidden`.
 
-For example, to purge posts from WordPress when they're updated, put this in a must-use plugin (e.g. `wp-content/mu-plugins/honey.php`):
+Purges ignore the host, so they work however they reach Honey: `curl -X PURGE http://127.0.0.1:8080/blog/*` purges `/blog/` for every host Honey caches.
 
-	<?php
-	add_action('save_post', function ($post_id) {
-		foreach ([get_permalink($post_id), home_url('/')] as $url) {
-			wp_remote_request($url, [
-				'method' => 'PURGE',
-				'headers' => ['X-Honey-Secret' => HONEY_SECRET], // define() this in wp-config.php
-			]);
-		}
-	});
+### Purging from WordPress
+
+[`contrib/wordpress/honey-purge.php`](contrib/wordpress/honey-purge.php) is a must-use plugin which purges pages when they change, so that visitors see edits straight away:
+
+- When a post or page is published, updated, unpublished or deleted: it, its comment pages, the home page, and the archives which list it (its categories and tags, author, date and post type), and the feeds and sitemaps.  If its address changed, the old one too.
+- When a comment is approved, edited or removed: its post.
+- When a category or tag is renamed or deleted: its archive.
+- When the theme, its customizations, menus, widgets, plugins, or the site's title, tagline, reading or permalink settings change: everything.
+
+It also adds a "Purge cache" button to the admin bar for administrators.
+
+To install it, copy it to `wp-content/mu-plugins/honey-purge.php`, and add to `wp-config.php`:
+
+	define( 'HONEY_SECRET', 'a long random string' );   // Honey's control.secret
+	define( 'HONEY_URL', 'http://127.0.0.1:8080' );     // optional: where to send purges, if not the site's address
 
 If Honey is behind another proxy on the same host (e.g. Caddy or nginx for TLS), every request comes from that proxy's address, so don't put it in `allowIPs`: use the secret instead.
 
