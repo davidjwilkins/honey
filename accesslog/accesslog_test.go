@@ -37,7 +37,7 @@ func TestMiddlewareLogsRequests(t *testing.T) {
 	assert.Equal(t, float64(200), line["status"])
 	assert.Equal(t, float64(5), line["bytes"])
 	assert.Equal(t, "HIT", line["cache"])
-	assert.Equal(t, "203.0.113.7:51234", line["remote"])
+	assert.Equal(t, "203.0.113.7", line["remote"])
 	assert.Equal(t, "198.51.100.2", line["forwarded_for"])
 	assert.Contains(t, line, "duration_ms")
 	assert.Contains(t, line, "time")

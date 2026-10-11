@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/clientip"
 	"github.com/davidjwilkins/honey/utilities"
 )
 
@@ -31,9 +32,9 @@ const PurgeModeHeader = "X-Honey-Purge"
 // can't purge, and their no-cache is ignored, so that they can't use it to
 // send every request to the backend.  The zero Control trusts nobody.
 type Control struct {
-	// AllowIPs are the networks which trusted requests come from.  Note
-	// that if Honey is behind another proxy on the same host, every
-	// request will come from that proxy's address.
+	// AllowIPs are the networks which trusted requests come from: the
+	// visitor's address, if Honey is behind a trusted proxy (see
+	// clientip.Middleware), or else the address the request came from.
 	AllowIPs []*net.IPNet
 	// Secret, if set, makes requests trusted if they send it in the
 	// SecretHeader header (whichever address they come from).
@@ -54,11 +55,8 @@ func (c Control) Trusted(r *http.Request) bool {
 	if len(c.AllowIPs) == 0 {
 		return false
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	ip := net.ParseIP(host)
+	// The visitor's address, if Honey is behind a trusted proxy
+	ip := clientip.From(r)
 	if ip == nil {
 		return false
 	}

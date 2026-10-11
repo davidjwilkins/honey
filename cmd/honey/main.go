@@ -22,6 +22,7 @@ import (
 	"github.com/davidjwilkins/honey/accesslog"
 	"github.com/davidjwilkins/honey/admin"
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/clientip"
 	"github.com/davidjwilkins/honey/config"
 	"github.com/davidjwilkins/honey/fetch"
 	"github.com/davidjwilkins/honey/metrics"
@@ -273,6 +274,8 @@ func build(cfg *config.Config, started time.Time) *honey {
 		logger := accesslog.New(accessLogOutput, accesslog.Format(cfg.AccessLogFormat))
 		h.handler = accesslog.Middleware(logger, h.handler)
 	}
+	// First, so that everything after it knows who each visitor is
+	h.handler = clientip.Middleware(cfg.TrustedProxies, h.handler)
 	if cfg.AdminListen != "" {
 		h.admin = admin.Handler(admin.Options{
 			Version: version,

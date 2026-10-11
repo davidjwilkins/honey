@@ -14,6 +14,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/clientip"
 	"github.com/davidjwilkins/honey/fetch"
 )
 
@@ -33,6 +34,10 @@ const DefaultBackendTimeout = 30 * time.Second
 type Config struct {
 	// Listen is the address to listen on, e.g. ":8080"
 	Listen string
+	// TrustedProxies are the proxies whose X-Forwarded-For and
+	// X-Forwarded-Proto headers are believed (see clientip.Middleware).
+	// Defaults to clientip.DefaultTrusted.
+	TrustedProxies []*net.IPNet
 	// MetricsListen is the address to serve metrics on, e.g.
 	// "127.0.0.1:9090", or "" not to serve them
 	MetricsListen string
@@ -145,8 +150,9 @@ type Route struct {
 
 // file is the layout of the TOML file
 type file struct {
-	Listen  string `toml:"listen"`
-	Metrics struct {
+	Listen         string    `toml:"listen"`
+	TrustedProxies *[]string `toml:"trustedProxies"`
+	Metrics        struct {
 		Listen string `toml:"listen"`
 	} `toml:"metrics"`
 	Admin struct {
@@ -245,6 +251,13 @@ func Parse(data string) (*Config, error) {
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen
+	}
+	cfg.TrustedProxies = clientip.DefaultTrusted
+	if f.TrustedProxies != nil {
+		cfg.TrustedProxies, err = fetch.ParseIPs(*f.TrustedProxies)
+		if err != nil {
+			return nil, fmt.Errorf("trustedProxies: %w", err)
+		}
 	}
 
 	if f.Backend.URI == "" {

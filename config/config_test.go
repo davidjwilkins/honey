@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/clientip"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -484,4 +485,22 @@ interval = "6h"
 			assert.Contains(t, err.Error(), tc.err)
 		}
 	}
+}
+
+func TestParseTrustedProxies(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"http://127.0.0.1:8081\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, clientip.DefaultTrusted, cfg.TrustedProxies)
+
+	cfg, err = Parse("trustedProxies = [\"192.0.2.10\", \"2001:db8::/32\"]\n[backend]\nuri = \"http://127.0.0.1:8081\"\n")
+	require.NoError(t, err)
+	require.Len(t, cfg.TrustedProxies, 2)
+	assert.Equal(t, "192.0.2.10/32", cfg.TrustedProxies[0].String())
+
+	cfg, err = Parse("trustedProxies = []\n[backend]\nuri = \"http://127.0.0.1:8081\"\n")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.TrustedProxies, "none")
+
+	_, err = Parse("trustedProxies = [\"caddy\"]\n[backend]\nuri = \"http://127.0.0.1:8081\"\n")
+	assert.ErrorContains(t, err, "trustedProxies")
 }

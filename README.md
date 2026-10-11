@@ -31,6 +31,7 @@ Every response has an `X-Honey-Cache` header saying how it was served: `HIT`, `M
 
 - **From source:** `go install github.com/davidjwilkins/honey/cmd/honey@latest`
 - **systemd:** [`contrib/honey.service`](contrib/honey.service) runs Honey as an unprivileged, sandboxed service, reading `/etc/honey/honey.toml`.  Instructions are at the top of the file.
+- **A whole site:** [`contrib/deploy`](contrib/deploy) runs WordPress behind Honey, behind Caddy for HTTPS, with Docker Compose.
 
 `honey -version` prints the version.  Pushing a `v*` tag builds and publishes a release.
 
@@ -46,6 +47,7 @@ A minimal config just needs a backend - the web server running WordPress, which 
 All the available settings:
 
 	listen = ":8080"             # address to listen on
+	trustedProxies = ["127.0.0.1", "10.0.0.0/8"]  # proxies in front of Honey (default: loopback and private addresses)
 
 	[backend]
 	uri = "http://127.0.0.1:8081"
@@ -126,6 +128,18 @@ Honey passes the backend the `Host` header clients send (e.g. `www.example.com`)
 Responses are cached separately for each host and protocol, so e.g. a redirect from `example.com` to `www.example.com` is only served for `example.com`.
 
 To proxy a site hosted elsewhere, whose server only answers to its own name, set `backend.host` to it: it is sent as the `Host` header instead.
+
+## Proxies in front of Honey
+
+If Honey is behind another proxy - e.g. Caddy or nginx handling HTTPS - every request comes from the proxy's address, and the proxy says who the visitor is (`X-Forwarded-For`) and whether they used HTTPS (`X-Forwarded-Proto`).  Honey believes these from `trustedProxies`, which are loopback and private addresses by default (where such a proxy usually is: on the same host, or in the same Docker or private network).  Then:
+
+- the visitor's address is the nearest one in `X-Forwarded-For` which isn't another trusted proxy, so a visitor can't claim to be someone else by sending their own;
+- `allowIPs` and the access log use it, and WordPress gets it in `X-Real-IP`;
+- the proxy's `X-Forwarded-Proto` is passed on, so WordPress knows the visitor used HTTPS.
+
+Requests from anywhere else have their forwarding headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Real-IP`, `Forwarded` and so on) removed, so that they can't pretend to have used HTTPS, or to be from an address in `allowIPs`.
+
+If the proxy is somewhere else (e.g. a CDN, or a load balancer with a public address), list its addresses in `trustedProxies`.  If nothing is in front of Honey and it's reachable from a private network you don't trust, set `trustedProxies = []`.
 
 ## Keeping the cache across restarts
 
@@ -260,7 +274,7 @@ To install it, copy it to `wp-content/mu-plugins/honey-purge.php`, and add to `w
 	define( 'HONEY_SECRET', 'a long random string' );   // Honey's control.secret
 	define( 'HONEY_URL', 'http://127.0.0.1:8080' );     // optional: where to send purges, if not the site's address
 
-If Honey is behind another proxy on the same host (e.g. Caddy or nginx for TLS), every request comes from that proxy's address, so don't put it in `allowIPs`: use the secret instead.
+If Honey is behind another proxy (e.g. Caddy or nginx for TLS), `allowIPs` is checked against the visitor's address, as long as the proxy is one of the `trustedProxies` (see [Proxies in front of Honey](#proxies-in-front-of-honey)).
 
 ## Testing
 

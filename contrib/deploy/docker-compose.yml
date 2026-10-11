@@ -1,0 +1,101 @@
+# WordPress behind Honey, behind Caddy (which gets a certificate for your
+# domain from Let's Encrypt), with a database.  See README.md here.
+name: honey-site
+
+services:
+  caddy:
+    image: mirror.gcr.io/library/caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in .env}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - honey
+
+  honey:
+    build: ../..
+    restart: unless-stopped
+    command: ["-config", "/etc/honey/honey.toml"]
+    volumes:
+      - ./honey.toml:/etc/honey/honey.toml:ro
+      - honey-cache:/var/lib/honey
+    ports:
+      # The admin page, for this host only: use an SSH tunnel to reach it
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - wordpress
+
+  wordpress:
+    image: mirror.gcr.io/library/wordpress:6.8-php8.3-apache
+    restart: unless-stopped
+    environment: &wordpress-env
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      WORDPRESS_DB_NAME: wordpress
+      # Purges go straight to Honey, which allows them from WordPress's
+      # address (see honey.toml)
+      WORDPRESS_CONFIG_EXTRA: |
+        define('HONEY_URL', 'http://honey:8080');
+    volumes:
+      - wordpress:/var/www/html
+      - ../wordpress/honey-purge.php:/var/www/html/wp-content/mu-plugins/honey-purge.php:ro
+    networks:
+      default:
+        # honey.toml allows purges from here
+        ipv4_address: 172.30.0.10
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: mirror.gcr.io/library/mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    volumes:
+      - db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      retries: 30
+
+  # WP-CLI: docker compose run --rm cli wp ...
+  cli:
+    image: mirror.gcr.io/library/wordpress:cli-2.11-php8.3
+    profiles: ["cli"]
+    user: "33:33"
+    environment:
+      <<: *wordpress-env
+      HOME: /tmp
+    volumes:
+      - wordpress:/var/www/html
+      - ../wordpress/honey-purge.php:/var/www/html/wp-content/mu-plugins/honey-purge.php:ro
+    networks:
+      default:
+        # honey.toml allows purges from here too (so only one can run at a time)
+        ipv4_address: 172.30.0.11
+
+networks:
+  default:
+    # A fixed range, so that WordPress has a fixed address to purge from
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  caddy-data:
+  caddy-config:
+  honey-cache:
+  wordpress:
+  db:

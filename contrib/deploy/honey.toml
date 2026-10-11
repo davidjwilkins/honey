@@ -1,0 +1,41 @@
+# Honey for docker-compose.yml.  Replace www.example.com with your site's
+# address (SITE_ADDRESS in .env).
+listen = ":8080"
+
+[backend]
+uri = "http://wordpress"
+
+[cache]
+maxSize = "256MB"
+defaultTTL = "5m"
+staleIfError = "1h"
+staleWhileRevalidate = "1d"
+persist = "/var/lib/honey/cache.snapshot"
+
+[[route]]
+match = "(?:[?&]preview=true(?:&|$)|/(?:feed|wp-admin|wp-login))"
+regex = true
+cache = false
+
+[[route]]
+match = "/wp-content/uploads/"
+defaultTTL = "7d"
+bypassCookies = []
+browserCacheControl = "public, max-age=604800"
+
+[warm]
+sitemap = "https://www.example.com/wp-sitemap.xml"
+
+[log]
+access = true
+format = "json"
+
+[admin]
+listen = ":9090"
+
+# Purges are allowed from WordPress and WP-CLI (their addresses are fixed in
+# docker-compose.yml).  Visitors come through Caddy, which is a trusted
+# proxy (its address is private), so Honey goes by the address in its
+# X-Forwarded-For: theirs.  So they can't purge.
+[control]
+allowIPs = ["172.30.0.10", "172.30.0.11"]

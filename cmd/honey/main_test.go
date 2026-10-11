@@ -504,6 +504,48 @@ func TestHandlerWarm(t *testing.T) {
 	assert.Equal(t, int32(6), atomic.LoadInt32(&hits))
 }
 
+func TestHandlerTrustedProxies(t *testing.T) {
+	var seen http.Header
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Clone()
+	}))
+	defer origin.Close()
+	defer func(w io.Writer) { accessLogOutput = w }(accessLogOutput)
+
+	for _, tc := range []struct {
+		name, setting       string
+		purge               int
+		proto, remoteLogged string
+	}{
+		// The test's requests come from 127.0.0.1, like a proxy on the
+		// same host
+		{"behind a proxy", "", http.StatusOK, "https", "203.0.113.9"},
+		{"trusting nobody", "trustedProxies = []\n", http.StatusForbidden, "http", "127.0.0.1"},
+	} {
+		var logs bytes.Buffer
+		accessLogOutput = &logs
+		cfg, err := config.Parse(tc.setting + "[backend]\nuri = \"" + origin.URL + "\"\n" +
+			"[log]\naccess = true\nformat = \"json\"\n[control]\nallowIPs = [\"203.0.113.9\"]\n")
+		require.NoError(t, err)
+		proxy := httptest.NewServer(newHandler(cfg))
+		send := func(method string) int {
+			req, err := http.NewRequest(method, proxy.URL+"/page", nil)
+			require.NoError(t, err)
+			req.Header.Set("X-Forwarded-For", "203.0.113.9")
+			req.Header.Set("X-Forwarded-Proto", "https")
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			resp.Body.Close()
+			return resp.StatusCode
+		}
+		send(http.MethodGet)
+		assert.Equal(t, tc.proto, seen.Get("X-Forwarded-Proto"), tc.name)
+		assert.Contains(t, logs.String(), `"remote":"`+tc.remoteLogged+`"`, tc.name)
+		assert.Equal(t, tc.purge, send("PURGE"), "%s: allowIPs is checked against the visitor's address", tc.name)
+		proxy.Close()
+	}
+}
+
 func TestCacheSurvivesRestart(t *testing.T) {
 	var hits int32
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -134,6 +134,30 @@ func TestRedirectedSitemap(t *testing.T) {
 	assert.Contains(t, logs.String(), "HTTP 301, redirecting to https://www.example.com/wp-sitemap.xml")
 }
 
+func TestWaitsForAStaleSitemap(t *testing.T) {
+	staleRetryDelay = time.Millisecond
+	var requests int
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/wp-sitemap.xml" {
+			return
+		}
+		if requests < 3 {
+			// the old sitemap, while it's refreshed
+			w.Header().Set("X-Honey-Cache", "STALE")
+			io.WriteString(w, `<urlset><url><loc>https://www.example.com/old/</loc></url></urlset>`)
+			return
+		}
+		io.WriteString(w, `<urlset><url><loc>https://www.example.com/new/</loc></url></urlset>`)
+	})
+	sitemap, _ := url.Parse("https://www.example.com/wp-sitemap.xml")
+	w := New(handler, Options{Sitemap: sitemap, Rate: 1000, Logger: log.New(io.Discard, "", 0)})
+	pages, err := w.pages(context.Background())
+	require.NoError(t, err)
+	require.Len(t, pages, 1)
+	assert.Equal(t, "https://www.example.com/new/", pages[0].String())
+}
+
 func TestStopsWhenCancelled(t *testing.T) {
 	s := &site{cached: map[string]bool{}}
 	ctx, cancel := context.WithCancel(context.Background())

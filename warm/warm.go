@@ -154,7 +154,7 @@ func (w *Warmer) pages(ctx context.Context) ([]*url.URL, error) {
 	for depth := 0; depth < 2 && len(sitemaps) > 0; depth++ {
 		var next []*url.URL
 		for _, sitemap := range sitemaps {
-			status, header, body := w.get(ctx, sitemap, true)
+			status, header, body := w.getFresh(ctx, sitemap)
 			if status != http.StatusOK {
 				if firstErr == nil {
 					firstErr = fmt.Errorf("%s: HTTP %d", sitemap, status)
@@ -195,6 +195,29 @@ func (w *Warmer) pages(ctx context.Context) ([]*url.URL, error) {
 		sitemaps = next
 	}
 	return pages, firstErr
+}
+
+// staleRetries and staleRetryDelay bound how long getFresh waits for a
+// stale response to be refreshed
+var (
+	staleRetries    = 10
+	staleRetryDelay = 300 * time.Millisecond
+)
+
+// getFresh gets u (keeping the body), waiting for it to be refreshed if
+// the cache serves it stale - e.g. after a soft purge, the sitemap must be
+// the new one, or new pages would be missed.
+func (w *Warmer) getFresh(ctx context.Context, u *url.URL) (int, http.Header, []byte) {
+	status, header, body := w.get(ctx, u, true)
+	for i := 0; i < staleRetries && header.Get("X-Honey-Cache") == "STALE"; i++ {
+		select {
+		case <-ctx.Done():
+			return 0, http.Header{}, nil
+		case <-time.After(staleRetryDelay):
+		}
+		status, header, body = w.get(ctx, u, true)
+	}
+	return status, header, body
 }
 
 // sameSite parses loc, if it is on the sitemap's scheme and host
