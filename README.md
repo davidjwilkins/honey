@@ -278,7 +278,7 @@ If Honey is behind another proxy (e.g. Caddy or nginx for TLS), `allowIPs` is ch
 
 ## Testing
 
-`go test ./...` runs the unit tests.  [`e2e/run.sh`](e2e/run.sh) runs end-to-end tests against a real WordPress, with the purge plugin, behind Honey - checking that pages are cached, that logged in users, commenters and visitors to password-protected posts get their own pages, and that edits, comments and setting changes are purged.  It needs Docker and Go, and CI runs it on every pull request.  `HONEY_E2E_KEEP=1 e2e/run.sh` leaves it all running afterwards, on http://localhost:8080/ (log in as `admin`, password `password`) with Honey's admin page on http://127.0.0.1:9090/.
+`go test ./...` runs the unit tests.  [`e2e/run.sh`](e2e/run.sh) runs end-to-end tests against a real WordPress, with the purge plugin, behind Honey - checking that pages are cached, that logged in users, commenters and visitors to password-protected posts get their own pages, and that edits, comments and setting changes are purged.  It needs Docker and Go, and CI runs it on every pull request.  With `HONEY_E2E_WOOCOMMERCE=1`, it also installs WooCommerce (from wordpress.org) and checks that shop pages are cached, that adding to the cart starts each shopper's own session, that shoppers' pages and Store API carts are their own, and that the cart and checkout are never cached; CI does this too.  `HONEY_E2E_KEEP=1 e2e/run.sh` leaves it all running afterwards, on http://localhost:8080/ (log in as `admin`, password `password`) with Honey's admin page on http://127.0.0.1:9090/.
 
 ## Using it as a library
 

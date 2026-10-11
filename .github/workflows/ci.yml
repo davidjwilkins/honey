@@ -78,6 +78,8 @@ jobs:
       # Honey, with a database: see e2e/run.sh
       - name: Test
         run: ./e2e/run.sh
+        env:
+          HONEY_E2E_WOOCOMMERCE: "1"
 
       - name: Keep the logs
         if: failure()

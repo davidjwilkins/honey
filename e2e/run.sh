@@ -24,6 +24,7 @@ for i in $(seq 1 60); do
   if curl -fsS -o /dev/null http://127.0.0.1:8080/wp-admin/install.php; then break; fi
   sleep 2
 done
-compose run --rm cli sh /setup.sh
+# HONEY_E2E_WOOCOMMERCE=1 installs WooCommerce, for its tests
+compose run --rm -e HONEY_E2E_WOOCOMMERCE cli sh /setup.sh
 
 cd .. && go test -tags e2e -count=1 -v ./e2e
