@@ -3,6 +3,8 @@ package fetch
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // personalOrigin greets logged in users by name, without saying that the
@@ -46,8 +49,15 @@ func TestLoggedInPagesAreNotCached(t *testing.T) {
 
 func TestPrivateResponsesAreNotShared(t *testing.T) {
 	o := personalOrigin("private, max-age=600")
-	// Without bypass cookies, only private stops it being shared
-	proxy := newProxy(t, o)
+	// Without bypass cookies, only private stops it being shared.  (Other
+	// cookies than the allowed ones wouldn't reach the backend.)
+	c := cache.NewCacher(cache.Options{})
+	c.AddAllowedCookie("wordpress_logged_in_0123abcd")
+	backend, err := url.Parse(o.URL)
+	require.NoError(t, err)
+	proxy := httptest.NewServer(Fetch(c, Forwarder(c), backend))
+	t.Cleanup(proxy.Close)
+	t.Cleanup(o.Close)
 
 	_, body := get(t, proxy.URL+"/", "Cookie", "wordpress_logged_in_0123abcd=admin")
 	assert.Equal(t, "Howdy, admin", body)
@@ -108,4 +118,38 @@ func TestWaitersFetchTheirOwnSession(t *testing.T) {
 		seen[cookie] = true
 	}
 	assert.Len(t, seen, 3, "each shopper gets their own session")
+}
+
+func TestResponsesSettingUnknownCookiesAreNotCached(t *testing.T) {
+	o := newOrigin(func(w http.ResponseWriter, r *http.Request, hit int) {
+		w.Header().Set("Cache-Control", "max-age=600")
+		// e.g. a plugin starting a PHP session, with a form token for it
+		http.SetCookie(w, &http.Cookie{Name: "PHPSESSID", Value: strings.Repeat("x", hit), Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "pll_language", Value: "en", Path: "/"})
+		io.WriteString(w, "token "+strings.Repeat("x", hit))
+	})
+	proxy := newProxyWith(t, o, cache.Options{BypassCookies: cache.WordPressBypassCookies, StripCookies: []string{"pll_"}})
+
+	for i := 1; i <= 2; i++ {
+		resp, body := get(t, proxy.URL+"/contact/")
+		assert.Equal(t, "token "+strings.Repeat("x", i), body, "each visitor gets their own session's page")
+		assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
+		assert.Len(t, resp.Header.Values("Set-Cookie"), 2, "with its cookies")
+	}
+}
+
+func TestStrippedCookiesAreRemovedAndCached(t *testing.T) {
+	o := newOrigin(func(w http.ResponseWriter, r *http.Request, hit int) {
+		w.Header().Set("Cache-Control", "max-age=600")
+		http.SetCookie(w, &http.Cookie{Name: "pll_language", Value: "en", Path: "/"})
+		io.WriteString(w, "page")
+	})
+	proxy := newProxyWith(t, o, cache.Options{StripCookies: []string{"pll_"}})
+
+	resp, _ := get(t, proxy.URL+"/")
+	assert.Equal(t, "MISS", resp.Header.Get("X-Honey-Cache"))
+	assert.Empty(t, resp.Header.Values("Set-Cookie"))
+	resp, _ = get(t, proxy.URL+"/")
+	assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"))
+	assert.Empty(t, resp.Header.Values("Set-Cookie"))
 }

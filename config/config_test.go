@@ -371,6 +371,46 @@ func TestParseBypassCookiesErrors(t *testing.T) {
 	}
 }
 
+func TestParseHosts(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n")
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Hosts, "any host is allowed by default")
+
+	cfg, err = Parse("hosts = [\"WWW.example.com\", \"*.example.org\"]\n[backend]\nuri = \"https://www.example.com\"\n[warm]\nsitemap = \"https://www.example.com/wp-sitemap.xml\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"www.example.com", "*.example.org"}, cfg.Hosts)
+
+	for _, tc := range []struct{ hosts, err string }{
+		{"[]", "list the site's host names"},
+		{`["https://www.example.com"]`, `"https://www.example.com" isn't a host name`},
+		{`["www.example.com:8080"]`, "without a scheme or port"},
+		{`["*"]`, `"*" isn't a host name`},
+		{`["example.com"]`, "warm.sitemap: www.example.com isn't one of the hosts"},
+	} {
+		_, err := Parse("hosts = " + tc.hosts + "\n[backend]\nuri = \"https://www.example.com\"\n[warm]\nsitemap = \"https://www.example.com/wp-sitemap.xml\"\n")
+		if assert.Error(t, err, tc.hosts) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}
+
+func TestParseStripCookies(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n[cache]\nstripCookies = [\"pll_language\", \"_ga\"]\n")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"pll_language", "_ga"}, cfg.Cache.StripCookies)
+
+	for _, tc := range []struct{ config, err string }{
+		{"[cache]\nstripCookies = [\"\"]", `cache.stripCookies: "" isn't a cookie name`},
+		{"[cache]\nstripCookies = [\"wordpress_\"]", `cache.stripCookies: "wordpress_" overlaps the bypass cookie "wordpress_logged_in_"`},
+		{"[cache]\nstripCookies = [\"wp_woocommerce_session_abc\"]", `overlaps the bypass cookie "wp_woocommerce_session_"`},
+	} {
+		_, err := Parse("[backend]\nuri = \"https://www.example.com\"\n" + tc.config)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}
+
 func TestParseBrowserCacheControl(t *testing.T) {
 	cfg, err := Parse(`
 [backend]

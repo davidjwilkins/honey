@@ -12,11 +12,11 @@ If the backend sends `stale-while-revalidate`, expired responses are served imme
 
 It will set an Etag on responses, and respond with an HTTP 304 Not Modified in the event that the `If-None-Match` header matches the Etag.
 
-Static files (images, css, js, fonts, media, documents) are cached like any other response.  Responses larger than a configurable size (10MB by default) are streamed straight to the client instead of being cached.  Range requests (e.g. seeking in a video) are served from the cache if the file is cached, and otherwise sent to the backend.
+Static files (images, css, js, fonts, media, documents) are cached like any other response.  Responses larger than a configurable size (10MB by default) are streamed straight to the client instead of being cached.  Range requests (e.g. seeking in a video) are served from the cache if the file is cached, and otherwise sent to the backend (for static files; other range requests are fetched whole, like any other request).
 
 Compressible responses (html, css, js, json, svg...) are served brotli compressed to clients which accept it, gzip compressed to clients which only accept gzip, and unencoded to the rest, all from the same cache entry (the client's `Accept-Encoding` q-values decide between them).  The brotli copy is made quickly (quality 6) when a response is first cached, so that the first requester isn't kept waiting, and then remade at maximum quality (11) in the background once it has been served from the cache (so pages requested only once never pay for it).  Responses with `Cache-Control: no-transform` aren't compressed.  The backend is asked for gzip (which Honey decodes) rather than the client's `Accept-Encoding`, so that the cache holds the unencoded response.
 
-It won't cache responses marked `no-store` or `private`, or pages for logged in users and others whose pages may be personal (see [Logged in users and sessions](#logged-in-users-and-sessions)).  Requests with an `Authorization` header aren't cached either.
+It won't cache responses marked `no-store` or `private`, or pages for logged in users and others whose pages may be personal (see [Logged in users and sessions](#logged-in-users-and-sessions)).  Requests with an `Authorization` header aren't cached either.  Nor are errors which depend on the request rather than the page, such as a 400, 403 or 429 (see [Security](#security)).
 
 It will fetch fresh resources if the `Cache-Control: no-cache` directive, or `Pragma: no-cache`, is set in a request from a [trusted caller](#purging-and-refreshing).  From anyone else, these are ignored (RFC 9111 lets a cache do this), so that they can't be used to send every request to the backend.
 
@@ -48,6 +48,7 @@ All the available settings:
 
 	listen = ":8080"             # address to listen on
 	trustedProxies = ["127.0.0.1", "10.0.0.0/8"]  # proxies in front of Honey (default: loopback and private addresses)
+	hosts = ["www.example.com", "*.example.com"]  # the only hosts served; others get a 421 (unset: any)
 
 	[backend]
 	uri = "http://127.0.0.1:8081"
@@ -69,9 +70,10 @@ All the available settings:
 	brotli = true                # brotli compress html, css, js, json, svg... for clients that accept it
 	gzip = true                  # gzip them for clients that accept gzip but not brotli
 	compressMinSize = "1KB"      # smaller responses aren't compressed
-	allowedCookies = ["site_lang_id"]  # Set-Cookie headers allowed through the cache
 	bypassCookies = ["wordpress_logged_in_", "wp-postpass_", "comment_author_",
 	    "woocommerce_items_in_cart", "wp_woocommerce_session_"]  # (the default) see below
+	allowedCookies = ["site_lang_id"]  # cookies passed to the backend on cached requests, and part of the cache key
+	stripCookies = ["pll_language"]    # cookies removed from responses, which are then cached (see below)
 	browserCacheControl = "no-cache"   # Cache-Control for browsers (unset: the cached response's own)
 	queryParams = ["p", "s", "ver"]    # the only query parameters which matter (unset: all of them)
 
@@ -129,6 +131,8 @@ Responses are cached separately for each host and protocol, so e.g. a redirect f
 
 To proxy a site hosted elsewhere, whose server only answers to its own name, set `backend.host` to it: it is sent as the `Host` header instead.
 
+By default any host is served, so a request with a made-up `Host` reaches the backend and is cached.  Set `hosts` to the site's host names to turn the rest away with a `421 Misdirected Request` (`"*.example.com"` allows any subdomain).  Purges are allowed whatever their `Host`, as they apply to every host.  If `[warm] sitemap` is set, its host must be one of them.
+
 ## Proxies in front of Honey
 
 If Honey is behind another proxy - e.g. Caddy or nginx handling HTTPS - every request comes from the proxy's address, and the proxy says who the visitor is (`X-Forwarded-For`) and whether they used HTTPS (`X-Forwarded-Proto`).  Honey believes these from `trustedProxies`, which are loopback and private addresses by default (where such a proxy usually is: on the same host, or in the same Docker or private network).  Then:
@@ -139,7 +143,7 @@ If Honey is behind another proxy - e.g. Caddy or nginx handling HTTPS - every re
 
 Requests from anywhere else have their forwarding headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Real-IP`, `Forwarded` and so on) removed, so that they can't pretend to have used HTTPS, or to be from an address in `allowIPs`.
 
-If the proxy is somewhere else (e.g. a CDN, or a load balancer with a public address), list its addresses in `trustedProxies`.  If nothing is in front of Honey and it's reachable from a private network you don't trust, set `trustedProxies = []`.
+If the proxy is somewhere else (e.g. a CDN, or a load balancer with a public address), list its addresses in `trustedProxies`.  If anything else on the private network can reach Honey (e.g. other containers in the same Docker network), list only the proxy's address, so that they can't pretend to be visitors from elsewhere - as the [deployment example](contrib/deploy) does.  If nothing is in front of Honey and it's reachable from a private network you don't trust, set `trustedProxies = []`.
 
 ## Keeping the cache across restarts
 
@@ -179,7 +183,9 @@ The default covers WordPress and WooCommerce:
 
 Add any your plugins use (e.g. a membership plugin's), or set `bypassCookies = []` to turn this off.  A route can override it - e.g. `bypassCookies = []` for `/wp-content/uploads/`, so that logged in users' images still come from the cache.
 
-Other cookies don't stop a request being cached, and they don't change which cached response it gets (unless they are in `allowedCookies` and the backend sends `Vary: Cookie`).  Cookies that the backend sets are removed from cached responses, unless they are in `allowedCookies`.
+Other cookies don't stop a request being cached - most visitors have some, e.g. analytics cookies - but they are removed from it before it is sent to the backend, so that one visitor's cookies (a theme switcher's, say) can't change the page which is cached for everyone.  The exceptions are `allowedCookies`, which are passed on, and which responses are cached separately for each value of (whether or not the backend sends `Vary: Cookie`).  So if a plugin remembers something about visitors who aren't logged in in a cookie - a cart, or a currency - add it to `bypassCookies` (their pages aren't cached) or `allowedCookies` (a copy of each page is cached for each value), or the plugin won't see it.
+
+Responses which set a cookie which isn't in `allowedCookies` aren't cached either, as the page may go with it (e.g. a form with a token for the session the cookie starts): the visitor gets the page and the cookie, with `X-Honey-Cache: NO-CACHE`, and Honey logs the cookie's name the first time.  Cookies which don't matter to the page, such as Polylang's `pll_language`, can be listed in `stripCookies` (name prefixes) instead: they are removed from responses, which are then cached.  A response which marks its `Set-Cookie` header private (`Cache-Control: private="set-cookie"` or `no-cache="set-cookie"`) is cached without it, and the visitor still gets the cookie.
 
 ## Browser caching
 
@@ -223,6 +229,21 @@ By default every query parameter is part of the cache key, so `/page?nocache=123
 Setting `queryParams` lists the parameters which matter.  Any others are removed from cacheable requests before they are looked up in the cache or sent to the backend, so the backend never sees them, and the cache can't serve the wrong content because of them.  Parameters are also sorted, so their order doesn't matter.  Requests which aren't cached (e.g. those matching a `[[route]]` with `cache = false`) are left alone.
 
 For WordPress, core uses `p`, `page_id`, `s`, `paged`, `cat`, `tag`, `author`, `m`, `year`, `monthnum`, `day`, `post_type`, `cpage`, `replytocom`, `attachment_id` and `ver` (on css and js, so that an upgrade isn't served old cached files) - but check which ones your plugins use, as their parameters will stop working if they aren't listed.
+
+## Security
+
+A cache serves one visitor's response to everyone, so anything in a request which changes the backend's response, but which isn't part of the cache key, could let one visitor change a page for everyone else (cache poisoning).  Honey's cache key is the method, protocol, host, path and query, the allowed cookies, and the headers the response `Vary`s on.  For requests which may be cached, it also:
+
+- removes cookies other than the `allowedCookies` (see [Logged in users and sessions](#logged-in-users-and-sessions))
+- removes the headers which make some backends handle a request as another method or URL: `X-HTTP-Method-Override` (which WordPress's REST API obeys), `X-HTTP-Method`, `X-Method-Override`, `X-Original-URL` and `X-Rewrite-URL`
+- only believes `X-Forwarded-For`, `X-Forwarded-Proto` and the like from `trustedProxies` (see [Proxies in front of Honey](#proxies-in-front-of-honey))
+- only caches the status codes RFC 9111 allows without being told to (200, 203, 204, 300, 301, 308, 404, 405, 410 and 414), and 302, 303 and 307 if the backend says how long they're fresh for.  Other errors, such as a 400 from a request with a header too large for the backend, or a 403 or 429 from a firewall, depend on the request rather than the page, so they only go to that visitor - they aren't cached, nor given to visitors waiting for the same page, and a stale page being refreshed is kept.  Server errors (5xx) aren't cached either, but are given to visitors waiting for the same page, so that a struggling backend isn't sent all their requests at once.
+
+Some things are up to you:
+
+- **Hosts and query strings.**  By default, a request with a made-up `Host` or query parameter (`?x=random`) misses the cache, reaches the backend, and is cached.  Set `hosts` and `queryParams` to stop that.  (A cache can't protect the backend from everything - requests which aren't cached, such as `POST`s, always reach it.)
+- **Headers your site depends on.**  If a theme or plugin changes pages according to another request header without sending `Vary` for it - e.g. a mobile theme using `wp_is_mobile()`, which reads `User-Agent` - Honey caches whichever version is requested first.  Make it send `Vary`, or don't cache those pages.
+- **The admin page and metrics** have no login: keep them on a private address (see [Admin page](#admin-page)).  `/metrics` is served for any `Host` (so that Prometheus can scrape it by name), so it is readable by a page in a visitor's browser using DNS rebinding, but it only has request counts and cache stats.
 
 ## Admin page
 

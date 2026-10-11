@@ -5,7 +5,8 @@
 	visitors ─► Caddy (HTTPS) ─► Honey (cache) ─► WordPress (Apache) ─► MariaDB
 
 - WordPress has the [purge plugin](../wordpress/honey-purge.php), which tells Honey when pages change.  Honey allows purges from WordPress's address, so there's no secret to share.
-- Honey trusts Caddy (its address is private), so it knows each visitor's real address and that they used HTTPS, and visitors can't pretend otherwise.
+- Honey trusts Caddy, and only Caddy (by its fixed address), so it knows each visitor's real address and that they used HTTPS, and visitors can't pretend otherwise.
+- Honey only serves your domain: requests for any other host name are turned away, so they can't fill the cache.
 - Expired pages are served while they're refreshed, the cache is kept across restarts, and it's warmed from the sitemap.
 - Honey's admin page is on port 9090 of this host only.
 

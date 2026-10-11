@@ -5,6 +5,17 @@
 
 listen = ":8080"
 
+# The proxies in front of Honey (e.g. Caddy or nginx handling HTTPS) whose
+# X-Forwarded-For and X-Forwarded-Proto are believed.  The default trusts
+# loopback and private addresses; list only your proxy's if anything else
+# could reach Honey from them.  Anyone else is taken to be a visitor.
+# trustedProxies = ["127.0.0.1"]
+
+# The site's host names.  Requests for any other host get a 421, rather
+# than reaching WordPress and filling the cache.  "*.example.com" allows
+# any subdomain.  Leave it out to allow any host.
+# hosts = ["www.example.com", "example.com"]
+
 # The web server running WordPress, e.g. Apache or nginx on another port.
 # It is sent the Host clients asked for; set host to send another one.
 [backend]
@@ -24,11 +35,23 @@ staticFiles = true          # cache images, css, js, fonts, media and documents
 brotli = true               # brotli compress html, css, js, json, svg... for clients that accept it
 gzip = true                 # gzip them for clients that accept gzip but not brotli
 compressMinSize = "1KB"     # smaller responses aren't compressed
-allowedCookies = []         # cookies allowed through the cache, e.g. ["site_lang_id"]
 # Requests with these cookies (name prefixes) aren't cached: logged in users,
 # password-protected posts, commenters and WooCommerce shoppers.  This is
-# the default; add any cookies your plugins use for logged in visitors.
+# the default; add any cookies your plugins use for logged in visitors, or
+# to remember anything about a visitor (a cart, say).
 bypassCookies = ["wordpress_logged_in_", "wp-postpass_", "comment_author_", "woocommerce_items_in_cart", "wp_woocommerce_session_"]
+# Other cookies are removed from requests which may be cached, so that one
+# visitor's cookies can't change the page cached for everyone - except
+# these, which are passed to WordPress, and which pages are cached
+# separately for each value of, e.g. ["site_lang_id"].  Responses may set
+# them too.
+allowedCookies = []
+# Responses which set any other cookie aren't cached (the page may go with
+# it), but go to that visitor with it.  Cookies (name prefixes) which
+# don't matter to the page, e.g. Polylang's ["pll_language"], can be
+# stripped from responses instead, so that they are cached.  Honey logs the
+# cookies which stop responses being cached.
+stripCookies = []
 # The Cache-Control header browsers get, instead of the one Honey caches by.
 # "no-cache" makes them check back each time (Honey answers with a quick
 # 304 if the page hasn't changed), so purges reach them straight away.

@@ -29,6 +29,7 @@ type Cacher interface {
 	// supplied hash
 	Load(hash string, r *http.Request) (Response, bool)
 	// AllowedCookies retrieves a list of cookies the cache will
-	// allow in the response
+	// allow through: in cacheable requests (others are removed
+	// before they are sent to the backend), and in responses
 	AllowedCookies() []string
 }

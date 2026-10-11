@@ -70,8 +70,40 @@ func TestStartsSession(t *testing.T) {
 		"_ga=1; Path=/",
 		"wp_woocommerce_session_0123abcd=1%7C%7C1700000000; Path=/; HttpOnly",
 	}})))
-	assert.False(t, c.StartsSession(response(r, http.Header{"Set-Cookie": {"_ga=1; Path=/"}})))
-	assert.False(t, NewCacher(Options{}).StartsSession(response(r, http.Header{"Set-Cookie": {"woocommerce_items_in_cart=1"}})))
+	assert.False(t, c.StartsSession(response(r, http.Header{})))
+}
+
+func TestUnknownCookiesStartSessions(t *testing.T) {
+	c := NewCacher(Options{BypassCookies: WordPressBypassCookies, StripCookies: []string{"pll_", "_ga"}})
+	c.AddAllowedCookie("lang")
+	r := newValidRequest("https://www.example.com/")
+	for _, tc := range []struct {
+		header http.Header
+		starts bool
+	}{
+		{http.Header{"Set-Cookie": {"PHPSESSID=abc; Path=/"}}, true},
+		{http.Header{"Set-Cookie": {"lang=fr; Path=/", "pll_language=fr; Path=/", "_ga=1"}}, false},
+		{http.Header{"Set-Cookie": {"lang=fr; Path=/", "PHPSESSID=abc"}}, true},
+		// The response says its Set-Cookie is only for this requester
+		{http.Header{"Set-Cookie": {"PHPSESSID=abc"}, "Cache-Control": {`private="set-cookie", max-age=60`}}, false},
+		{http.Header{"Set-Cookie": {"PHPSESSID=abc"}, "Cache-Control": {`no-cache="Set-Cookie"`}}, false},
+		// but not for bypass cookies, which mark personal pages
+		{http.Header{"Set-Cookie": {"wp_woocommerce_session_1=x"}, "Cache-Control": {`private="set-cookie"`}}, true},
+	} {
+		assert.Equal(t, tc.starts, c.StartsSession(response(r, tc.header)), "%v", tc.header)
+	}
+}
+
+func TestPrivateSetCookieReachesTheRequester(t *testing.T) {
+	c := NewCacher(Options{})
+	r := newValidRequest("https://www.example.com/")
+	resp := response(r, http.Header{
+		"Cache-Control": {`private="set-cookie", max-age=600`},
+		"Set-Cookie":    {"PHPSESSID=abc; Path=/"},
+	})
+	standardized := c.Standardize(resp)
+	assert.Equal(t, []string{"PHPSESSID=abc; Path=/"}, resp.Header.Values("Set-Cookie"))
+	assert.Empty(t, standardized.Header().Values("Set-Cookie"), "but it isn't cached")
 }
 
 func TestPrivateResponsesAreNotStored(t *testing.T) {

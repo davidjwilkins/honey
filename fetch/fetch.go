@@ -55,6 +55,13 @@ type Options struct {
 	// OnPurge, if set, is called after each purge, e.g. to warm the cache
 	// again (see the warm package).
 	OnPurge PurgeHook
+	// Hosts, if not nil, are the only hosts (see HostAllowed) which
+	// requests are handled for: requests for any other get a 421
+	// Misdirected Request, rather than being sent to the backend and
+	// cached (so that e.g. requests with random Host headers can't fill
+	// the cache).  PURGE requests are allowed for any host, as purges
+	// apply to every host.
+	Hosts []string
 }
 
 // FetchWithOptions is like Fetch, configured by opts.
@@ -63,6 +70,10 @@ func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, op
 	serve := serveFromCache(c, handler, filterQuery)
 	return func(w http.ResponseWriter, r *http.Request) {
 		SwitchBackend(r, backend)
+		if opts.Hosts != nil && r.Method != MethodPurge && !HostAllowed(r.Host, opts.Hosts) {
+			http.Error(w, http.StatusText(http.StatusMisdirectedRequest), http.StatusMisdirectedRequest)
+			return
+		}
 		if opts.BackendHost != "" {
 			r.Host = opts.BackendHost
 		}
@@ -141,6 +152,7 @@ func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http
 			// Only cacheable requests are filtered, so that e.g. rules
 			// against caching ?preview=true still see the whole query
 			filterQuery(r)
+			removeUnkeyed(c, r)
 			// ResponeFromCache will always return the hash, and responded will
 			// tell us if we were able to respond via the cache.  It will return
 			// false if the cache entry does not yet exist, or if the request
@@ -166,10 +178,12 @@ func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http
 				w.WriteHeader(http.StatusGatewayTimeout)
 				return
 			}
-			// A range request for something not in the cache is most likely
-			// seeking in large media, so let the backend handle it rather
-			// than fetching the whole thing.
-			if r.Header.Get("Range") != "" {
+			// A range request for a static file which isn't in the cache is
+			// most likely seeking in large media, so let the backend handle
+			// it rather than fetching the whole thing.  Range requests for
+			// anything else are handled like any other request, so that
+			// they can't be used to get around the cache.
+			if r.Header.Get("Range") != "" && utilities.IsStaticFile(r.URL.Path) {
 				handler.ServeHTTP(w, withBypass(r))
 				return
 			}
@@ -190,6 +204,43 @@ func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http
 		handler.ServeHTTP(w, r)
 	}
 	return serve
+}
+
+// overrideHeaders make some backends (e.g. WordPress's REST API, or IIS)
+// handle a request as if it had another method or URL.  They aren't part
+// of the cache key, so a request with one could have its response cached
+// for everyone else's.
+var overrideHeaders = []string{
+	"X-Http-Method-Override",
+	"X-Http-Method",
+	"X-Method-Override",
+	"X-Original-Url",
+	"X-Rewrite-Url",
+}
+
+// removeUnkeyed removes what the backend's response might depend on, but
+// which isn't part of the cache key, from a cacheable request: the
+// overrideHeaders, and any cookies other than the allowed ones (which are
+// part of the key).  Otherwise one visitor could have a page cached for
+// everyone with e.g. their theme or currency cookie.  (Requests with
+// cookies which mark them as personal, such as being logged in, aren't
+// cacheable.)
+func removeUnkeyed(c cache.Cacher, r *http.Request) {
+	for _, name := range overrideHeaders {
+		r.Header.Del(name)
+	}
+	if r.Header.Get("Cookie") == "" {
+		return
+	}
+	allowed := c.AllowedCookies()
+	utilities.KeepCookies(r.Header, func(name string) bool {
+		for _, a := range allowed {
+			if name == a {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // flights holds the backend requests in progress, which other requests

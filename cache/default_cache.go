@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/davidjwilkins/honey/utilities"
@@ -73,6 +75,13 @@ type Options struct {
 	// served from the cache nor cached, and responses which set one
 	// aren't cached.
 	BypassCookies []string
+	// StripCookies are cookie name prefixes which responses may set
+	// without being personal, such as a language cookie which the page
+	// doesn't depend on (e.g. Polylang's pll_language).  They are removed
+	// from responses, which are cached.  Responses which set any other
+	// cookie (unless it is allowed - see AddAllowedCookie) aren't cached,
+	// and keep it.
+	StripCookies []string
 	// BrowserCacheControl, if set, replaces the Cache-Control header sent
 	// to clients with successful responses which are served from (or
 	// stored in) the cache - e.g. "no-cache", so that browsers check back
@@ -95,11 +104,15 @@ type defaultCacher struct {
 	gzip               bool
 	compressMinBytes   int
 	bypassCookies      []string
+	stripCookies       []string
 	browserCC          string
 	recompressor       *recompressor
 	// store holds both cached responses (keyed by their hash) and the
 	// Vary header last seen for each URL (keyed by varyKey)
 	store *store
+	// loggedCookies are the cookies logUnknownCookie has logged
+	loggedMu      sync.Mutex
+	loggedCookies map[string]bool
 }
 
 // NewCacher returns an in-memory cacher with no site-specific rules.
@@ -131,6 +144,8 @@ func NewCacher(opts Options) *defaultCacher {
 		gzip:               !opts.DisableGzip,
 		compressMinBytes:   int(opts.CompressMinBytes),
 		bypassCookies:      append([]string(nil), opts.BypassCookies...),
+		stripCookies:       append([]string(nil), opts.StripCookies...),
+		loggedCookies:      make(map[string]bool),
 		browserCC:          opts.BrowserCacheControl,
 		recompressor:       &recompressor{},
 		store:              newStore(opts.MaxBytes),
@@ -204,19 +219,41 @@ func varyKey(base string) string {
 }
 
 // Hash creates a unique string for a request.  It includes
-// the method, the url, and the values of any headers (and
+// the method, the url, the values of any headers (and
 // allowed cookies) listed in the Vary header of the last
-// response for that url.
+// response for that url, and any allowed cookies.
 func (c *defaultCacher) Hash(r *http.Request) string {
 	hash := baseKey(r)
 	if vary, found := c.store.get(varyKey(hash), time.Now()); found {
 		hash += utilities.GetVaryHeadersHash(r.Header, r, c.allowedCookieNames, vary.(string))
 	}
-	return hash
+	return hash + c.cookieKey(r.Header)
+}
+
+// cookieKey returns the allowed cookies in a request's header, for its
+// cache key.  They are passed to the backend (unlike other cookies), so
+// its response may depend on them, whether or not it says so with Vary.
+func (c *defaultCacher) cookieKey(header http.Header) string {
+	if len(c.allowedCookieNames) == 0 {
+		return ""
+	}
+	var allowed []string
+	for _, cookie := range utilities.Cookies(header) {
+		if c.allowedCookies[cookie[0]] {
+			allowed = append(allowed, cookie[0]+"="+cookie[1])
+		}
+	}
+	if len(allowed) == 0 {
+		return ""
+	}
+	sort.Strings(allowed)
+	return " :: cookies :: " + strings.Join(allowed, "; ")
 }
 
 // AddAllowedCookie adds a name to the list of cookies which
-// are allowed through the cache.
+// are allowed through the cache: they are passed to the
+// backend on cacheable requests, and are part of the cache
+// key, and responses may set them.
 func (c *defaultCacher) AddAllowedCookie(name string) {
 	c.allowedCookies[name] = true
 	c.allowedCookieNames = append(c.allowedCookieNames, name)
@@ -243,8 +280,10 @@ func removeDirective(cc, directive string) string {
 // in the allowed cookies, fills in the Date, Cache-Control,
 // Last-Modified, Expires and Etag headers if they are missing,
 // reads the response, and saves it to a Response interface.
+// If the response says its Set-Cookie header is private, the
+// requester keeps all of it, but it isn't cached.
 func (c *defaultCacher) Standardize(r *http.Response) Response {
-	for i := 0; i < len(r.Header["Set-Cookie"]); i++ {
+	for i := 0; !setCookieIsPrivate(r.Header.Get("Cache-Control")) && i < len(r.Header["Set-Cookie"]); i++ {
 		line := r.Header["Set-Cookie"][i]
 		parts := strings.Split(strings.TrimSpace(line), ";")
 		if len(parts) == 1 && parts[0] == "" {
@@ -347,15 +386,11 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	}
 	resp.headers = r.Header.Clone()
 
-	// no-cache="set-cookie" allows the response to be cached, as long as
-	// the Set-Cookie header isn't
-	if strings.Contains(cc, `no-cache="set-cookie"`) {
+	// no-cache="set-cookie" and private="set-cookie" allow the response
+	// to be cached, as long as the Set-Cookie header isn't
+	if setCookieIsPrivate(cc) {
 		resp.headers.Del("Set-Cookie")
 		resp.headers.Set("Cache-Control", removeDirective(cc, `no-cache="set-cookie"`))
-	}
-	// and so does private="set-cookie"
-	if fields, private := utilities.Directive(cc, "private"); private && strings.EqualFold(fields, "set-cookie") {
-		resp.headers.Del("Set-Cookie")
 	}
 	resp.cookies = make(map[string]*http.Cookie)
 	for _, cookie := range resp.response.Cookies() {
@@ -401,7 +436,8 @@ func (c *defaultCacher) Cache(hash string, r Response) {
 	// Key on the cookies of the request the response was fetched for (as
 	// Hash does), not the cookies the response sets.
 	fetchedFor := &http.Request{Header: r.RequestHeaders()}
-	key := base + utilities.GetVaryHeadersHash(fetchedFor.Header, fetchedFor, c.allowedCookieNames, vary)
+	key := base + utilities.GetVaryHeadersHash(fetchedFor.Header, fetchedFor, c.allowedCookieNames, vary) +
+		c.cookieKey(fetchedFor.Header)
 	if int64(len(r.Body())) > c.maxObjectBytes {
 		c.store.delete(key)
 		return

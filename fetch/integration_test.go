@@ -253,14 +253,14 @@ func TestIntegrationRangeMissPassesThrough(t *testing.T) {
 	o := fileOrigin()
 	proxy := newProxy(t, o)
 
-	// Range requests for something not yet cached go straight to the
+	// Range requests for a file not yet cached go straight to the
 	// backend, so that seeking in large media still works
-	resp, body := get(t, proxy.URL+"/page", "Range", "bytes=0-3")
+	resp, body := get(t, proxy.URL+"/video.mp4", "Range", "bytes=0-3")
 	assert.Equal(t, http.StatusPartialContent, resp.StatusCode)
 	assert.Equal(t, "full", body)
 	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
 
-	resp, body = get(t, proxy.URL+"/page")
+	resp, body = get(t, proxy.URL+"/video.mp4")
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "full page body", body, "a partial response must not be cached as the whole page")
 	assert.Equal(t, "MISS", resp.Header.Get("X-Honey-Cache"))

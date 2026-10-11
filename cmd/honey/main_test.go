@@ -38,6 +38,7 @@ uri = "` + origin.URL + `"
 
 [cache]
 allowedCookies = ["site_lang_id"]
+stripCookies = ["track"]
 
 [[route]]
 match = "/wp-admin"
@@ -543,6 +544,27 @@ func TestHandlerTrustedProxies(t *testing.T) {
 		assert.Contains(t, logs.String(), `"remote":"`+tc.remoteLogged+`"`, tc.name)
 		assert.Equal(t, tc.purge, send("PURGE"), "%s: allowIPs is checked against the visitor's address", tc.name)
 		proxy.Close()
+	}
+}
+
+func TestHandlerHosts(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "hello")
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("hosts = [\"www.example.com\"]\n[backend]\nuri = \"" + origin.URL + "\"\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	for host, status := range map[string]int{"www.example.com": http.StatusOK, "evil.example": http.StatusMisdirectedRequest} {
+		req, err := http.NewRequest(http.MethodGet, proxy.URL+"/", nil)
+		require.NoError(t, err)
+		req.Host = host
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, status, resp.StatusCode, host)
 	}
 }
 
