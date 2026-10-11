@@ -84,6 +84,10 @@ type Cache struct {
 	// cache.Options.BypassCookies).  Defaults to
 	// cache.WordPressBypassCookies.
 	BypassCookies []string
+	// BrowserCacheControl, if set, is the Cache-Control header sent to
+	// clients with successful cached responses (see
+	// cache.Options.BrowserCacheControl)
+	BrowserCacheControl string
 	// QueryParams, if not nil, are the only query parameters kept on
 	// cacheable requests (see fetch.Options)
 	QueryParams []string
@@ -112,6 +116,9 @@ type Route struct {
 	QueryParams *[]string
 	// BypassCookies overrides cache.bypassCookies, if it isn't nil
 	BypassCookies *[]string
+	// BrowserCacheControl overrides cache.browserCacheControl, if it isn't
+	// nil.  It is "" for "inherit": send the cached response's own.
+	BrowserCacheControl *string
 }
 
 // file is the layout of the TOML file
@@ -138,6 +145,7 @@ type file struct {
 		PersistInterval string    `toml:"persistInterval"`
 		AllowedCookies  []string  `toml:"allowedCookies"`
 		BypassCookies   *[]string `toml:"bypassCookies"`
+		BrowserCC       string    `toml:"browserCacheControl"`
 		QueryParams     *[]string `toml:"queryParams"`
 		StaticFiles     *bool     `toml:"staticFiles"`
 		Brotli          *bool     `toml:"brotli"`
@@ -157,6 +165,7 @@ type file struct {
 		StaleIfError  string    `toml:"staleIfError"`
 		QueryParams   *[]string `toml:"queryParams"`
 		BypassCookies *[]string `toml:"bypassCookies"`
+		BrowserCC     *string   `toml:"browserCacheControl"`
 	} `toml:"route"`
 }
 
@@ -282,6 +291,13 @@ func Parse(data string) (*Config, error) {
 			return nil, err
 		}
 	}
+	// "inherit" (the default) sends clients cached responses' own
+	if f.Cache.BrowserCC != "" && f.Cache.BrowserCC != "inherit" {
+		if err := checkCacheControl("cache.browserCacheControl", f.Cache.BrowserCC); err != nil {
+			return nil, err
+		}
+		cfg.Cache.BrowserCacheControl = f.Cache.BrowserCC
+	}
 	for _, name := range cfg.Cache.AllowedCookies {
 		if hasAnyPrefix(name, cfg.Cache.BypassCookies) {
 			return nil, fmt.Errorf("cache.allowedCookies: %q is also a bypass cookie", name)
@@ -339,16 +355,40 @@ func Parse(data string) (*Config, error) {
 			}
 			route.BypassCookies = &prefixes
 		}
-		overrides := route.DefaultTTL != 0 || route.StaleIfError != nil || route.QueryParams != nil || route.BypassCookies != nil
+		if r.BrowserCC != nil {
+			cc := *r.BrowserCC
+			if cc == "inherit" {
+				cc = ""
+			} else if err := checkCacheControl(fmt.Sprintf("route %d (%q): browserCacheControl", i+1, r.Match), cc); err != nil {
+				return nil, err
+			}
+			route.BrowserCacheControl = &cc
+		}
+		overrides := route.DefaultTTL != 0 || route.StaleIfError != nil || route.QueryParams != nil ||
+			route.BypassCookies != nil || route.BrowserCacheControl != nil
 		if !route.Cache && overrides {
 			return nil, fmt.Errorf("route %d (%q): a route with cache = false can't have other settings", i+1, r.Match)
 		}
 		if route.Cache && !overrides {
-			return nil, fmt.Errorf("route %d (%q): set cache = false, or a setting to override (defaultTTL, staleIfError, queryParams or bypassCookies)", i+1, r.Match)
+			return nil, fmt.Errorf("route %d (%q): set cache = false, or a setting to override (defaultTTL, staleIfError, queryParams, bypassCookies or browserCacheControl)", i+1, r.Match)
 		}
 		cfg.Routes = append(cfg.Routes, route)
 	}
 	return cfg, nil
+}
+
+// cacheControlDirective is a Cache-Control directive, e.g. "max-age=60",
+// "immutable" or no-cache="set-cookie"
+var cacheControlDirective = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+.^_|~-]+(=([A-Za-z0-9!#$%&'*+.^_|~-]+|"[^"\\]*"))?$`)
+
+// checkCacheControl validates a Cache-Control header value
+func checkCacheControl(setting, value string) error {
+	for _, directive := range strings.Split(value, ",") {
+		if !cacheControlDirective.MatchString(strings.TrimSpace(directive)) {
+			return fmt.Errorf("%s: %q isn't a Cache-Control header, e.g. \"public, max-age=3600\"", setting, value)
+		}
+	}
+	return nil
 }
 
 // cookiePrefixes validates a list of cookie name prefixes

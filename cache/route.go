@@ -26,6 +26,9 @@ type Route struct {
 	QueryParams *[]string
 	// BypassCookies overrides Options.BypassCookies, if it isn't nil.
 	BypassCookies *[]string
+	// BrowserCacheControl overrides Options.BrowserCacheControl, if it
+	// isn't nil.  "" sends clients the cached response's own Cache-Control.
+	BrowserCacheControl *string
 }
 
 func (route *Route) matches(r *http.Request) bool {
@@ -82,6 +85,16 @@ func (c *defaultCacher) routing(r *http.Request) routed {
 		return result
 	}
 	return c.match(r)
+}
+
+// BrowserCacheControl returns the Cache-Control header to send clients
+// with successful cached responses to r, or "" to send the cached
+// response's own (see Options.BrowserCacheControl).
+func (c *defaultCacher) BrowserCacheControl(r *http.Request) string {
+	if route := c.Route(r); route != nil && route.BrowserCacheControl != nil {
+		return *route.BrowserCacheControl
+	}
+	return c.browserCC
 }
 
 // Route returns the route whose settings apply to r, or nil if none do.

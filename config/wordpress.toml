@@ -25,6 +25,10 @@ allowedCookies = []         # cookies allowed through the cache, e.g. ["site_lan
 # password-protected posts, commenters and WooCommerce shoppers.  This is
 # the default; add any cookies your plugins use for logged in visitors.
 bypassCookies = ["wordpress_logged_in_", "wp-postpass_", "comment_author_", "woocommerce_items_in_cart", "wp_woocommerce_session_"]
+# The Cache-Control header browsers get, instead of the one Honey caches by.
+# "no-cache" makes them check back each time (Honey answers with a quick
+# 304 if the page hasn't changed), so purges reach them straight away.
+# browserCacheControl = "no-cache"
 # The only query parameters which matter - others are removed, so that they
 # can't be used to get around the cache.  These are WordPress core's (ver is
 # on css and js); add any your plugins use before uncommenting this.
@@ -47,6 +51,15 @@ cache = false
 match = "/wp-content/uploads/"
 defaultTTL = "7d"
 bypassCookies = []
+browserCacheControl = "public, max-age=604800"
+
+# css and js with a version (?ver=...) could be kept by browsers for a year.
+# Only do this if your theme and plugins change the version whenever they
+# change the file: browsers won't ask for it again, even after a purge.
+# [[route]]
+# match = "\\.(css|js)\\?(.*&)?ver="
+# regex = true
+# browserCacheControl = "public, max-age=31536000, immutable"
 
 # Log each request to stdout
 [log]

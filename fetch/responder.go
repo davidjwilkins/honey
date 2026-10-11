@@ -67,6 +67,7 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 			w.Header().Set("X-Honey-Cache", "STALE")
 		} else {
 			w.Header().Set("X-Honey-Cache", "HIT")
+			setBrowserCacheControl(c, r, w.Header(), resp)
 		}
 		if isNotModified(r, header.Get("Etag")) {
 			w.WriteHeader(statusCode)
@@ -206,6 +207,9 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 		}
 		if !serveStale {
 			r.Header.Set("X-Honey-Cache", "MISS")
+			if shareable(response) {
+				setBrowserCacheControl(c, r.Request, r.Header, response)
+			}
 		}
 		finish(singleflight.Result{Response: response, Stale: serveStale})
 		// The request was sent to the backend without its conditional

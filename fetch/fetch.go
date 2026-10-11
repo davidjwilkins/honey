@@ -205,7 +205,7 @@ func awaitFlight(w http.ResponseWriter, r *http.Request, f *singleflight.Flight,
 		}
 		serve(w, withRetry(r))
 	case result.Response != nil:
-		writeShared(w, r, result.Response, result.Stale)
+		writeShared(w, r, c, result.Response, result.Stale)
 	default:
 		statusCode := result.StatusCode
 		if statusCode == 0 {
@@ -253,7 +253,7 @@ func headerListContains(values []string, name string) bool {
 }
 
 // writeShared responds to r with resp, which was fetched for another request.
-func writeShared(w http.ResponseWriter, r *http.Request, resp cache.Response, stale bool) {
+func writeShared(w http.ResponseWriter, r *http.Request, c cache.Cacher, resp cache.Response, stale bool) {
 	header, body := cache.Negotiate(resp, r)
 	for key, values := range header {
 		w.Header()[key] = append([]string(nil), values...)
@@ -264,6 +264,7 @@ func writeShared(w http.ResponseWriter, r *http.Request, resp cache.Response, st
 		w.Header().Set("X-Honey-Cache", "STALE")
 	} else {
 		w.Header().Set("X-Honey-Cache", "MISS (MULTIPLEXED)")
+		setBrowserCacheControl(c, r, w.Header(), resp)
 	}
 	if isNotModified(r, header.Get("Etag")) {
 		w.WriteHeader(http.StatusNotModified)

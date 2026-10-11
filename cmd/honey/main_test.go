@@ -353,6 +353,25 @@ func TestHandlerBypassCookies(t *testing.T) {
 	assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"), "the route doesn't bypass the cache for the cookie")
 }
 
+func TestHandlerBrowserCacheControl(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "hello")
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[cache]\nbrowserCacheControl = \"no-cache\"\n" +
+		"[[route]]\nmatch = \"/assets/\"\nbrowserCacheControl = \"public, max-age=31536000, immutable\"\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	for path, want := range map[string]string{"/page": "no-cache", "/assets/app.css": "public, max-age=31536000, immutable"} {
+		resp, err := http.Get(proxy.URL + path)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, want, resp.Header.Get("Cache-Control"), path)
+	}
+}
+
 func TestCacheSurvivesRestart(t *testing.T) {
 	var hits int32
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

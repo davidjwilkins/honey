@@ -67,6 +67,7 @@ All the available settings:
 	allowedCookies = ["site_lang_id"]  # Set-Cookie headers allowed through the cache
 	bypassCookies = ["wordpress_logged_in_", "wp-postpass_", "comment_author_",
 	    "woocommerce_items_in_cart", "wp_woocommerce_session_"]  # (the default) see below
+	browserCacheControl = "no-cache"   # Cache-Control for browsers (unset: the cached response's own)
 	queryParams = ["p", "s", "ver"]    # the only query parameters which matter (unset: all of them)
 
 	# Rules for some requests. match is a path prefix, or with regex = true,
@@ -77,10 +78,11 @@ All the available settings:
 
 	[[route]]
 	match = "/wp-content/uploads/"
-	defaultTTL = "7d"            # override cache settings for these: defaultTTL,
-	# staleIfError = "0"         #   staleIfError, queryParams and bypassCookies
+	defaultTTL = "7d"            # override cache settings for these: defaultTTL, staleIfError,
+	# staleIfError = "0"         #   queryParams, bypassCookies and browserCacheControl
 	# queryParams = ["ver"]
 	# bypassCookies = []
+	# browserCacheControl = "public, max-age=604800"   # or "inherit"
 
 	# Log each request to stdout: method, uri, status, bytes, duration_ms,
 	# cache (the X-Honey-Cache result), remote and forwarded_for.
@@ -129,6 +131,31 @@ The default covers WordPress and WooCommerce:
 Add any your plugins use (e.g. a membership plugin's), or set `bypassCookies = []` to turn this off.  A route can override it - e.g. `bypassCookies = []` for `/wp-content/uploads/`, so that logged in users' images still come from the cache.
 
 Other cookies don't stop a request being cached, and they don't change which cached response it gets (unless they are in `allowedCookies` and the backend sends `Vary: Cookie`).  Cookies that the backend sets are removed from cached responses, unless they are in `allowedCookies`.
+
+## Browser caching
+
+Browsers (and any CDN in front of Honey) normally get the `Cache-Control` header Honey caches the response by: the backend's, with `public` and `max-age=<defaultTTL>` added if it didn't say.  So a page cached for 5 minutes can be kept by browsers for 5 minutes too, and purging it from Honey doesn't reach them.
+
+`browserCacheControl` replaces that header for browsers, without changing how long Honey keeps the response.  It can be set site-wide in `[cache]`, and for each `[[route]]` (where `"inherit"` sends the cached response's own).  For example:
+
+	[cache]
+	browserCacheControl = "no-cache"   # pages: browsers check back each time, and see purges straight away
+
+	# css and js with a version, e.g. /wp-includes/js/jquery/jquery.min.js?ver=3.7.1
+	[[route]]
+	match = "\\.(css|js)\\?(.*&)?ver="
+	regex = true
+	browserCacheControl = "public, max-age=31536000, immutable"
+
+	[[route]]
+	match = "/wp-content/uploads/"
+	browserCacheControl = "public, max-age=604800"
+
+With `no-cache`, browsers still keep the page, but ask Honey whether it has changed each time; Honey answers from the cache with a `304 Not Modified` if it hasn't, so this costs a quick request, not a backend one.
+
+Only successful (`200`), fresh responses which are served from the cache, or cached as they're fetched, get it: not errors or redirects, not stale responses, and not responses Honey doesn't cache (e.g. `private` ones, or for logged in users).  `Age` and `Expires` are left off, as the new header says how long browsers may keep the response from now.
+
+Be careful with `immutable` and long `max-age`s: browsers won't ask for the file again, even after a purge.  Only use them where the URL changes whenever the file does.  WordPress's `ver` is the plugin's or theme's version (or WordPress's, if none was given), so a file edited without a version bump will be stale in browsers until the `max-age` runs out.
 
 ## Routes
 

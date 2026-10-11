@@ -369,3 +369,43 @@ func TestParseBypassCookiesErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestParseBrowserCacheControl(t *testing.T) {
+	cfg, err := Parse(`
+[backend]
+uri = "https://www.example.com"
+
+[cache]
+browserCacheControl = "no-cache"
+
+[[route]]
+match = "\\.(css|js)\\?(.*&)?ver="
+regex = true
+browserCacheControl = "public, max-age=31536000, immutable"
+
+[[route]]
+match = "/feed/"
+browserCacheControl = "inherit"
+`)
+	require.NoError(t, err)
+	assert.Equal(t, "no-cache", cfg.Cache.BrowserCacheControl)
+	require.NotNil(t, cfg.Routes[0].BrowserCacheControl)
+	assert.Equal(t, "public, max-age=31536000, immutable", *cfg.Routes[0].BrowserCacheControl)
+	assert.True(t, cfg.Routes[0].Regex.MatchString("/wp-includes/js/jquery.min.js?ver=3.7.1"))
+	require.NotNil(t, cfg.Routes[1].BrowserCacheControl)
+	assert.Equal(t, "", *cfg.Routes[1].BrowserCacheControl, `"inherit" sends the cached response's own`)
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cache]\nbrowserCacheControl = \"inherit\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, "", cfg.Cache.BrowserCacheControl)
+
+	for _, tc := range []struct{ config, err string }{
+		{"[cache]\nbrowserCacheControl = \"max-age=60\\r\\nX-Evil: 1\"", "isn't a Cache-Control header"},
+		{"[cache]\nbrowserCacheControl = \"max age\"", "isn't a Cache-Control header"},
+		{"[[route]]\nmatch = \"/\"\nbrowserCacheControl = \"\"", `route 1 ("/"): browserCacheControl`},
+	} {
+		_, err := Parse("[backend]\nuri = \"https://www.example.com\"\n" + tc.config)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}

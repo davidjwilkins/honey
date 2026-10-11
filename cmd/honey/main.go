@@ -155,27 +155,29 @@ func newHandler(cfg *config.Config) http.Handler {
 // for its metrics if they are enabled (or else nil).
 func newHandlers(cfg *config.Config) (handler http.Handler, metricsHandler http.Handler, cacher snapshotter) {
 	c := cache.NewCacher(cache.Options{
-		MaxBytes:         cfg.Cache.MaxBytes,
-		MaxObjectBytes:   cfg.Cache.MaxObjectBytes,
-		DefaultTTL:       cfg.Cache.DefaultTTL,
-		StaleIfError:     cfg.Cache.StaleIfError,
-		SkipStaticFiles:  !cfg.Cache.StaticFiles,
-		DisableBrotli:    !cfg.Cache.Brotli,
-		DisableGzip:      !cfg.Cache.Gzip,
-		CompressMinBytes: cfg.Cache.CompressMinBytes,
-		BypassCookies:    cfg.Cache.BypassCookies,
+		MaxBytes:            cfg.Cache.MaxBytes,
+		MaxObjectBytes:      cfg.Cache.MaxObjectBytes,
+		DefaultTTL:          cfg.Cache.DefaultTTL,
+		StaleIfError:        cfg.Cache.StaleIfError,
+		SkipStaticFiles:     !cfg.Cache.StaticFiles,
+		DisableBrotli:       !cfg.Cache.Brotli,
+		DisableGzip:         !cfg.Cache.Gzip,
+		CompressMinBytes:    cfg.Cache.CompressMinBytes,
+		BypassCookies:       cfg.Cache.BypassCookies,
+		BrowserCacheControl: cfg.Cache.BrowserCacheControl,
 	})
 	for _, name := range cfg.Cache.AllowedCookies {
 		c.AddAllowedCookie(name)
 	}
 	for _, route := range cfg.Routes {
 		r := cache.Route{
-			Regex:         route.Regex,
-			NoCache:       !route.Cache,
-			DefaultTTL:    route.DefaultTTL,
-			StaleIfError:  route.StaleIfError,
-			QueryParams:   route.QueryParams,
-			BypassCookies: route.BypassCookies,
+			Regex:               route.Regex,
+			NoCache:             !route.Cache,
+			DefaultTTL:          route.DefaultTTL,
+			StaleIfError:        route.StaleIfError,
+			QueryParams:         route.QueryParams,
+			BypassCookies:       route.BypassCookies,
+			BrowserCacheControl: route.BrowserCacheControl,
 		}
 		if route.Regex == nil {
 			r.Prefix = route.Match

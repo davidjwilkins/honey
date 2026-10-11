@@ -65,6 +65,13 @@ type Options struct {
 	// served from the cache nor cached, and responses which set one
 	// aren't cached.
 	BypassCookies []string
+	// BrowserCacheControl, if set, replaces the Cache-Control header sent
+	// to clients with successful responses which are served from (or
+	// stored in) the cache - e.g. "no-cache", so that browsers check back
+	// (cheaply, with the Etag) and see purges straight away, or "public,
+	// max-age=31536000, immutable" for versioned assets.  It doesn't
+	// change how long Honey caches them.
+	BrowserCacheControl string
 }
 
 type defaultCacher struct {
@@ -79,6 +86,7 @@ type defaultCacher struct {
 	gzip               bool
 	compressMinBytes   int
 	bypassCookies      []string
+	browserCC          string
 	recompressor       *recompressor
 	// store holds both cached responses (keyed by their hash) and the
 	// Vary header last seen for each URL (keyed by varyKey)
@@ -113,6 +121,7 @@ func NewCacher(opts Options) *defaultCacher {
 		gzip:               !opts.DisableGzip,
 		compressMinBytes:   int(opts.CompressMinBytes),
 		bypassCookies:      append([]string(nil), opts.BypassCookies...),
+		browserCC:          opts.BrowserCacheControl,
 		recompressor:       &recompressor{},
 		store:              newStore(opts.MaxBytes),
 	}
