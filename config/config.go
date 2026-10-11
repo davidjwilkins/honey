@@ -83,13 +83,19 @@ type Cache struct {
 }
 
 // Route is a rule for requests whose path starts with Match, or, if
-// Regex is set, whose path and query string match it.  The only rule
-// currently supported is not caching the matching requests.
+// Regex is set, whose path and query string match it.  It either stops
+// them being cached, or overrides cache settings for them.
 type Route struct {
 	Match string
 	// Regex is the compiled Match, if the route is a regular expression
 	Regex *regexp.Regexp
 	Cache bool
+	// DefaultTTL overrides cache.defaultTTL, if it isn't zero
+	DefaultTTL time.Duration
+	// StaleIfError overrides cache.staleIfError, if it isn't nil
+	StaleIfError *time.Duration
+	// QueryParams overrides cache.queryParams, if it isn't nil
+	QueryParams *[]string
 }
 
 // file is the layout of the TOML file
@@ -125,9 +131,12 @@ type file struct {
 		SecretHeader string   `toml:"secretHeader"`
 	} `toml:"control"`
 	Routes []struct {
-		Match string `toml:"match"`
-		Regex bool   `toml:"regex"`
-		Cache *bool  `toml:"cache"`
+		Match        string    `toml:"match"`
+		Regex        bool      `toml:"regex"`
+		Cache        *bool     `toml:"cache"`
+		DefaultTTL   string    `toml:"defaultTTL"`
+		StaleIfError string    `toml:"staleIfError"`
+		QueryParams  *[]string `toml:"queryParams"`
 	} `toml:"route"`
 }
 
@@ -185,20 +194,20 @@ func Parse(data string) (*Config, error) {
 
 	cfg.BackendTimeout = DefaultBackendTimeout
 	if f.Backend.Timeout != "" {
-		cfg.BackendTimeout, err = time.ParseDuration(f.Backend.Timeout)
+		cfg.BackendTimeout, err = parseDuration(f.Backend.Timeout)
 		if err != nil || cfg.BackendTimeout < 0 || (cfg.BackendTimeout > 0 && cfg.BackendTimeout < time.Second) {
 			return nil, fmt.Errorf("backend.timeout must be a duration of at least 1s (or \"0\" for no limit), e.g. \"30s\"")
 		}
 	}
 	cfg.BackendStallTimeout = DefaultBackendTimeout
 	if f.Backend.StallTimeout != "" {
-		cfg.BackendStallTimeout, err = time.ParseDuration(f.Backend.StallTimeout)
+		cfg.BackendStallTimeout, err = parseDuration(f.Backend.StallTimeout)
 		if err != nil || cfg.BackendStallTimeout < 0 || (cfg.BackendStallTimeout > 0 && cfg.BackendStallTimeout < time.Second) {
 			return nil, fmt.Errorf("backend.stallTimeout must be a duration of at least 1s (or \"0\" for no limit), e.g. \"30s\"")
 		}
 	}
 	if f.Cache.StaleIfError != "" {
-		cfg.Cache.StaleIfError, err = time.ParseDuration(f.Cache.StaleIfError)
+		cfg.Cache.StaleIfError, err = parseDuration(f.Cache.StaleIfError)
 		if err != nil || cfg.Cache.StaleIfError < time.Second {
 			return nil, fmt.Errorf("cache.staleIfError must be a duration of at least 1s, e.g. \"1h\"")
 		}
@@ -228,7 +237,7 @@ func Parse(data string) (*Config, error) {
 		}
 	}
 	if f.Cache.DefaultTTL != "" {
-		cfg.Cache.DefaultTTL, err = time.ParseDuration(f.Cache.DefaultTTL)
+		cfg.Cache.DefaultTTL, err = parseDuration(f.Cache.DefaultTTL)
 		if err != nil || cfg.Cache.DefaultTTL < time.Second {
 			return nil, fmt.Errorf("cache.defaultTTL must be a duration of at least 1s, e.g. \"5m\"")
 		}
@@ -255,15 +264,36 @@ func Parse(data string) (*Config, error) {
 		if r.Match == "" {
 			return nil, fmt.Errorf("route %d: match is required", i+1)
 		}
-		if r.Cache == nil || *r.Cache {
-			return nil, fmt.Errorf("route %d (%q): only cache = false is supported", i+1, r.Match)
-		}
-		route := Route{Match: r.Match, Cache: *r.Cache}
+		route := Route{Match: r.Match, Cache: r.Cache == nil || *r.Cache}
 		if r.Regex {
 			route.Regex, err = regexp.Compile(r.Match)
 			if err != nil {
 				return nil, fmt.Errorf("route %d: %w", i+1, err)
 			}
+		}
+		if r.DefaultTTL != "" {
+			route.DefaultTTL, err = parseDuration(r.DefaultTTL)
+			if err != nil || route.DefaultTTL < time.Second {
+				return nil, fmt.Errorf("route %d (%q): defaultTTL must be a duration of at least 1s, e.g. \"1h\" or \"7d\"", i+1, r.Match)
+			}
+		}
+		if r.StaleIfError != "" {
+			staleIfError, err := parseDuration(r.StaleIfError)
+			if err != nil || staleIfError < 0 {
+				return nil, fmt.Errorf("route %d (%q): staleIfError must be a duration, e.g. \"1h\", or \"0\" to turn it off", i+1, r.Match)
+			}
+			route.StaleIfError = &staleIfError
+		}
+		if r.QueryParams != nil {
+			params := append([]string{}, *r.QueryParams...)
+			route.QueryParams = &params
+		}
+		overrides := route.DefaultTTL != 0 || route.StaleIfError != nil || route.QueryParams != nil
+		if !route.Cache && overrides {
+			return nil, fmt.Errorf("route %d (%q): a route with cache = false can't have other settings", i+1, r.Match)
+		}
+		if route.Cache && !overrides {
+			return nil, fmt.Errorf("route %d (%q): set cache = false, or a setting to override (defaultTTL, staleIfError or queryParams)", i+1, r.Match)
 		}
 		cfg.Routes = append(cfg.Routes, route)
 	}
@@ -292,4 +322,17 @@ func parseSize(s string) (int64, error) {
 		return 0, fmt.Errorf("%q should be a size such as \"256MB\"", s)
 	}
 	return n * multiplier, nil
+}
+
+// parseDuration parses a duration such as "90s" or "1h30m", or a whole
+// number of days such as "7d".
+func parseDuration(s string) (time.Duration, error) {
+	if days, found := strings.CutSuffix(s, "d"); found {
+		n, err := strconv.Atoi(days)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("%q should be a duration such as \"1h\" or \"7d\"", s)
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
 }

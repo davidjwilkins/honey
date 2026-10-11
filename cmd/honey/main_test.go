@@ -286,3 +286,34 @@ func TestHandlerStallTimeout(t *testing.T) {
 	assert.Equal(t, http.StatusGatewayTimeout, resp.StatusCode)
 	assert.Less(t, time.Since(start), 3*time.Second)
 }
+
+func TestHandlerRoutes(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, r.URL.RequestURI())
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n[cache]\nqueryParams = []\n" +
+		"[[route]]\nmatch = \"/uploads/\"\ndefaultTTL = \"7d\"\n" +
+		"[[route]]\nmatch = \"/search\"\nqueryParams = [\"s\"]\n" +
+		"[[route]]\nmatch = \"/admin\"\ncache = false\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+
+	get := func(path string) (*http.Response, string) {
+		resp, err := http.Get(proxy.URL + path)
+		require.NoError(t, err)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, string(body)
+	}
+	resp, _ := get("/uploads/photo.jpg")
+	assert.Equal(t, "public, max-age=604800", resp.Header.Get("Cache-Control"))
+	_, body := get("/search?s=honey&x=1")
+	assert.Equal(t, "/search?s=honey", body)
+	_, body = get("/page?s=honey")
+	assert.Equal(t, "/page", body)
+	get("/admin")
+	resp, _ = get("/admin")
+	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
+}

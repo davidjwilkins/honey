@@ -65,11 +65,17 @@ All the available settings:
 	allowedCookies = ["site_lang_id"]  # Set-Cookie headers allowed through the cache
 	queryParams = ["p", "s", "ver"]    # the only query parameters which matter (unset: all of them)
 
-	# Requests not to cache. match is a path prefix, or with regex = true,
+	# Rules for some requests. match is a path prefix, or with regex = true,
 	# a regular expression matched against the path and query string.
 	[[route]]
 	match = "/wp-admin"
-	cache = false
+	cache = false                # don't cache these
+
+	[[route]]
+	match = "/wp-content/uploads/"
+	defaultTTL = "7d"            # override cache settings for these:
+	# staleIfError = "0"         #   defaultTTL, staleIfError and queryParams
+	# queryParams = ["ver"]
 
 	# Log each request to stdout: method, uri, status, bytes, duration_ms,
 	# cache (the X-Honey-Cache result), remote and forwarded_for.
@@ -90,6 +96,16 @@ All the available settings:
 	secretHeader = "X-Honey-Secret"
 
 Honey refuses to start if the config has settings it doesn't support.  See [`config/wordpress.toml`](config/wordpress.toml) for an example WordPress setup.
+
+## Routes
+
+Each `[[route]]` either stops the requests it matches from being cached (`cache = false`), or overrides some of the `[cache]` settings for them: `defaultTTL`, `staleIfError` (`"0"` turns it off) and `queryParams`.
+
+- `cache = false` applies if any matching route says so, wherever it is in the list.
+- Otherwise the first matching route's settings apply, so list more specific routes first.
+- Routes are matched against the request as the client sent it, before Honey removes query parameters.
+
+Durations can be given in days, e.g. `"7d"`, as well as e.g. `"90s"` or `"1h30m"`.
 
 ## Query parameters
 

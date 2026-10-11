@@ -107,11 +107,17 @@ func newHandlers(cfg *config.Config) (handler http.Handler, metricsHandler http.
 		cacher.AddAllowedCookie(name)
 	}
 	for _, route := range cfg.Routes {
-		if route.Regex != nil {
-			cacher.AddSkipRegex(route.Regex)
-		} else {
-			cacher.AddSkipPrefix(route.Match)
+		r := cache.Route{
+			Regex:        route.Regex,
+			NoCache:      !route.Cache,
+			DefaultTTL:   route.DefaultTTL,
+			StaleIfError: route.StaleIfError,
+			QueryParams:  route.QueryParams,
 		}
+		if route.Regex == nil {
+			r.Prefix = route.Match
+		}
+		cacher.AddRoute(r)
 	}
 	control := fetch.Control{
 		AllowIPs:     cfg.Control.AllowIPs,

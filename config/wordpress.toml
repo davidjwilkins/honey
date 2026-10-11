@@ -33,6 +33,14 @@ match = "(?:[?&]preview=true(?:&|$)|/(?:feed|wp-admin|wp-login))"
 regex = true
 cache = false
 
+# Uploaded media rarely changes, so cache it for a week (unless WordPress,
+# or the web server in front of it, says otherwise).  Routes can override
+# defaultTTL, staleIfError and queryParams; the first matching route's
+# settings apply, but cache = false applies wherever it is in the list.
+[[route]]
+match = "/wp-content/uploads/"
+defaultTTL = "7d"
+
 # Log each request to stdout
 [log]
 access = true
