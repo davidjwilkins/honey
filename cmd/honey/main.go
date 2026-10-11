@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -24,9 +25,18 @@ import (
 	"github.com/davidjwilkins/honey/metrics"
 )
 
+// version is set when building a release, with
+// -ldflags "-X main.version=v1.2.3"
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "honey.toml", "path to the config file")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("honey", version)
+		return
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -68,7 +78,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("honey listening on %s, proxying to %s", cfg.Listen, cfg.Backend)
+	log.Printf("honey %s listening on %s, proxying to %s", version, cfg.Listen, cfg.Backend)
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

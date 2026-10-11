@@ -41,3 +41,22 @@ jobs:
 
       - name: Build without cgo
         run: CGO_ENABLED=0 go build -o /dev/null ./cmd/honey
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: docker build --build-arg VERSION=ci -t honey:ci .
+
+      - name: Check it runs
+        run: |
+          docker run --rm honey:ci -version
+          printf '[backend]\nuri = "http://127.0.0.1:1"\n' > honey.toml
+          docker run -d --name honey -p 8080:8080 -v "$PWD/honey.toml:/etc/honey/honey.toml:ro" honey:ci
+          for i in $(seq 1 20); do curl -s -o /dev/null http://127.0.0.1:8080/ && break; sleep 0.5; done
+          # The backend is unreachable, so Honey should answer with a 502
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)" = 502
+          docker stop honey

@@ -22,9 +22,20 @@ It will fetch fresh resources if the `Cache-Control: no-cache` directive, or `Pr
 
 Every response has an `X-Honey-Cache` header saying how it was served: `HIT`, `MISS`, `MISS (MULTIPLEXED)`, `STALE` or `NO-CACHE`.
 
+## Installing
+
+- **Binaries:** download one for Linux, macOS or Windows from the [releases](https://github.com/davidjwilkins/honey/releases), each with this README, an example config and a systemd service.  Check it against `checksums.txt`.
+- **Docker:** `docker build -t honey .` builds an 18MB image (a static binary on [distroless](https://github.com/GoogleContainerTools/distroless), running as a non-root user), which reads its config from `/etc/honey/honey.toml`:
+
+		docker run -d -p 8080:8080 -v "$PWD/honey.toml:/etc/honey/honey.toml:ro" honey
+
+- **From source:** `go install github.com/davidjwilkins/honey/cmd/honey@latest`
+- **systemd:** [`contrib/honey.service`](contrib/honey.service) runs Honey as an unprivileged, sandboxed service, reading `/etc/honey/honey.toml`.  Instructions are at the top of the file.
+
+`honey -version` prints the version.  Pushing a `v*` tag builds and publishes a release.
+
 ## Running it
 
-	go install github.com/davidjwilkins/honey/cmd/honey@latest
 	honey -config honey.toml
 
 A minimal config just needs a backend:

@@ -1,0 +1,46 @@
+name: Release
+
+# Pushing a tag like v1.2.3 builds binaries for each platform and publishes
+# them, with checksums, as a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+      - name: Build
+        run: |
+          version="${GITHUB_REF_NAME}"
+          mkdir dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            name="honey-${version}-${os}-${arch}"
+            binary="honey"
+            if [ "$os" = windows ]; then binary="honey.exe"; fi
+            mkdir "dist/${name}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${version}" -o "dist/${name}/${binary}" ./cmd/honey
+            cp README.md config/wordpress.toml contrib/honey.service "dist/${name}/"
+            tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          done
+          cd dist && sha256sum *.tar.gz > checksums.txt
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/checksums.txt --generate-notes
