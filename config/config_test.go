@@ -409,3 +409,11 @@ browserCacheControl = "inherit"
 		}
 	}
 }
+
+func TestParseAdmin(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n[admin]\nlisten = \"127.0.0.1:9090\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:9090", cfg.AdminListen)
+	_, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[admin]\nlisten = \"127.0.0.1:9090\"\n[metrics]\nlisten = \"127.0.0.1:9090\"\n")
+	assert.ErrorContains(t, err, "only set admin.listen")
+}

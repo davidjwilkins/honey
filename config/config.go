@@ -36,6 +36,9 @@ type Config struct {
 	// MetricsListen is the address to serve metrics on, e.g.
 	// "127.0.0.1:9090", or "" not to serve them
 	MetricsListen string
+	// AdminListen is the address to serve the admin page (and metrics) on,
+	// e.g. "127.0.0.1:9090", or "" not to serve it
+	AdminListen string
 	// AccessLog is whether to log each request to stdout, in
 	// AccessLogFormat ("text" or "json")
 	AccessLog       bool
@@ -127,6 +130,9 @@ type file struct {
 	Metrics struct {
 		Listen string `toml:"listen"`
 	} `toml:"metrics"`
+	Admin struct {
+		Listen string `toml:"listen"`
+	} `toml:"admin"`
 	Log struct {
 		Access bool   `toml:"access"`
 		Format string `toml:"format"`
@@ -198,7 +204,10 @@ func Parse(data string) (*Config, error) {
 		return nil, fmt.Errorf("unsupported settings: %s", strings.Join(keys, ", "))
 	}
 
-	cfg := &Config{Listen: f.Listen, MetricsListen: f.Metrics.Listen, AccessLog: f.Log.Access, AccessLogFormat: f.Log.Format}
+	cfg := &Config{Listen: f.Listen, MetricsListen: f.Metrics.Listen, AdminListen: f.Admin.Listen, AccessLog: f.Log.Access, AccessLogFormat: f.Log.Format}
+	if cfg.AdminListen != "" && cfg.AdminListen == cfg.MetricsListen {
+		return nil, fmt.Errorf("admin.listen and metrics.listen are the same: the admin page serves /metrics too, so only set admin.listen")
+	}
 	switch cfg.AccessLogFormat {
 	case "":
 		cfg.AccessLogFormat = "text"

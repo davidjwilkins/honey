@@ -90,10 +90,14 @@ All the available settings:
 	access = true                # off by default
 	format = "text"              # text|json
 
-	# Serve Prometheus metrics at http://127.0.0.1:9090/metrics (off unless set).
-	# Use a separate, private address: they shouldn't be public.
-	[metrics]
+	# Serve the admin page at http://127.0.0.1:9090/ (off unless set), and
+	# Prometheus metrics at /metrics.  Use a separate, private address.
+	[admin]
 	listen = "127.0.0.1:9090"
+
+	# Or just the metrics, at http://127.0.0.1:9091/metrics (off unless set)
+	[metrics]
+	listen = "127.0.0.1:9091"
 
 	# Who may purge the cache, and refresh it with no-cache.  Nobody is
 	# trusted unless they are listed here.
@@ -175,9 +179,15 @@ Setting `queryParams` lists the parameters which matter.  Any others are removed
 
 For WordPress, core uses `p`, `page_id`, `s`, `paged`, `cat`, `tag`, `author`, `m`, `year`, `monthnum`, `day`, `post_type`, `cpage`, `replytocom`, `attachment_id` and `ver` (on css and js, so that an upgrade isn't served old cached files) - but check which ones your plugins use, as their parameters will stop working if they aren't listed.
 
+## Admin page
+
+With `[admin] listen` set, that address serves a page showing how the cache is doing - its hit ratio, how full it is, how each request was handled, and how quickly the backend responds - with a form to purge a URL, everything under a path, or the whole cache.  It refreshes itself every few seconds.  `/metrics` is served there too.
+
+It has no login, so only listen on a private address, e.g. `127.0.0.1:9090`, and reach it with an SSH tunnel (`ssh -L 9090:127.0.0.1:9090 your-server`, then open http://localhost:9090/).  To protect it from other websites you visit, it is only served for an IP address or `localhost` (not a hostname, so that a site can't point its own hostname at it), its forms only accept posts from the page itself, and it can't be framed.  With Docker, listen on `":9090"` inside the container and publish it to the host's loopback only: `-p 127.0.0.1:9090:9090`.
+
 ## Metrics
 
-With `[metrics] listen` set, `/metrics` on that address has, in the Prometheus text format:
+With `[admin] listen` or `[metrics] listen` set, `/metrics` on that address has, in the Prometheus text format:
 
 - `honey_requests_total{cache="hit|miss|multiplexed|stale|bypass|none"}`: requests, by how the cache handled them (`none` is e.g. purges and errors)
 - `honey_responses_total{code="2xx|..."}`: responses, by status class

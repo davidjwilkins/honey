@@ -202,3 +202,45 @@ func mustParseIPs(t *testing.T, addresses ...string) []*net.IPNet {
 	require.NoError(t, err)
 	return networks
 }
+
+func TestPurger(t *testing.T) {
+	o := noHeadersOrigin()
+	backend, err := url.Parse(o.URL)
+	require.NoError(t, err)
+	c := cache.NewCacher(cache.Options{})
+	c.AddRoute(cache.Route{Prefix: "/search", QueryParams: paramsPtr("s")})
+	opts := Options{QueryParams: []string{"p"}}
+	proxy := httptest.NewServer(FetchWithOptions(c, Forwarder(c), backend, opts))
+	t.Cleanup(proxy.Close)
+	t.Cleanup(o.Close)
+	purge := Purger(c, backend, opts)
+
+	hit := func(path string) bool {
+		resp, _ := get(t, proxy.URL+path)
+		return resp.Header.Get("X-Honey-Cache") == "HIT"
+	}
+	for _, path := range []string{"/page?p=1", "/search?s=honey", "/blog/one", "/blog/two", "/about"} {
+		get(t, proxy.URL+path)
+		require.True(t, hit(path), path)
+	}
+
+	n, err := purge("https://www.public-hostname.example/page?utm_source=x&p=1#top", false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "the host is the backend's, and the query is filtered, as for requests")
+	n, err = purge("/search?s=honey&x=1", false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "with the route's query parameters")
+	n, err = purge("/blog/", true)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+	assert.True(t, hit("/about"))
+	n, err = purge("/*", false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, `a trailing "*" works as for PURGE requests`)
+	assert.False(t, hit("/about"))
+
+	for _, bad := range []string{"about", "javascript:alert(1)", "ftp://example.com/", "http://[::1"} {
+		_, err := purge(bad, false)
+		assert.Error(t, err, bad)
+	}
+}

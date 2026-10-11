@@ -66,8 +66,10 @@ browserCacheControl = "public, max-age=604800"
 access = true
 format = "text"             # text|json
 
-# Prometheus metrics at http://127.0.0.1:9090/metrics - keep this private
-# [metrics]
+# The admin page (stats and purging) at http://127.0.0.1:9090/, and
+# Prometheus metrics at /metrics.  It has no login: keep it private, and
+# reach it with an SSH tunnel.
+# [admin]
 # listen = "127.0.0.1:9090"
 
 # Who may purge the cache (curl -X PURGE ...) and refresh it with

@@ -1,0 +1,87 @@
+{{define "page" -}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Honey admin</title>
+<link rel="stylesheet" href="/admin.css">
+<script src="/admin.js" defer></script>
+</head>
+<body>
+<main>
+<header>
+  <h1>Honey</h1>
+  <p class="muted">{{.Version}} · caching <span class="mono">{{.Backend}}</span></p>
+</header>
+
+{{with .Purged -}}
+<p class="notice ok" role="status">Purged {{.Count}} cached response{{if ne .Count 1}}s{{end}} for <span class="mono">{{.Target}}</span>{{if .Prefix}} and everything under it{{end}}.</p>
+{{- end}}
+{{with .Problem -}}
+<p class="notice problem" role="alert">{{.}}</p>
+{{- end}}
+
+<section id="stats" aria-live="polite">
+{{template "stats" .}}
+</section>
+
+<section class="card">
+  <h2>Purge</h2>
+  <p class="muted">Removes pages from Honey's cache, so that the next request for them goes to the backend.  Browsers which have a page may keep it until it expires for them.</p>
+  <form method="post" action="/purge" class="purge">
+    <label for="url">URL or path</label>
+    <div class="row">
+      <input id="url" name="url" type="text" placeholder="/hello-world/" required autocomplete="off" spellcheck="false">
+      <button type="submit">Purge</button>
+    </div>
+    <label class="check"><input type="checkbox" name="prefix" value="1"> And everything under it (e.g. <span class="mono">/blog/</span> for every post)</label>
+  </form>
+  <form method="post" action="/purge" id="purge-all">
+    <input type="hidden" name="url" value="/">
+    <input type="hidden" name="prefix" value="1">
+    <button type="submit" class="danger">Purge everything</button>
+  </form>
+</section>
+
+<footer class="muted">Counts are since Honey started.  Prometheus metrics are at <a href="/metrics">/metrics</a>.</footer>
+</main>
+</body>
+</html>
+{{- end}}
+
+{{define "stats" -}}
+<div class="grid">
+  <div class="card">
+    <h2>Hit ratio</h2>
+    <p class="big">{{if .Requests}}{{percent .HitRatio}}{{else}}–{{end}}</p>
+    <p class="muted">of {{count .Requests}} request{{if ne .Requests 1}}s{{end}} served from the cache, in {{duration .Uptime}}</p>
+  </div>
+  <div class="card">
+    <h2>Cache</h2>
+    <p class="big">{{bytes .Bytes}}</p>
+    <meter min="0" max="1" value="{{.Full}}" high="0.9" title="{{percent .Full}} full">{{percent .Full}}</meter>
+    <p class="muted">of {{bytes .MaxBytes}} · {{count .Entries}} entr{{if ne .Entries 1}}ies{{else}}y{{end}}</p>
+  </div>
+  <div class="card">
+    <h2>Backend</h2>
+    <p class="big">{{if .BackendReqs}}{{duration .AvgBackend}}{{else}}–{{end}}</p>
+    <p class="muted">average wait for {{count .BackendReqs}} request{{if ne .BackendReqs 1}}s{{end}} · {{count .Backend5xx}} failed · {{.InFlight}} in flight</p>
+  </div>
+</div>
+<div class="card">
+  <h2>Requests</h2>
+  <table>
+    <thead><tr><th scope="col">Result</th><th scope="col" class="num">Requests</th><th scope="col" class="num">Share</th></tr></thead>
+    <tbody>
+    {{- range .Results}}
+      <tr>
+        <th scope="row"><span class="mono">{{.Name}}</span><span class="help">{{.Help}}</span></th>
+        <td class="num">{{count .Count}}</td>
+        <td class="num share"><meter min="0" max="1" value="{{.Share}}">{{percent .Share}}</meter> {{percent .Share}}</td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+</div>
+{{- end}}

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/davidjwilkins/honey/accesslog"
+	"github.com/davidjwilkins/honey/admin"
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/config"
 	"github.com/davidjwilkins/honey/fetch"
@@ -43,7 +45,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	handler, metricsHandler, cacher := newHandlers(cfg)
+	h := build(cfg, time.Now())
+	cacher := h.cacher
 	if cfg.Cache.Persist != "" {
 		loaded, err := cacher.LoadFrom(cfg.Cache.Persist)
 		if err != nil {
@@ -55,21 +58,29 @@ func main() {
 	stopPersisting := persistEvery(cacher, cfg.Cache.Persist, cfg.Cache.PersistInterval)
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           handler,
+		Handler:           h.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
-	var metricsServer *http.Server
-	if metricsHandler != nil {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", metricsHandler)
-		metricsServer = &http.Server{Addr: cfg.MetricsListen, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	// The metrics and admin page are served on their own (private) addresses
+	var private []*http.Server
+	serve := func(addr string, handler http.Handler, what, path string) {
+		s := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+		private = append(private, s)
 		go func() {
-			log.Printf("metrics on http://%s/metrics", cfg.MetricsListen)
-			if err := metricsServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("%s on %s%s", what, displayURL(addr), path)
+			if err := s.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 				log.Fatal(err)
 			}
 		}()
+	}
+	if cfg.MetricsListen != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", h.metrics)
+		serve(cfg.MetricsListen, mux, "metrics", "metrics")
+	}
+	if h.admin != nil {
+		serve(cfg.AdminListen, h.admin, "admin page", "")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -81,8 +92,8 @@ func main() {
 		log.Print("shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if metricsServer != nil {
-			metricsServer.Shutdown(shutdownCtx)
+		for _, s := range private {
+			s.Shutdown(shutdownCtx)
 		}
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("shutdown: %v", err)
@@ -145,15 +156,36 @@ func persistEvery(cacher snapshotter, path string, interval time.Duration) (stop
 	}
 }
 
-// newHandler builds the caching proxy described by cfg.
-func newHandler(cfg *config.Config) http.Handler {
-	handler, _, _ := newHandlers(cfg)
-	return handler
+// displayURL returns the URL to show for a server listening on addr
+func displayURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if host == "" {
+		host = "localhost"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/"
 }
 
-// newHandlers builds the caching proxy described by cfg, and the handler
-// for its metrics if they are enabled (or else nil).
-func newHandlers(cfg *config.Config) (handler http.Handler, metricsHandler http.Handler, cacher snapshotter) {
+// honey is the caching proxy described by a config
+type honey struct {
+	handler http.Handler
+	// metrics are the proxy's counts, if metrics or the admin page are on
+	metrics *metrics.Recorder
+	// admin serves the admin page, if it is on
+	admin  http.Handler
+	cacher snapshotter
+}
+
+// newHandler builds the caching proxy described by cfg.
+func newHandler(cfg *config.Config) http.Handler {
+	return build(cfg, time.Now()).handler
+}
+
+// build builds the caching proxy described by cfg, which started at
+// started.
+func build(cfg *config.Config, started time.Time) *honey {
 	c := cache.NewCacher(cache.Options{
 		MaxBytes:            cfg.Cache.MaxBytes,
 		MaxObjectBytes:      cfg.Cache.MaxObjectBytes,
@@ -193,7 +225,7 @@ func newHandlers(cfg *config.Config) (handler http.Handler, metricsHandler http.
 	backendTransport.ResponseHeaderTimeout = cfg.BackendTimeout
 	transport := fetch.StallTimeout(backendTransport, cfg.BackendStallTimeout)
 	var recorder *metrics.Recorder
-	if cfg.MetricsListen != "" {
+	if cfg.MetricsListen != "" || cfg.AdminListen != "" {
 		maxBytes := cfg.Cache.MaxBytes
 		if maxBytes == 0 {
 			maxBytes = cache.DefaultMaxBytes
@@ -201,19 +233,32 @@ func newHandlers(cfg *config.Config) (handler http.Handler, metricsHandler http.
 		recorder = metrics.New(c.Stats, maxBytes)
 		transport = recorder.Transport(transport)
 	}
-	handler = fetch.FetchWithOptions(c, fetch.NewForwarder(c, transport), cfg.Backend, fetch.Options{
+	fetchOpts := fetch.Options{
 		Control:     control,
 		QueryParams: cfg.Cache.QueryParams,
-	})
+	}
+	h := &honey{
+		handler: fetch.FetchWithOptions(c, fetch.NewForwarder(c, transport), cfg.Backend, fetchOpts),
+		metrics: recorder,
+		cacher:  c,
+	}
 	if recorder != nil {
-		handler = recorder.Middleware(handler)
-		metricsHandler = recorder
+		h.handler = recorder.Middleware(h.handler)
 	}
 	if cfg.AccessLog {
 		logger := accesslog.New(accessLogOutput, accesslog.Format(cfg.AccessLogFormat))
-		handler = accesslog.Middleware(logger, handler)
+		h.handler = accesslog.Middleware(logger, h.handler)
 	}
-	return handler, metricsHandler, c
+	if cfg.AdminListen != "" {
+		h.admin = admin.Handler(admin.Options{
+			Version: version,
+			Backend: cfg.Backend.String(),
+			Started: started,
+			Metrics: recorder,
+			Purge:   fetch.Purger(c, cfg.Backend, fetchOpts),
+		})
+	}
+	return h
 }
 
 // accessLogOutput is where the access log is written
