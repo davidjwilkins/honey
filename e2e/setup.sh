@@ -15,7 +15,7 @@ wp user create editor editor@example.com --role=editor --user_pass=password
 
 # WooCommerce, if asked for (it's downloaded from wordpress.org)
 if [ -n "${HONEY_E2E_WOOCOMMERCE:-}" ]; then
-  wp plugin install woocommerce --activate
+  wp plugin install woocommerce --version=11.2.1 --activate
   wp plugin list --name=woocommerce --fields=name,version
   # The shop, cart, checkout and account pages
   wp wc tool run install_pages --user=admin

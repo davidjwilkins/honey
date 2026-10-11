@@ -33,7 +33,7 @@ services:
       - wordpress
 
   wordpress:
-    image: mirror.gcr.io/library/wordpress:6.8-php8.3-apache
+    image: mirror.gcr.io/library/wordpress:7.0-php8.3-apache
     restart: unless-stopped
     environment: &wordpress-env
       WORDPRESS_DB_HOST: db
@@ -72,7 +72,7 @@ services:
 
   # WP-CLI: docker compose run --rm cli wp ...
   cli:
-    image: mirror.gcr.io/library/wordpress:cli-2.11-php8.3
+    image: mirror.gcr.io/library/wordpress:cli-2.12-php8.3
     profiles: ["cli"]
     user: "33:33"
     environment:
