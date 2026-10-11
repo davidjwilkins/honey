@@ -238,6 +238,10 @@ To install it, copy it to `wp-content/mu-plugins/honey-purge.php`, and add to `w
 
 If Honey is behind another proxy on the same host (e.g. Caddy or nginx for TLS), every request comes from that proxy's address, so don't put it in `allowIPs`: use the secret instead.
 
+## Testing
+
+`go test ./...` runs the unit tests.  [`e2e/run.sh`](e2e/run.sh) runs end-to-end tests against a real WordPress, with the purge plugin, behind Honey - checking that pages are cached, that logged in users, commenters and visitors to password-protected posts get their own pages, and that edits, comments and setting changes are purged.  It needs Docker and Go, and CI runs it on every pull request.  `HONEY_E2E_KEEP=1 e2e/run.sh` leaves it all running afterwards, on http://localhost:8080/ (log in as `admin`, password `password`) with Honey's admin page on http://127.0.0.1:9090/.
+
 ## Using it as a library
 
 	backend, err := url.Parse("https://www.example.com")

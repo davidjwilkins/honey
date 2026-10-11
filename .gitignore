@@ -1,3 +1,4 @@
 /main.go
 vendor/*
 /honey
+e2e/logs.txt

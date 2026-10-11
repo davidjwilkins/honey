@@ -34,7 +34,9 @@ jobs:
           fi
 
       - name: Vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          go vet -tags e2e ./e2e
 
       - name: Test
         run: go test -race -count=1 ./...
@@ -60,3 +62,26 @@ jobs:
           # The backend is unreachable, so Honey should answer with a 502
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)" = 502
           docker stop honey
+
+  wordpress:
+    name: WordPress end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      # A real WordPress (with contrib/wordpress/honey-purge.php) behind
+      # Honey, with a database: see e2e/run.sh
+      - name: Test
+        run: ./e2e/run.sh
+
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: e2e/logs.txt
