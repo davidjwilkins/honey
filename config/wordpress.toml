@@ -5,8 +5,11 @@
 
 listen = ":8080"
 
+# The web server running WordPress, e.g. Apache or nginx on another port.
+# It is sent the Host clients asked for; set host to send another one.
 [backend]
-uri = "https://www.insomniac.com"
+uri = "http://127.0.0.1:8081"
+# host = "www.example.com"
 timeout = "30s"             # how long to wait for WordPress to start responding
 stallTimeout = "30s"        # how long WordPress may go silent partway through a response
 

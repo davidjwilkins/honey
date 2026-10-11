@@ -45,6 +45,9 @@ type Config struct {
 	AccessLogFormat string
 	// Backend is the server which requests are proxied to
 	Backend *url.URL
+	// BackendHost, if set, is the Host header sent to the backend, instead
+	// of the client's (see fetch.Options.BackendHost)
+	BackendHost string
 	// BackendTimeout is how long to wait for the backend to start
 	// responding.  Zero means no limit.
 	BackendTimeout time.Duration
@@ -139,6 +142,7 @@ type file struct {
 	} `toml:"log"`
 	Backend struct {
 		URI          string `toml:"uri"`
+		Host         string `toml:"host"`
 		Timeout      string `toml:"timeout"`
 		StallTimeout string `toml:"stallTimeout"`
 	} `toml:"backend"`
@@ -230,6 +234,12 @@ func Parse(data string) (*Config, error) {
 		return nil, fmt.Errorf("backend.uri must be an http or https URL, e.g. https://www.example.com")
 	}
 
+	if f.Backend.Host != "" {
+		if strings.ContainsAny(f.Backend.Host, "/ \t\r\n") {
+			return nil, fmt.Errorf("backend.host must be a host name (and port), e.g. \"www.example.com\", not %q", f.Backend.Host)
+		}
+		cfg.BackendHost = f.Backend.Host
+	}
 	cfg.BackendTimeout = DefaultBackendTimeout
 	if f.Backend.Timeout != "" {
 		cfg.BackendTimeout, err = parseDuration(f.Backend.Timeout)

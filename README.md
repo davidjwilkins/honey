@@ -38,17 +38,18 @@ Every response has an `X-Honey-Cache` header saying how it was served: `HIT`, `M
 
 	honey -config honey.toml
 
-A minimal config just needs a backend:
+A minimal config just needs a backend - the web server running WordPress, which Honey sits in front of:
 
 	[backend]
-	uri = "https://www.example.com"
+	uri = "http://127.0.0.1:8081"
 
 All the available settings:
 
 	listen = ":8080"             # address to listen on
 
 	[backend]
-	uri = "https://www.example.com"
+	uri = "http://127.0.0.1:8081"
+	host = "www.example.com"     # the Host header to send it (unset: the one the client sent)
 	timeout = "30s"              # how long to wait for the backend to start responding ("0" for no limit)
 	stallTimeout = "30s"         # how long the backend may go silent partway through a response ("0" for no limit)
 
@@ -108,12 +109,20 @@ All the available settings:
 
 Honey refuses to start if the config has settings it doesn't support.  See [`config/wordpress.toml`](config/wordpress.toml) for an example WordPress setup.
 
+## Hosts
+
+Honey passes the backend the `Host` header clients send (e.g. `www.example.com`), as WordPress redirects requests for any other host to its own address.  The backend also gets `X-Forwarded-Host` (the same host, replacing any the client sent) and `X-Forwarded-Proto` (`http` or `https`, unless a proxy in front of Honey has already set it).
+
+Responses are cached separately for each host and protocol, so e.g. a redirect from `example.com` to `www.example.com` is only served for `example.com`.
+
+To proxy a site hosted elsewhere, whose server only answers to its own name, set `backend.host` to it: it is sent as the `Host` header instead.
+
 ## Keeping the cache across restarts
 
 With `persist` set, Honey saves the cache to that file every `persistInterval` (5 minutes by default) and when it shuts down, and loads it when it starts, so a restart or deploy doesn't leave WordPress to take the full load while the cache fills up again.  Responses which expired while Honey was stopped aren't loaded, and ages carry on from when they were first cached.
 
 - The file is replaced atomically, so it is never left half written, and only its owner can read it.
-- A missing or unreadable file is logged, and Honey starts with an empty cache.
+- A missing or unreadable file is logged, and Honey starts with an empty cache.  So is one saved by a version of Honey which keys responses differently.
 - On shutdown, Honey waits for requests in progress to finish (for up to 30 seconds) before saving.
 - The systemd service and the Docker image both have a writable `/var/lib/honey` for it.  With Docker, mount a volume there: `-v honey-cache:/var/lib/honey`.
 

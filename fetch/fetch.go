@@ -45,6 +45,12 @@ type Options struct {
 	// Parameters are also sorted, so their order doesn't matter.  A nil
 	// QueryParams keeps every parameter.
 	QueryParams []string
+	// BackendHost, if set, is the Host header sent to the backend, instead
+	// of the host the client asked for (which is still sent in
+	// X-Forwarded-Host, and is still part of the cache key) - e.g. to
+	// proxy a site hosted elsewhere, whose server only answers to its own
+	// name.
+	BackendHost string
 }
 
 // FetchWithOptions is like Fetch, configured by opts.
@@ -53,6 +59,9 @@ func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, op
 	serve := serveFromCache(c, handler, filterQuery)
 	return func(w http.ResponseWriter, r *http.Request) {
 		SwitchBackend(r, backend)
+		if opts.BackendHost != "" {
+			r.Host = opts.BackendHost
+		}
 		r = withRoute(c, r)
 		if r.Method == MethodPurge {
 			// so that it matches the cache keys
@@ -397,6 +406,8 @@ func NewForwarder(c cache.Cacher, transport http.RoundTripper) http.Handler {
 		transport = http.DefaultTransport
 	}
 	forwarder, err := forward.New(
+		// Send the backend the request's Host (see SwitchBackend)
+		forward.PassHostHeader(true),
 		forward.ResponseModifier(FlushSingleflight(c, nil)),
 		forward.ErrorHandler(backendErrorHandler{c}),
 		forward.RoundTripper(transport),
@@ -456,18 +467,27 @@ func (h backendErrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, e
 	utils.DefaultHandler.ServeHTTP(w, r, err)
 }
 
-// SwitchBackend changes the host and scheme of a request
-// to match the backend that it should be forwarder to.
-// We have to do this before Rewrite is called by forward
-// because otherwise we can't match the URL in the cache or
-// singleflight.  It sets the X-Forwarded-Proto header if not
-// already set to indicate the protocol (HTTP or HTTPS) that a
-// client used to connect, and sets the Host header to indicate
-// the actual hostname requested.
+// SwitchBackend changes the host and scheme of a request's URL to the
+// backend's, which it is forwarded to.  The request keeps its Host header
+// (the host the client asked for), which is passed on to the backend, as
+// sites such as WordPress redirect requests for any other host.  The host
+// is also put in the X-Forwarded-Host header (replacing any the client
+// sent), and the protocol the client used (http or https) in
+// X-Forwarded-Proto, unless it is already there (e.g. from a proxy in
+// front of Honey which handles TLS).  The cache keys responses by both
+// (see cache.Cacher.Hash), as the backend's responses may depend on them.
 func SwitchBackend(req *http.Request, backend *url.URL) {
-	req.Host = req.URL.Host
-	req.URL.Host = backend.Host
-	if req.Header.Get("X-Forwarded-Proto") == "" {
+	host := req.Host
+	if host == "" {
+		// e.g. requests made by a client, rather than received by a server
+		host = req.URL.Host
+	}
+	host = strings.ToLower(host)
+	req.Host = host
+	req.Header.Set("X-Forwarded-Host", host)
+	switch strings.ToLower(req.Header.Get("X-Forwarded-Proto")) {
+	case "http", "https":
+	default:
 		proto := req.URL.Scheme
 		if proto == "" {
 			// Server requests don't have a scheme in their URL
@@ -478,5 +498,6 @@ func SwitchBackend(req *http.Request, backend *url.URL) {
 		}
 		req.Header.Set("X-Forwarded-Proto", proto)
 	}
+	req.URL.Host = backend.Host
 	req.URL.Scheme = backend.Scheme
 }
