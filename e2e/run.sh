@@ -27,4 +27,9 @@ done
 # HONEY_E2E_WOOCOMMERCE=1 installs WooCommerce, for its tests
 compose run --rm -e HONEY_E2E_WOOCOMMERCE cli sh /setup.sh
 
-cd .. && go test -tags e2e -count=1 -v ./e2e
+cd ..
+if ! go test -tags e2e -count=1 -v ./e2e; then
+  echo "--- what was purged and warmed, and PHP errors:"
+  compose logs honey wordpress 2>&1 | grep -E "Honey: |PURGE|warm|PHP (Fatal|Warning)" | tail -150
+  exit 1
+fi

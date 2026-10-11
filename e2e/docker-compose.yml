@@ -11,6 +11,7 @@ x-wordpress-env: &wordpress-env
     define('HONEY_URL', 'http://honey:8080');
     define('HONEY_SECRET', 'e2e-secret-0123456789');
     define('DISABLE_WP_CRON', true);
+    define('HONEY_DEBUG', true);
 
 services:
   db:

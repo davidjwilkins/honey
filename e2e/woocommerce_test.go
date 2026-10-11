@@ -48,9 +48,9 @@ func TestShopPagesAreCached(t *testing.T) {
 	woocommerce(t)
 	c := client(nil)
 	for _, path := range []string{"/product/honey-jar/", "/shop/"} {
-		first := get(t, c, path)
-		require.Equal(t, http.StatusOK, first.StatusCode, path)
-		contains(t, first.Body, "Honey jar", path)
+		// The shop may have been cached (by the warmer) before the jar was
+		// added, and soft purged since
+		eventually(t, c, path, "Honey jar")
 		assert.Equal(t, "HIT", get(t, c, path).Cache, path)
 	}
 }
@@ -79,8 +79,9 @@ func TestAddingToCartStartsASession(t *testing.T) {
 		// The shopper's pages are their own
 		page := get(t, shopper, "/product/honey-jar/")
 		assert.Equal(t, "NO-CACHE", page.Cache)
-		cart := get(t, shopper, "/cart/")
-		contains(t, cart.Body, "Honey jar", "the cart has the shopper's jar")
+		// The cart page is filled in by JavaScript, from the Store API
+		cart, _ := getStoreCart(t, shopper, "")
+		assert.Equal(t, 1, cart.ItemsCount, "the shopper's cart has their jar")
 	}
 	require.Len(t, sessions, 2)
 	assert.NotEqual(t, sessions[0], sessions[1], "each shopper has their own session")
@@ -91,10 +92,13 @@ func TestAddingToCartStartsASession(t *testing.T) {
 	notContains(t, page.Body, "has been added to your cart")
 }
 
-func TestCartAndCheckoutAreNeverCached(t *testing.T) {
+// The cart page isn't here: WooCommerce's cart block fills it in with
+// JavaScript, from the Store API, so the page itself is the same for
+// everyone, and WooCommerce lets it be cached.
+func TestCheckoutAndAccountAreNeverCached(t *testing.T) {
 	woocommerce(t)
 	c := client(nil)
-	for _, path := range []string{"/cart/", "/checkout/", "/my-account/"} {
+	for _, path := range []string{"/checkout/", "/my-account/"} {
 		get(t, c, path)
 		assert.NotEqual(t, "HIT", get(t, c, path).Cache, path)
 	}

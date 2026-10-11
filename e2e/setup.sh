@@ -17,6 +17,9 @@ wp user create editor editor@example.com --role=editor --user_pass=password
 if [ -n "${HONEY_E2E_WOOCOMMERCE:-}" ]; then
   wp plugin install woocommerce --version=11.2.1 --activate
   wp plugin list --name=woocommerce --fields=name,version
+  # Skip the setup wizard, which the first admin page redirects to
+  wp option update woocommerce_onboarding_profile '{"skipped":true}' --format=json
+  wp transient delete _wc_activation_redirect || true
   # The shop, cart, checkout and account pages
   wp wc tool run install_pages --user=admin
   wp wc product create --user=admin --name="Honey jar" --slug=honey-jar --regular_price=9.99 --status=publish

@@ -17,6 +17,8 @@
  *     define( 'HONEY_URL', 'http://127.0.0.1:8080' );
  *     // control.secretHeader, if it isn't X-Honey-Secret
  *     define( 'HONEY_SECRET_HEADER', 'X-Honey-Secret' );
+ *     // Log what is purged, and why, to the PHP error log
+ *     define( 'HONEY_DEBUG', true );
  *
  * What it purges:
  *
@@ -129,7 +131,14 @@ final class Purge {
 	public static function everything( $hard = false ) {
 		// Hooks pass their own arguments, so only true means hard
 		self::$everything = true === $hard || 'hard' === self::$everything ? 'hard' : 'soft';
+		self::debug( 'purging everything for ' . ( doing_action() ? current_action() : 'the purge button' ) );
 		self::schedule();
+	}
+
+	private static function debug( $message ) {
+		if ( defined( 'HONEY_DEBUG' ) && HONEY_DEBUG ) {
+			error_log( 'Honey: ' . $message . ' (' . ( isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : 'cli' ) . ')' );
+		}
 	}
 
 	private static function schedule() {
@@ -294,6 +303,7 @@ final class Purge {
 		if ( in_array( $option, $everywhere, true ) ||
 			0 === strpos( $option, 'widget_' ) ||
 			0 === strpos( $option, 'theme_mods_' ) ) {
+			self::debug( "the $option option changed" );
 			self::everything();
 		}
 	}
@@ -324,6 +334,7 @@ final class Purge {
 			$headers[ $header ] = HONEY_SECRET;
 		}
 		foreach ( $purges as $path => $soft ) {
+			self::debug( ( $soft ? 'soft' : 'hard' ) . " purging $path" );
 			$response = wp_remote_request(
 				$base . $path,
 				array(
