@@ -166,6 +166,17 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 			r.Header.Set("X-Honey-Cache", "NO-CACHE")
 			return nil
 		}
+		if !storableStatus(r.StatusCode, r.Header) && r.StatusCode < 500 {
+			// e.g. a 400 for a request with an oversized header, or a 403
+			// from a firewall: it's about this request, not the resource,
+			// so it is neither cached nor given to anyone else (and a stale
+			// response being refreshed is kept).  Server errors are still
+			// shared, so that a struggling backend isn't sent everyone's
+			// requests at once.
+			finish(singleflight.Result{Bypass: true})
+			r.Header.Set("X-Honey-Cache", "NO-CACHE")
+			return nil
+		}
 		maxBytes := int64(1 << 62)
 		if limiter, ok := c.(objectSizeLimiter); ok {
 			maxBytes = limiter.MaxObjectSize()
@@ -199,9 +210,8 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 		response := c.Standardize(r)
 		cc := response.Header().Get("Cache-Control")
 		// no-store: https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9.2
-		// and don't cache server errors, or responses only meant for one
-		// requester's conditional or range request
-		if !strings.Contains(cc, "no-store") && response.StatusCode() < 500 && !isPartialStatus(response.StatusCode()) {
+		// and don't cache server errors
+		if !strings.Contains(cc, "no-store") && response.StatusCode() < 500 {
 			c.Cache(hash, response)
 		}
 		// if there was a server error, let's try and fetch a good response from the
@@ -250,6 +260,43 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 		}
 		return nil
 	}
+}
+
+// heuristicallyCacheable are the status codes which may be cached without
+// the response saying how long for
+// https://www.rfc-editor.org/rfc/rfc9111#section-4.2.2 (less 206, which
+// is only part of the response, and 501, as server errors aren't cached)
+var heuristicallyCacheable = map[int]bool{
+	http.StatusOK:                   true,
+	http.StatusNonAuthoritativeInfo: true,
+	http.StatusNoContent:            true,
+	http.StatusMultipleChoices:      true,
+	http.StatusMovedPermanently:     true,
+	http.StatusPermanentRedirect:    true,
+	http.StatusNotFound:             true,
+	http.StatusMethodNotAllowed:     true,
+	http.StatusGone:                 true,
+	http.StatusRequestURITooLong:    true,
+}
+
+// storableStatus returns whether a response with statusCode and the
+// backend's header may be cached: if it is heuristically cacheable, or if
+// it is a temporary redirect which says how long it is fresh for.  Other
+// client errors (400, 401, 403, 429...) depend on the request, not just on
+// the resource, so they never are - otherwise one bad request (e.g. with
+// a header too large for the backend) could break a page for everyone.
+func storableStatus(statusCode int, header http.Header) bool {
+	if heuristicallyCacheable[statusCode] {
+		return true
+	}
+	switch statusCode {
+	case http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect:
+		cc := header.Get("Cache-Control")
+		_, maxAge := utilities.Directive(cc, "max-age")
+		_, sMaxAge := utilities.Directive(cc, "s-maxage")
+		return maxAge || sMaxAge || header.Get("Expires") != ""
+	}
+	return false
 }
 
 func isNotModified(r *http.Request, etag string) bool {
@@ -329,14 +376,6 @@ type errorReader struct {
 
 func (e errorReader) Read([]byte) (int, error) {
 	return 0, e.err
-}
-
-// isPartialStatus returns whether statusCode is a response to a conditional
-// or range request, which doesn't contain the full response.
-func isPartialStatus(statusCode int) bool {
-	return statusCode == http.StatusPartialContent ||
-		statusCode == http.StatusNotModified ||
-		statusCode == http.StatusPreconditionFailed
 }
 
 func canRespondWithoutBody(req *http.Request) bool {

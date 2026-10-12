@@ -38,6 +38,9 @@ type Config struct {
 	// X-Forwarded-Proto headers are believed (see clientip.Middleware).
 	// Defaults to clientip.DefaultTrusted.
 	TrustedProxies []*net.IPNet
+	// Hosts, if not nil, are the only hosts requests are handled for (see
+	// fetch.Options.Hosts)
+	Hosts []string
 	// MetricsListen is the address to serve metrics on, e.g.
 	// "127.0.0.1:9090", or "" not to serve them
 	MetricsListen string
@@ -108,6 +111,9 @@ type Cache struct {
 	// cache.Options.BypassCookies).  Defaults to
 	// cache.WordPressBypassCookies.
 	BypassCookies []string
+	// StripCookies are cookie name prefixes which responses may set and
+	// still be cached, without the cookie (see cache.Options.StripCookies)
+	StripCookies []string
 	// BrowserCacheControl, if set, is the Cache-Control header sent to
 	// clients with successful cached responses (see
 	// cache.Options.BrowserCacheControl)
@@ -152,6 +158,7 @@ type Route struct {
 type file struct {
 	Listen         string    `toml:"listen"`
 	TrustedProxies *[]string `toml:"trustedProxies"`
+	Hosts          *[]string `toml:"hosts"`
 	Metrics        struct {
 		Listen string `toml:"listen"`
 	} `toml:"metrics"`
@@ -178,6 +185,7 @@ type file struct {
 		PersistInterval string    `toml:"persistInterval"`
 		AllowedCookies  []string  `toml:"allowedCookies"`
 		BypassCookies   *[]string `toml:"bypassCookies"`
+		StripCookies    []string  `toml:"stripCookies"`
 		BrowserCC       string    `toml:"browserCacheControl"`
 		QueryParams     *[]string `toml:"queryParams"`
 		StaticFiles     *bool     `toml:"staticFiles"`
@@ -257,6 +265,12 @@ func Parse(data string) (*Config, error) {
 		cfg.TrustedProxies, err = fetch.ParseIPs(*f.TrustedProxies)
 		if err != nil {
 			return nil, fmt.Errorf("trustedProxies: %w", err)
+		}
+	}
+	if f.Hosts != nil {
+		cfg.Hosts, err = parseHosts(*f.Hosts)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -365,6 +379,17 @@ func Parse(data string) (*Config, error) {
 			return nil, fmt.Errorf("cache.allowedCookies: %q is also a bypass cookie", name)
 		}
 	}
+	cfg.Cache.StripCookies, err = cookiePrefixes("cache.stripCookies", f.Cache.StripCookies)
+	if err != nil {
+		return nil, err
+	}
+	for _, prefix := range cfg.Cache.StripCookies {
+		for _, bypass := range cfg.Cache.BypassCookies {
+			if strings.HasPrefix(prefix, bypass) || strings.HasPrefix(bypass, prefix) {
+				return nil, fmt.Errorf("cache.stripCookies: %q overlaps the bypass cookie %q, which marks personal pages", prefix, bypass)
+			}
+		}
+	}
 	if f.Cache.QueryParams != nil {
 		cfg.Cache.QueryParams = append([]string{}, *f.Cache.QueryParams...)
 	}
@@ -467,6 +492,9 @@ func parseWarm(cfg *Config, sitemap string, rate float64, maxPages int, interval
 	if maxPages < 0 {
 		return fmt.Errorf("warm.maxPages can't be negative")
 	}
+	if cfg.Hosts != nil && !fetch.HostAllowed(u.Host, cfg.Hosts) {
+		return fmt.Errorf("warm.sitemap: %s isn't one of the hosts", u.Host)
+	}
 	cfg.Warm = Warm{Sitemap: u, Rate: rate, MaxPages: maxPages}
 	if interval != "" {
 		cfg.Warm.Interval, err = parseDuration(interval)
@@ -475,6 +503,24 @@ func parseWarm(cfg *Config, sitemap string, rate float64, maxPages int, interval
 		}
 	}
 	return nil
+}
+
+// hostPattern is a host name, or "*." and a domain
+var hostPattern = regexp.MustCompile(`^(\*\.)?[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$`)
+
+// parseHosts validates the hosts setting
+func parseHosts(hosts []string) ([]string, error) {
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("hosts: list the site's host names, e.g. [\"www.example.com\", \"example.com\"], or leave it out to allow any")
+	}
+	parsed := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		if !hostPattern.MatchString(host) {
+			return nil, fmt.Errorf("hosts: %q isn't a host name (without a scheme or port), e.g. \"www.example.com\" or \"*.example.com\"", host)
+		}
+		parsed = append(parsed, strings.ToLower(host))
+	}
+	return parsed, nil
 }
 
 // cacheControlDirective is a Cache-Control directive, e.g. "max-age=60",

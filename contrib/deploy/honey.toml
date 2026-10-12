@@ -2,6 +2,15 @@
 # address (SITE_ADDRESS in .env).
 listen = ":8080"
 
+# Only Caddy (whose address is fixed in docker-compose.yml) may say who
+# visitors are, and that they used HTTPS.  Anything else on the network is
+# treated as a visitor.
+trustedProxies = ["172.30.0.5"]
+
+# Requests for any other host get a 421, rather than reaching WordPress and
+# filling the cache.  Add any other names the site answers to.
+hosts = ["www.example.com"]
+
 [backend]
 uri = "http://wordpress"
 
@@ -35,7 +44,7 @@ listen = ":9090"
 
 # Purges are allowed from WordPress and WP-CLI (their addresses are fixed in
 # docker-compose.yml).  Visitors come through Caddy, which is a trusted
-# proxy (its address is private), so Honey goes by the address in its
-# X-Forwarded-For: theirs.  So they can't purge.
+# proxy, so Honey goes by the address in its X-Forwarded-For: theirs.  So
+# they can't purge.
 [control]
 allowIPs = ["172.30.0.10", "172.30.0.11"]

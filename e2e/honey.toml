@@ -1,6 +1,7 @@
 # Honey in front of the end-to-end tests' WordPress: like
 # config/wordpress.toml, with a local backend and purging allowed.
 listen = ":8080"
+hosts = ["localhost"]
 
 [backend]
 uri = "http://wordpress"

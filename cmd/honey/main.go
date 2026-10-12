@@ -206,6 +206,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 		DisableGzip:          !cfg.Cache.Gzip,
 		CompressMinBytes:     cfg.Cache.CompressMinBytes,
 		BypassCookies:        cfg.Cache.BypassCookies,
+		StripCookies:         cfg.Cache.StripCookies,
 		BrowserCacheControl:  cfg.Cache.BrowserCacheControl,
 	})
 	for _, name := range cfg.Cache.AllowedCookies {
@@ -249,6 +250,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 		Control:     control,
 		QueryParams: cfg.Cache.QueryParams,
 		BackendHost: cfg.BackendHost,
+		Hosts:       cfg.Hosts,
 		OnPurge: func(path string, prefix, soft bool) {
 			// Everything has been purged: fill the cache again
 			if h.warmer != nil && prefix && path == "/" {

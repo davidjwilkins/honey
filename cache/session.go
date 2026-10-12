@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -51,26 +52,62 @@ func (c *defaultCacher) bypassCookie(r *http.Request) string {
 	return ""
 }
 
-// StartsSession returns whether resp sets one of the bypass cookies for
-// its request.  Such a response is the first of a personal session (e.g.
-// a WooCommerce add-to-cart link), so it mustn't be cached, nor have the
-// cookie removed.
+// StartsSession returns whether resp sets a cookie which may make it
+// personal, so that it mustn't be cached (nor have the cookie removed):
+//
+//   - one of the bypass cookies for its request, as the response is the
+//     first of a personal session (e.g. a WooCommerce add-to-cart link)
+//   - any other cookie which is neither allowed nor stripped (see
+//     Options.StripCookies), as the page may go with it (e.g. a form with a
+//     token for the session the cookie starts) - unless the response says
+//     its Set-Cookie header is only for this requester, with
+//     private="set-cookie" or no-cache="set-cookie"
 func (c *defaultCacher) StartsSession(resp *http.Response) bool {
 	req := resp.Request
 	if req == nil {
 		req = &http.Request{}
 	}
 	prefixes := c.bypassCookiesFor(req)
-	if len(prefixes) == 0 {
-		return false
-	}
+	privateSetCookie := setCookieIsPrivate(resp.Header.Get("Cache-Control"))
 	for _, line := range resp.Header.Values("Set-Cookie") {
 		name, _, _ := strings.Cut(line, "=")
-		if hasAnyPrefix(strings.TrimSpace(name), prefixes) {
+		name = strings.TrimSpace(name)
+		if hasAnyPrefix(name, prefixes) {
+			return true
+		}
+		if !privateSetCookie && !c.allowedCookies[name] && !hasAnyPrefix(name, c.stripCookies) {
+			c.logUnknownCookie(name)
 			return true
 		}
 	}
 	return false
+}
+
+// setCookieIsPrivate returns whether the Cache-Control header cc says that
+// a response's Set-Cookie header mustn't be cached, but the rest of it may
+// be: https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2.4
+func setCookieIsPrivate(cc string) bool {
+	for _, directive := range []string{"private", "no-cache"} {
+		if fields, found := utilities.Directive(cc, directive); found && strings.EqualFold(fields, "set-cookie") {
+			return true
+		}
+	}
+	return false
+}
+
+// maxLoggedCookies bounds how many cookie names logUnknownCookie remembers
+const maxLoggedCookies = 100
+
+// logUnknownCookie logs, the first time, that responses which set the
+// cookie name aren't cached
+func (c *defaultCacher) logUnknownCookie(name string) {
+	c.loggedMu.Lock()
+	defer c.loggedMu.Unlock()
+	if c.loggedCookies[name] || len(c.loggedCookies) >= maxLoggedCookies {
+		return
+	}
+	c.loggedCookies[name] = true
+	log.Printf("not caching responses which set the cookie %q (if it isn't personal, add it to cache.stripCookies)", name)
 }
 
 func hasAnyPrefix(name string, prefixes []string) bool {

@@ -16,6 +16,10 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+    networks:
+      default:
+        # honey.toml trusts only this address to say who visitors are
+        ipv4_address: 172.30.0.5
     depends_on:
       - honey
 
@@ -88,7 +92,7 @@ services:
 
 networks:
   default:
-    # A fixed range, so that WordPress has a fixed address to purge from
+    # A fixed range, so that Caddy and WordPress have fixed addresses
     ipam:
       config:
         - subnet: 172.30.0.0/24

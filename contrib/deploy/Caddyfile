@@ -1,6 +1,7 @@
 # Caddy handles HTTPS (getting a certificate for SITE_ADDRESS from Let's
 # Encrypt) and passes requests to Honey, adding X-Forwarded-For and
-# X-Forwarded-Proto, which Honey trusts as Caddy's address is private.
+# X-Forwarded-Proto, which Honey trusts from Caddy's address (see
+# trustedProxies in honey.toml).
 {$SITE_ADDRESS} {
 	encode zstd gzip
 	reverse_proxy honey:8080
