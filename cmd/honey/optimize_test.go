@@ -143,12 +143,9 @@ removeUnusedCSS = true
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "http://www.example.com/post/", nil))
 		return w.Body.String()
 	}
-	assert.NotContains(t, get(), "data-honey-used-css", "the stylesheet is fetched as the page is first cached")
-	var body string
-	require.Eventually(t, func() bool {
-		body = get()
-		return strings.Contains(body, "data-honey-used-css")
-	}, 5e9, 1e7, "and the page refreshed once it is")
+	// The stylesheet is fetched as the page is first cached, which waits
+	// for it
+	body := get()
 	assert.Contains(t, body, `<style data-honey-used-css="https://www.example.com/wp-content/themes/t/style.css?ver=6.8">.site-header{color: red}.bg{background: url("/wp-content/themes/t/bg.png")}</style>`)
 	assert.Contains(t, body, `<link rel="stylesheet" href="https://www.example.com/wp-content/themes/t/style.css?ver=6.8" media="print" onload="this.onload=null;this.media='all'">`)
 	mu.Lock()

@@ -72,6 +72,9 @@ type Options struct {
 	// fonts come from (for tests), and client fetches them
 	googleCSS, googleFonts string
 	client                 *http.Client
+	// stylesheetWait is how long a page waits for its stylesheets (for
+	// tests)
+	stylesheetWait time.Duration
 }
 
 // Optimizer changes pages as Options say
@@ -91,6 +94,9 @@ func New(opts Options) *Optimizer {
 	}
 	if opts.now == nil {
 		opts.now = time.Now
+	}
+	if opts.stylesheetWait == 0 {
+		opts.stylesheetWait = stylesheetWait
 	}
 	o := &Optimizer{opts: opts}
 	for _, s := range append(append([]string(nil), DefaultDelayed...), opts.DelayMatching...) {

@@ -53,9 +53,14 @@ type backend struct {
 	sheets   map[string]string
 	requests []string
 	hosts    []string
+	// slow, if set, holds requests up until it's closed
+	slow chan struct{}
 }
 
 func (b *backend) fetch(r *http.Request) (*http.Response, error) {
+	if b.slow != nil {
+		<-b.slow
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.requests = append(b.requests, r.URL.RequestURI())
@@ -76,6 +81,15 @@ func cssOptimizer(t *testing.T, b *backend) (*Optimizer, chan string) {
 	return o, refreshed
 }
 
+func notRefreshed(t *testing.T, refreshed chan string) {
+	t.Helper()
+	select {
+	case page := <-refreshed:
+		t.Fatalf("%s was refreshed", page)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func waitFor(t *testing.T, refreshed chan string) string {
 	select {
 	case page := <-refreshed:
@@ -90,12 +104,11 @@ func TestRemoveUnusedCSS(t *testing.T) {
 	b := &backend{sheets: map[string]string{"/wp-content/themes/t/style.css": themeCSS}}
 	o, refreshed := cssOptimizer(t, b)
 
-	assert.Equal(t, cssPage, string(o.Rewrite(response("/hello/", cssPage))), "until the stylesheet is fetched, the page is as it was")
-	assert.Equal(t, "www.example.com/hello/", waitFor(t, refreshed))
-	assert.Equal(t, []string{"/wp-content/themes/t/style.css?ver=1.2"}, b.requests, "only the site's own stylesheet is fetched")
-	assert.Equal(t, []string{"www.example.com"}, b.hosts)
-
 	out := string(o.Rewrite(response("/hello/", cssPage)))
+	assert.Equal(t, []string{"/wp-content/themes/t/style.css?ver=1.2"}, b.requests, "only the site's own stylesheet is fetched, as the page waits")
+	assert.Equal(t, []string{"www.example.com"}, b.hosts)
+	notRefreshed(t, refreshed)
+
 	start := strings.Index(out, `<style data-honey-used-css="/wp-content/themes/t/style.css?ver=1.2">`)
 	require.GreaterOrEqual(t, start, 0, out)
 	end := strings.Index(out[start:], "</style>")
@@ -131,11 +144,21 @@ func TestRemoveUnusedCSS(t *testing.T) {
 
 	o.Rewrite(response("/other/", cssPage))
 	assert.Len(t, b.requests, 1, "stylesheets are kept")
-	select {
-	case page := <-refreshed:
-		t.Fatalf("%s was refreshed", page)
-	default:
-	}
+	notRefreshed(t, refreshed)
+}
+
+func TestSlowStylesheetsRefreshThePage(t *testing.T) {
+	b := &backend{sheets: map[string]string{"/s.css": "p { color: red } .x { color: blue }"}, slow: make(chan struct{})}
+	refreshed := make(chan string, 10)
+	o := New(Options{RemoveUnusedCSS: true, Fetch: b.fetch, Refresh: func(host, path string) { refreshed <- path },
+		stylesheetWait: 20 * time.Millisecond})
+	page := `<html><head><link rel="stylesheet" href="/s.css"></head><body><p>Hi</p></body></html>`
+	assert.Equal(t, page, string(o.Rewrite(response("/", page))), "it's cached as it is, rather than wait")
+	assert.Equal(t, page, string(o.Rewrite(response("/", page))))
+	close(b.slow)
+	assert.Equal(t, "/", waitFor(t, refreshed), "and refreshed once its stylesheet is fetched")
+	notRefreshed(t, refreshed)
+	assert.Contains(t, string(o.Rewrite(response("/", page))), `<style data-honey-used-css="/s.css">p{color: red}</style>`)
 }
 
 func TestUnusableStylesheets(t *testing.T) {
@@ -145,20 +168,13 @@ func TestUnusableStylesheets(t *testing.T) {
 	}}
 	o, refreshed := cssOptimizer(t, b)
 	page := `<html><head><link rel="stylesheet" href="/import.css"><link rel="stylesheet" href="/missing.css"><link rel="stylesheet" href="/ok.css"></head><body><p>Hi</p></body></html>`
-	o.Rewrite(response("/", page))
-	waitFor(t, refreshed)
 	out := string(o.Rewrite(response("/", page)))
 	assert.Contains(t, out, `<link rel="stylesheet" href="/import.css"><link rel="stylesheet" href="/missing.css">`)
 	assert.Contains(t, out, `<style data-honey-used-css="/ok.css">p{color: red}</style>`)
 
 	only := `<html><head><link rel="stylesheet" href="/missing.css"></head><body></body></html>`
 	o.Rewrite(response("/missing/", only))
-	time.Sleep(50 * time.Millisecond)
-	select {
-	case page := <-refreshed:
-		t.Fatalf("%s was refreshed, though nothing came of it", page)
-	default:
-	}
+	notRefreshed(t, refreshed)
 }
 
 func TestStylesheetsAreFetchedAgain(t *testing.T) {
@@ -168,7 +184,6 @@ func TestStylesheetsAreFetchedAgain(t *testing.T) {
 	o := New(Options{RemoveUnusedCSS: true, Fetch: b.fetch, Refresh: func(host, path string) { refreshed <- path }, now: clock.now})
 	page := `<html><head><link rel="stylesheet" href="/s.css"></head><body><p>Hi</p></body></html>`
 	o.Rewrite(response("/", page))
-	waitFor(t, refreshed)
 	b.mu.Lock()
 	b.sheets["/s.css"] = "p { color: blue }"
 	b.mu.Unlock()
@@ -181,10 +196,8 @@ func TestStylesheetsAreFetchedAgain(t *testing.T) {
 
 func TestUsedCSSStaysInItsStyle(t *testing.T) {
 	b := &backend{sheets: map[string]string{"/s.css": `p::after { content: "</STYLE><script>alert(1)</script>" }`}}
-	o, refreshed := cssOptimizer(t, b)
+	o, _ := cssOptimizer(t, b)
 	page := `<html><head><link rel="stylesheet" href="/s.css"></head><body><p>Hi</p></body></html>`
-	o.Rewrite(response("/", page))
-	waitFor(t, refreshed)
 	assert.Contains(t, string(o.Rewrite(response("/", page))), `p::after{content: "<\/STYLE><script>alert(1)</script>"}</style>`)
 }
 
@@ -204,10 +217,8 @@ func TestStylesheetsAreBounded(t *testing.T) {
 func TestUsedCSSIsBounded(t *testing.T) {
 	big := strings.Repeat("p { color: red; background: blue; border: 1px solid green; margin: 0 }\n", maxUsedCSS/100)
 	b := &backend{sheets: map[string]string{"/a.css": big, "/b.css": big}}
-	o, refreshed := cssOptimizer(t, b)
+	o, _ := cssOptimizer(t, b)
 	page := `<html><head><link rel="stylesheet" href="/a.css"><link rel="stylesheet" href="/b.css"></head><body><p>Hi</p></body></html>`
-	o.Rewrite(response("/", page))
-	waitFor(t, refreshed)
 	out := string(o.Rewrite(response("/", page)))
 	assert.Contains(t, out, `<style data-honey-used-css="/a.css">`)
 	assert.Contains(t, out, `<link rel="stylesheet" href="/b.css"></head>`, "too much used CSS: the rest are left alone")

@@ -24,7 +24,8 @@ import (
 // every stylesheet in its <head>, though a theme's or page builder's
 // stylesheets are mostly rules for elements which aren't on the page.  So
 // Honey fetches the site's stylesheets itself (the first time a page links
-// to each, and the page is refreshed once they're fetched) and, as each
+// to each, waiting up to a second for them, or refreshing the page once
+// they're fetched if they take longer) and, as each
 // page is cached, puts the rules it uses - those whose selectors match an
 // element of its HTML - in a <style> in place of each <link>, and has the
 // browser load the whole stylesheet once the page is shown: so it's shown
@@ -59,6 +60,10 @@ const (
 	stylesheetRetry    = 10 * time.Minute
 	// stylesheetFetches is how many stylesheets are fetched at once
 	stylesheetFetches = 4
+	// stylesheetWait is how long a page being cached waits for its
+	// stylesheets to be fetched, before it's cached without their used CSS
+	// (and refreshed once they're fetched)
+	stylesheetWait = time.Second
 )
 
 // DefaultKeepCSS are rules always kept (by text in their selectors), as
@@ -82,8 +87,10 @@ type cssStore struct {
 }
 
 type stylesheet struct {
-	// fetching is whether it's being fetched
+	// fetching is whether it's being fetched, and done is closed when it
+	// has been
 	fetching bool
+	done     chan struct{}
 	fetched  time.Time
 	// rules are its rules, or nil if it can't be used (why says why), and
 	// size the stylesheet's size
@@ -161,7 +168,23 @@ func (o *Optimizer) usedCSS(r *http.Request, p *page) []edit {
 	if len(links) == 0 {
 		return nil
 	}
-	sheets := o.css.get(host, r.URL.Path, links)
+	sheets, pending := o.css.get(host, r.URL.Path, links, false)
+	if len(pending) > 0 {
+		// The page waits a moment for them (it's being fetched from the
+		// backend anyway), then for any still being fetched it's refreshed
+		// once they are
+		timer := time.NewTimer(o.opts.stylesheetWait)
+	wait:
+		for _, done := range pending {
+			select {
+			case <-done:
+			case <-timer.C:
+				break wait
+			}
+		}
+		timer.Stop()
+		sheets, _ = o.css.get(host, r.URL.Path, links, true)
+	}
 	var doc *usedPage
 	var edits []edit
 	total := 0
@@ -266,12 +289,14 @@ func usedStyle(p *page, l link, used string) []byte {
 }
 
 // get returns the rules of the stylesheets links are to, or nil for those
-// which aren't fetched yet or can't be used; and fetches those which need
-// it, with the page at path on host refreshed once they are.  (Rules,
-// once made, don't change.)
-func (s *cssStore) get(host, path string, links []sheetLink) [][]usedRule {
+// which aren't fetched yet or can't be used, and channels which are closed
+// once those being fetched are; and fetches those which need it.  With
+// refresh, the page at path on host is refreshed once those being fetched
+// are.  (Rules, once made, don't change.)
+func (s *cssStore) get(host, path string, links []sheetLink, refresh bool) ([][]usedRule, []chan struct{}) {
 	now := s.opts.now()
 	sheets := make([][]usedRule, len(links))
+	var pending []chan struct{}
 	page := pageKey(host, path)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -289,8 +314,7 @@ func (s *cssStore) get(host, path string, links []sheetLink) [][]usedRule {
 			sheets[i] = sheet.rules
 			if now.Sub(sheet.fetched) >= stylesheetLifetime {
 				// It's used while it's fetched again
-				sheet.fetching = true
-				go s.fetch(host, l.uri, l.key)
+				s.start(sheet, host, l)
 			}
 			continue
 		case now.Sub(sheet.fetched) < stylesheetRetry:
@@ -298,6 +322,13 @@ func (s *cssStore) get(host, path string, links []sheetLink) [][]usedRule {
 			continue
 		}
 		// The page waits for it
+		if !sheet.fetching {
+			s.start(sheet, host, l)
+		}
+		pending = append(pending, sheet.done)
+		if !refresh {
+			continue
+		}
 		w := s.waiting[page]
 		if w == nil {
 			if len(s.waiting) >= maxWaiting {
@@ -307,16 +338,19 @@ func (s *cssStore) get(host, path string, links []sheetLink) [][]usedRule {
 			s.waiting[page] = w
 		}
 		w.sheets[l.key] = true
-		if !sheet.fetching {
-			sheet.fetching = true
-			go s.fetch(host, l.uri, l.key)
-		}
 	}
-	return sheets
+	return sheets, pending
 }
 
-// fetch fetches the stylesheet at uri on host, kept as key
-func (s *cssStore) fetch(host, uri, key string) {
+// start starts fetching sheet, which l links to, on host
+func (s *cssStore) start(sheet *stylesheet, host string, l sheetLink) {
+	sheet.fetching, sheet.done = true, make(chan struct{})
+	go s.fetch(host, l.uri, l.key, sheet.done)
+}
+
+// fetch fetches the stylesheet at uri on host, kept as key, and closes done
+func (s *cssStore) fetch(host, uri, key string, done chan struct{}) {
+	defer close(done)
 	s.sem <- struct{}{}
 	rules, why, size := s.load(host, uri)
 	<-s.sem
