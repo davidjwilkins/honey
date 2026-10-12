@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/clientip"
 	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/singleflight"
 	"github.com/davidjwilkins/honey/utilities"
@@ -132,10 +133,9 @@ func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, op
 	// Cached pages which use Edge Side Includes are put together for each
 	// visitor, with their includes requested from the proxy itself
 	inner := self
+	includes := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { self(w, r) })
 	self = func(w http.ResponseWriter, r *http.Request) {
-		visitor := r.Clone(r.Context())
-		SwitchBackend(visitor, backend)
-		ew, finish := withESI(w, visitor, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { self(w, r) }), opts.Control.secretHeader())
+		ew, finish := withESI(w, r, includes, opts.Control.secretHeader())
 		defer finish()
 		inner(ew, r)
 	}
@@ -422,9 +422,8 @@ func headerListContains(values []string, name string) bool {
 // writeShared responds to r with resp, which was fetched for another request.
 func writeShared(w http.ResponseWriter, r *http.Request, c cache.Cacher, resp cache.Response, stale bool) {
 	header, body := cache.Negotiate(resp, r)
-	for key, values := range header {
-		w.Header()[key] = append([]string(nil), values...)
-	}
+	noteCached(w, resp)
+	copyHeader(w.Header(), header)
 	w.Header().Set("Age", resp.Age())
 	if stale {
 		w.Header().Set("Warning", staleWarning())
@@ -586,7 +585,11 @@ func NewForwarder(c cache.Cacher, transport http.RoundTripper) http.Handler {
 	if err != nil {
 		panic(err)
 	}
-	return forwarder
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Who the visitor is, for the backend (see clientip.Middleware)
+		clientip.SetRealIP(r)
+		forwarder.ServeHTTP(w, r)
+	})
 }
 
 // backendErrorHandler handles requests for which the backend could not
@@ -614,9 +617,7 @@ func (h backendErrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, e
 	if prev, found := h.c.Load(hash, r); found && canServeStaleOnError(prev, "") {
 		finish(singleflight.Result{Response: prev, Stale: true})
 		header, body := cache.Negotiate(prev, clientRequest(r))
-		for key, values := range header {
-			w.Header()[key] = append([]string(nil), values...)
-		}
+		copyHeader(w.Header(), header)
 		w.Header().Set("Age", prev.Age())
 		w.Header().Set("Warning", staleWarning())
 		w.Header().Set("X-Honey-Cache", "STALE")

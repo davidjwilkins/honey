@@ -2,3 +2,4 @@
 vendor/*
 /honey
 e2e/logs.txt
+bench/load/load

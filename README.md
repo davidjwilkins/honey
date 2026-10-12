@@ -449,6 +449,14 @@ To install it, copy it to `wp-content/mu-plugins/honey-purge.php`, and add to `w
 
 If Honey is behind another proxy (e.g. Caddy or nginx for TLS), `allowIPs` is checked against the visitor's address, as long as the proxy is one of the `trustedProxies` (see [Proxies in front of Honey](#proxies-in-front-of-honey)).
 
+## Performance
+
+A cache hit takes Honey about 12µs of CPU, so a small server can answer tens of thousands of requests a second from the cache, against a few dozen from WordPress itself.  [`bench`](bench) has benchmarks, and a script which runs them against a real WordPress, with results.
+
+### Memory
+
+`maxSize` bounds what's cached; Honey also needs memory for requests in progress and its compressors (about 30MB).  By default, Go lets its memory grow to twice what's in use before collecting the garbage, so Honey sets a soft limit of `maxSize` plus a quarter, plus 128MB (448MB for a 256MB cache), and Go collects more often as it nears it.  Set `GOMEMLIMIT` (e.g. `GOMEMLIMIT=1GiB`) to choose your own.
+
 ## Testing
 
 `go test ./...` runs the unit tests.  [`e2e/run.sh`](e2e/run.sh) runs end-to-end tests against a real WordPress, with the purge plugin, behind Honey - checking that pages are cached, that logged in users, commenters and visitors to password-protected posts get their own pages, and that edits, comments and setting changes are purged.  It needs Docker and Go, and CI runs it on every pull request.  With `HONEY_E2E_WOOCOMMERCE=1`, it also installs WooCommerce (from wordpress.org) and checks that shop pages are cached, that adding to the cart starts each shopper's own session, that shoppers' pages and Store API carts are their own, and that the cart and checkout are never cached; CI does this too.  `HONEY_E2E_KEEP=1 e2e/run.sh` leaves it all running afterwards, on http://localhost:8080/ (log in as `admin`, password `password`) with Honey's admin page on http://127.0.0.1:9090/.

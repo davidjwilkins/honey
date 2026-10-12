@@ -9,12 +9,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// seen returns what next sees of a request from remote with headers
+// seen returns what the backend sees of a request from remote with headers
 func seen(trusted []*net.IPNet, remote string, headers ...string) (client string, header http.Header) {
 	handler := Middleware(trusted, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ip := From(r); ip != nil {
 			client = ip.String()
 		}
+		SetRealIP(r)
 		header = r.Header
 	}))
 	r := httptest.NewRequest(http.MethodGet, "/", nil)

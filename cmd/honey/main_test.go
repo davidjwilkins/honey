@@ -485,6 +485,18 @@ func TestHandlerWarm(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 		require.Equal(t, n, atomic.LoadInt32(&hits))
+		// and for the cache to have them (the backend gets each request
+		// before the cache has its response)
+		for _, path := range []string{"/a/", "/b/"} {
+			req := httptest.NewRequest(http.MethodGet, "https://www.example.com"+path, nil)
+			req.Header.Set("X-Forwarded-Proto", "https")
+			for time.Now().Before(deadline) {
+				if _, cached := h.cacher.(cache.Cacher).Load(h.cacher.(cache.Cacher).Hash(req), req); cached {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
 	}
 	waitForHits(3) // the sitemap and both pages
 	for _, path := range []string{"/a/", "/b/"} {
@@ -622,4 +634,41 @@ func TestPersistEvery(t *testing.T) {
 	// nothing happens without a path or an interval
 	persistEvery(cacher, "", time.Millisecond)()
 	persistEvery(cacher, path, 0)()
+}
+
+func TestBackendGetsTheVisitorsAddress(t *testing.T) {
+	var got []string
+	var mu sync.Mutex
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got = append(got, r.Header.Get("X-Real-Ip"))
+		mu.Unlock()
+		io.WriteString(w, "page")
+	}))
+	defer origin.Close()
+	cfg, err := config.Parse("[backend]\nuri = \"" + origin.URL + "\"\n")
+	require.NoError(t, err)
+	proxy := httptest.NewServer(newHandler(cfg))
+	defer proxy.Close()
+	for _, cookie := range []string{"", "wordpress_logged_in_abc=admin"} {
+		req, _ := http.NewRequest(http.MethodGet, proxy.URL+"/page-"+cookie, nil)
+		// From a proxy on this host (trusted), for a visitor
+		req.Header.Set("X-Forwarded-For", "203.0.113.7")
+		req.Header.Set("X-Real-Ip", "10.9.9.9")
+		req.Header.Set("Cookie", cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		resp.Body.Close()
+	}
+	assert.Equal(t, []string{"203.0.113.7", "203.0.113.7"}, got, "a miss and a logged in request both tell WordPress who the visitor is")
+}
+
+func TestMemoryLimit(t *testing.T) {
+	limit, set := memoryLimit(256<<20, "")
+	assert.True(t, set)
+	assert.Equal(t, int64(448<<20), limit, "the cache, a quarter more, and 128MB")
+	limit, _ = memoryLimit(0, "")
+	assert.Equal(t, int64(cache.DefaultMaxBytes+cache.DefaultMaxBytes/4+128<<20), limit, "for the default cache")
+	_, set = memoryLimit(256<<20, "1GiB")
+	assert.False(t, set, "GOMEMLIMIT wins")
 }

@@ -56,7 +56,17 @@ func compressGzip(body []byte) []byte {
 	w.Write(body)
 	w.Close()
 	gzipWriters.Put(w)
-	return buf.Bytes()
+	return exactly(buf.Bytes())
+}
+
+// exactly returns b without spare capacity (copying it if it has much), as
+// cached bodies are kept for a long time, and spare capacity in them would
+// be memory the cache doesn't count
+func exactly(b []byte) []byte {
+	if cap(b)-len(b) > len(b)/16 {
+		return bytes.Clone(b)
+	}
+	return b
 }
 
 func compressBrotli(body []byte, quality int) []byte {
@@ -69,7 +79,7 @@ func compressBrotli(body []byte, quality int) []byte {
 		w := brotli.NewWriterLevel(&buf, quality)
 		w.Write(body)
 		w.Close()
-		return buf.Bytes()
+		return exactly(buf.Bytes())
 	}
 	var buf bytes.Buffer
 	w := pool.Get().(*brotli.Writer)
@@ -77,7 +87,7 @@ func compressBrotli(body []byte, quality int) []byte {
 	w.Write(body)
 	w.Close()
 	pool.Put(w)
-	return buf.Bytes()
+	return exactly(buf.Bytes())
 }
 
 // shouldCompress returns whether a response with the given status, headers
@@ -131,13 +141,36 @@ func Negotiate(resp Response, r *http.Request) (http.Header, []byte) {
 	if coding == "" {
 		return resp.Header(), resp.Body()
 	}
-	h := resp.Header().Clone()
+	return impl.encodedHeader(coding, len(compressed[coding])), compressed[coding]
+}
+
+// encodedHeaders is a response's header for an encoding of its body (see
+// responseImpl.encodedHeader), of length bytes
+type encodedHeaders struct {
+	length int
+	header http.Header
+}
+
+// encodedHeader returns the response's header for its body encoded with
+// coding, which is length bytes, made once (and again if the body is
+// recompressed) rather than for every request.  It is shared, so it
+// mustn't be changed.
+func (r *responseImpl) encodedHeader(coding string, length int) http.Header {
+	p := &r.gzipHeader
+	if coding == "br" {
+		p = &r.brotliHeader
+	}
+	if e := p.Load(); e != nil && e.length == length {
+		return e.header
+	}
+	h := r.headers.Clone()
 	h.Set("Content-Encoding", coding)
-	h.Set("Content-Length", strconv.Itoa(len(compressed[coding])))
+	h.Set("Content-Length", strconv.Itoa(length))
 	if etag := encodedEtag(h.Get("Etag"), coding); etag != "" {
 		h.Set("Etag", etag)
 	}
-	return h, compressed[coding]
+	p.Store(&encodedHeaders{length: length, header: h})
+	return h
 }
 
 // recompressor recompresses cached responses at bestBrotliQuality, one at

@@ -71,3 +71,15 @@ func (c *defaultCacher) ESIEligible(r *http.Request) bool {
 	}
 	return found
 }
+
+// Derived returns what build makes of resp's body, made once for each
+// cached response (e.g. the parsed form of a page which uses ESI), rather
+// than for every request.  It returns nil if resp isn't a cached response.
+func Derived(resp Response, build func(body []byte) any) any {
+	r, ok := resp.(*responseImpl)
+	if !ok {
+		return nil
+	}
+	r.derivedOnce.Do(func() { r.derived = build(r.body) })
+	return r.derived
+}

@@ -3,17 +3,16 @@ package fetch
 import (
 	"bytes"
 	"context"
-	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/utilities"
 )
 
 // Limits on Edge Side Includes (see cache/esi.go)
@@ -59,10 +58,19 @@ var headersNotForIncludes = []string{
 // straight through.
 type esiWriter struct {
 	http.ResponseWriter
-	// visitor is the request the page is for, as the visitor sent it
-	// (before e.g. its cookies are removed), so that its includes are
-	// fetched as they would be for them
+	// request is the request the page is for, which the proxy changes as
+	// it handles it (e.g. removing cookies), and host and cookies its Host
+	// and Cookie headers as the visitor sent them
+	request *http.Request
+	host    string
+	cookies []string
+	// visitor is request as the visitor sent it, so that the page's
+	// includes are fetched as they would be for them: made only for pages
+	// which use ESI
 	visitor *http.Request
+	// cached is the cached page being written, if the cache says (see
+	// noteCached), whose parsed form is kept with it
+	cached cache.Response
 	// handler fetches includes: the caching proxy
 	handler      http.Handler
 	secretHeader string
@@ -95,6 +103,13 @@ func (e *esiWriter) WriteHeader(status int) {
 		h.Del(name)
 	}
 	h.Set("Cache-Control", "private, no-cache")
+	e.visitor = e.request.Clone(e.request.Context())
+	e.visitor.Host = e.host
+	if e.cookies != nil {
+		e.visitor.Header["Cookie"] = e.cookies
+	} else {
+		e.visitor.Header.Del("Cookie")
+	}
 	if e.visitor.Method == http.MethodHead || status == http.StatusNotModified || status == http.StatusNoContent {
 		e.ResponseWriter.WriteHeader(status)
 		return
@@ -107,9 +122,32 @@ func (e *esiWriter) Write(p []byte) (int, error) {
 		e.WriteHeader(http.StatusOK)
 	}
 	if e.holding {
+		if e.cached != nil {
+			// finish uses the cached page's parsed form
+			return len(p), nil
+		}
 		return e.body.Write(p)
 	}
 	return e.ResponseWriter.Write(p)
+}
+
+// noteCached tells e the cached response which is about to be written
+func (e *esiWriter) noteCached(resp cache.Response) {
+	e.cached = resp
+}
+
+// cachedResponseNoter is implemented by ResponseWriters which want to know
+// which cached response is written to them (see esiWriter)
+type cachedResponseNoter interface {
+	noteCached(cache.Response)
+}
+
+// noteCached tells w which cached response is about to be written to it, if
+// it wants to know
+func noteCached(w http.ResponseWriter, resp cache.Response) {
+	if n, ok := w.(cachedResponseNoter); ok {
+		n.noteCached(resp)
+	}
 }
 
 func (e *esiWriter) Flush() {
@@ -121,15 +159,35 @@ func (e *esiWriter) Flush() {
 	}
 }
 
-// finish writes the page, with its includes, if it was held back
+// finish writes the page, with its includes, if it was held back: gzipped
+// with its text compressed once (see esiPage.gzip) for visitors which
+// accept it, as compressing the whole page for every visitor costs far
+// more than the rest of serving it.
 func (e *esiWriter) finish() {
 	if !e.holding {
 		return
 	}
-	body := processESI(e.body.Bytes(), e.visitor, e.handler, e.secretHeader)
+	var page *esiPage
+	if e.cached != nil {
+		page, _ = cache.Derived(e.cached, func(body []byte) any { return parseESIPage(body) }).(*esiPage)
+	}
+	if page == nil {
+		page = parseESIPage(e.body.Bytes())
+	}
+	contents := page.fetch(e.visitor, e.handler, e.secretHeader)
 	h := e.Header()
-	if coding, encoded := cache.Compress(e.visitor.Header.Get("Accept-Encoding"), body); coding != "" {
-		body = encoded
+	accept := e.visitor.Header.Get("Accept-Encoding")
+	var body []byte
+	coding := ""
+	switch {
+	case page.size(contents) < cache.DefaultCompressMinBytes:
+		body = page.plain(contents)
+	case utilities.PreferredEncoding(accept, "gzip") == "gzip":
+		body, coding = page.gzip(contents), "gzip"
+	default:
+		coding, body = cache.Compress(accept, page.plain(contents))
+	}
+	if coding != "" {
 		h.Set("Content-Encoding", coding)
 		if !headerListContains(h.Values("Vary"), "Accept-Encoding") {
 			h.Add("Vary", "Accept-Encoding")
@@ -145,46 +203,8 @@ func (e *esiWriter) finish() {
 // <esi:include> elements replaced with what their src returns, requested
 // from handler as visitor would request it.
 func processESI(body []byte, visitor *http.Request, handler http.Handler, secretHeader string) []byte {
-	body = esiComment.ReplaceAll(body, []byte("$1"))
-	body = esiRemove.ReplaceAll(body, nil)
-	matches := esiInclude.FindAllSubmatchIndex(body, -1)
-	if len(matches) == 0 {
-		return body
-	}
-	if len(matches) > maxIncludes {
-		matches = matches[:maxIncludes]
-	}
-	results := make([][]byte, len(matches))
-	var wg sync.WaitGroup
-	for i, m := range matches {
-		attrs := map[string]string{}
-		for _, a := range esiAttr.FindAllSubmatch(body[m[2]:m[3]], -1) {
-			// e.g. src="/?p=1&amp;honey-esi=comments"
-			attrs[string(a[1])] = html.UnescapeString(string(a[2]) + string(a[3]))
-		}
-		wg.Add(1)
-		go func(i int, attrs map[string]string) {
-			defer wg.Done()
-			for _, src := range []string{attrs["src"], attrs["alt"]} {
-				if content, ok := include(src, visitor, handler, secretHeader); ok {
-					results[i] = content
-					return
-				}
-			}
-			// onerror="continue" or not, a failed include leaves a gap,
-			// rather than failing the whole page
-		}(i, attrs)
-	}
-	wg.Wait()
-	var b bytes.Buffer
-	last := 0
-	for i, m := range matches {
-		b.Write(body[last:m[0]])
-		b.Write(results[i])
-		last = m[1]
-	}
-	b.Write(body[last:])
-	return b.Bytes()
+	page := parseESIPage(body)
+	return page.plain(page.fetch(visitor, handler, secretHeader))
 }
 
 // include requests src (resolved against the page's URL, and only on the
@@ -231,14 +251,17 @@ func include(src string, visitor *http.Request, handler http.Handler, secretHead
 	return w.Body.Bytes(), true
 }
 
-// withESI returns w wrapped to process the ESI of cached pages for r (as
-// the visitor sent it), unless r is itself an include nested too deeply
+// withESI returns w wrapped to process the ESI of cached pages for r, before
+// the proxy changes it (it must be the request the proxy handles), unless r
+// is itself an include nested too deeply
 func withESI(w http.ResponseWriter, r *http.Request, handler http.Handler, secretHeader string) (http.ResponseWriter, func()) {
 	if esiDepth(r.Context()) >= maxESIDepth || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
 		return w, func() {}
 	}
-	visitor := r.Clone(r.Context())
-	e := &esiWriter{ResponseWriter: w, visitor: visitor, handler: handler, secretHeader: secretHeader}
+	// The cookies (which are replaced rather than changed, so this list
+	// is the visitor's), not a copy of the whole request: most pages don't
+	// use ESI
+	e := &esiWriter{ResponseWriter: w, request: r, host: r.Host, cookies: r.Header["Cookie"], handler: handler, secretHeader: secretHeader}
 	return e, e.finish
 }
 
