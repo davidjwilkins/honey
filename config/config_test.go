@@ -611,3 +611,36 @@ func TestParseEarlyHints(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, cfg.Cache.EarlyHints)
 }
+
+func TestParseTLS(t *testing.T) {
+	const base = "[backend]\nuri = \"https://www.example.com\"\n"
+	cfg, err := Parse(base)
+	require.NoError(t, err)
+	assert.Nil(t, cfg.TLS, "off by default")
+
+	cfg, err = Parse("hosts = [\"www.example.com\", \"example.com\"]\n[tls]\nauto = true\nemail = \"me@example.com\"\n" + base)
+	require.NoError(t, err)
+	assert.Equal(t, &TLS{Listen: ":443", Auto: true, Email: "me@example.com", CertDir: DefaultCertDir, HTTP3: true, Redirect: true}, cfg.TLS)
+
+	cfg, err = Parse("listen = \":80\"\n[tls]\nlisten = \":8443\"\ncertFile = \"/etc/ssl/cert.pem\"\nkeyFile = \"/etc/ssl/key.pem\"\nhttp3 = false\nredirect = false\n" + base)
+	require.NoError(t, err)
+	assert.Equal(t, &TLS{Listen: ":8443", CertFile: "/etc/ssl/cert.pem", KeyFile: "/etc/ssl/key.pem"}, cfg.TLS)
+
+	for _, tc := range []struct{ config, err string }{
+		{"[tls]\nauto = true", "tls.auto needs hosts"},
+		{"hosts = [\"*.example.com\"]\n[tls]\nauto = true", "wildcard certificates need a DNS challenge"},
+		{"hosts = [\"a.example.com\"]\n[tls]\nauto = true\ncertFile = \"c\"\nkeyFile = \"k\"", "not both"},
+		{"[tls]\ncertFile = \"c\"", "certFile and keyFile go together"},
+		{"[tls]\ncertFile = \"c\"\nkeyFile = \"k\"\nemail = \"me@example.com\"", "are for automatic certificates"},
+		{"hosts = [\"a.example.com\"]\n[tls]\nauto = true\nemail = \"not an address\"", "tls.email"},
+		{"hosts = [\"a.example.com\"]\n[tls]\nauto = true\nacmeCA = \"http://ca.example/dir\"", "tls.acmeCA"},
+		{"[tls]\nhttp3 = true", "set auto = true for automatic certificates, or certFile and keyFile"},
+		{"listen = \":443\"\n[tls]\ncertFile = \"c\"\nkeyFile = \"k\"", "need their own ports"},
+		{"[tls]\nlisten = \"443\"\ncertFile = \"c\"\nkeyFile = \"k\"", "tls.listen must be an address"},
+	} {
+		_, err := Parse(tc.config + "\n" + base)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err, tc.config)
+		}
+	}
+}

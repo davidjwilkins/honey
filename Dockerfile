@@ -1,5 +1,5 @@
 # Build a static binary
-FROM golang:1.24-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -14,6 +14,8 @@ RUN mkdir -p /out/var/lib/honey
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /honey /usr/local/bin/honey
 COPY --from=build --chown=65532:65532 /out/var/lib/honey /var/lib/honey
+# Plain HTTP; and with [tls], HTTPS and HTTP/3 (e.g. listen = ":80" and
+# tls.listen = ":443": publish 80, 443 and 443/udp)
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/honey"]
 CMD ["-config", "/etc/honey/honey.toml"]

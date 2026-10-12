@@ -121,6 +121,13 @@ format = "text"             # text|json
 allowIPs = []
 # secret = "a long random string"    # sent in the X-Honey-Secret header
 
+# Serve HTTPS and HTTP/3 without a proxy in front, with certificates from
+# Let's Encrypt for the hosts (which must be set).  Set listen = ":80" for
+# plain HTTP, which then redirects to HTTPS (except purges).
+# [tls]
+# auto = true
+# email = "you@example.com"
+
 # ----------------------------------------------------------------------
 # Planned settings (not implemented yet - Honey will refuse to start if
 # these are uncommented):

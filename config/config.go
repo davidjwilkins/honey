@@ -67,9 +67,37 @@ type Config struct {
 	Routes              []Route
 	Control             Control
 	Warm                Warm
+	// TLS, if set, serves HTTPS and HTTP/3 too
+	TLS *TLS
 	// File is the settings as they were written, e.g. to export them
 	File *File
 }
+
+// TLS configures HTTPS (see the serve package)
+type TLS struct {
+	// Listen is the address HTTPS and HTTP/3 are served on
+	Listen string
+	// Auto gets certificates for the hosts from an ACME CA (Let's Encrypt,
+	// or CA if it's set), kept in CertDir, giving it Email
+	Auto    bool
+	Email   string
+	CertDir string
+	CA      string
+	// CertFile and KeyFile are a certificate and key to use instead
+	CertFile, KeyFile string
+	// HTTP3 is whether HTTP/3 is served too
+	HTTP3 bool
+	// Redirect is whether plain HTTP requests are redirected to HTTPS
+	Redirect bool
+}
+
+// DefaultTLSListen is the address HTTPS is served on, if TLS is on and
+// tls.listen isn't set
+const DefaultTLSListen = ":443"
+
+// DefaultCertDir is where automatic certificates are kept, if
+// tls.certDir isn't set
+const DefaultCertDir = "/var/lib/honey/certs"
 
 // Warm configures warming the cache from a sitemap (see the warm
 // package).  It is off if Sitemap is nil.
@@ -217,6 +245,17 @@ type File struct {
 		Secret       string   `toml:"secret,omitempty"`
 		SecretHeader string   `toml:"secretHeader,omitempty"`
 	} `toml:"control,omitempty"`
+	TLS struct {
+		Listen   string `toml:"listen,omitempty"`
+		Auto     bool   `toml:"auto,omitempty"`
+		Email    string `toml:"email,omitempty"`
+		CertDir  string `toml:"certDir,omitempty"`
+		CA       string `toml:"acmeCA,omitempty"`
+		CertFile string `toml:"certFile,omitempty"`
+		KeyFile  string `toml:"keyFile,omitempty"`
+		HTTP3    *bool  `toml:"http3,omitempty"`
+		Redirect *bool  `toml:"redirect,omitempty"`
+	} `toml:"tls,omitempty"`
 	Routes []RouteFile `toml:"route,omitempty"`
 }
 
@@ -272,6 +311,8 @@ func (f *File) Clone() *File {
 	c := *f
 	c.TrustedProxies = cloneList(f.TrustedProxies)
 	c.Hosts = cloneList(f.Hosts)
+	c.TLS.HTTP3 = cloneBool(f.TLS.HTTP3)
+	c.TLS.Redirect = cloneBool(f.TLS.Redirect)
 	c.Cache.AllowedCookies = append([]string(nil), f.Cache.AllowedCookies...)
 	c.Cache.BypassCookies = cloneList(f.Cache.BypassCookies)
 	c.Cache.ESICookies = append([]string(nil), f.Cache.ESICookies...)
@@ -363,6 +404,10 @@ func FromFile(f *File) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	if cfg.TLS, err = parseTLS(f, cfg); err != nil {
+		return nil, err
 	}
 
 	if f.Backend.URI == "" {
@@ -614,6 +659,60 @@ func parseWarm(cfg *Config, sitemap string, rate float64, maxPages int, interval
 
 // hostPattern is a host name, or "*." and a domain
 var hostPattern = regexp.MustCompile(`^(\*\.)?[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$`)
+
+// parseTLS validates the [tls] settings, and returns nil if TLS is off
+func parseTLS(f *File, cfg *Config) (*TLS, error) {
+	t := f.TLS
+	if !t.Auto && t.CertFile == "" && t.KeyFile == "" {
+		if t.Listen != "" || t.Email != "" || t.CertDir != "" || t.CA != "" || t.HTTP3 != nil || t.Redirect != nil {
+			return nil, fmt.Errorf("tls: set auto = true for automatic certificates, or certFile and keyFile")
+		}
+		return nil, nil
+	}
+	tls := &TLS{Listen: t.Listen, Auto: t.Auto, Email: t.Email, CertDir: t.CertDir, CA: t.CA, CertFile: t.CertFile, KeyFile: t.KeyFile,
+		HTTP3: t.HTTP3 == nil || *t.HTTP3, Redirect: t.Redirect == nil || *t.Redirect}
+	if tls.Listen == "" {
+		tls.Listen = DefaultTLSListen
+	}
+	if _, _, err := net.SplitHostPort(tls.Listen); err != nil {
+		return nil, fmt.Errorf("tls.listen must be an address, e.g. \":443\"")
+	}
+	if _, port, _ := net.SplitHostPort(tls.Listen); tls.Listen == cfg.Listen && port != "0" {
+		return nil, fmt.Errorf("tls.listen and listen are the same: HTTPS and plain HTTP need their own ports")
+	}
+	if t.Auto {
+		if t.CertFile != "" || t.KeyFile != "" {
+			return nil, fmt.Errorf("tls: set auto = true, or certFile and keyFile, not both")
+		}
+		if len(cfg.Hosts) == 0 {
+			return nil, fmt.Errorf("tls.auto needs hosts: the hosts to get certificates for")
+		}
+		for _, host := range cfg.Hosts {
+			if strings.HasPrefix(host, "*.") {
+				return nil, fmt.Errorf("tls.auto can't get a certificate for %s: wildcard certificates need a DNS challenge, so list the hosts, or use certFile and keyFile", host)
+			}
+		}
+		if tls.CertDir == "" {
+			tls.CertDir = DefaultCertDir
+		}
+		if tls.Email != "" && (!strings.Contains(tls.Email, "@") || strings.ContainsAny(tls.Email, " \t\r\n,;<>")) {
+			return nil, fmt.Errorf("tls.email must be an email address")
+		}
+		if tls.CA != "" {
+			if u, err := url.Parse(tls.CA); err != nil || u.Scheme != "https" || u.Host == "" {
+				return nil, fmt.Errorf("tls.acmeCA must be an ACME directory's https URL")
+			}
+		}
+		return tls, nil
+	}
+	if t.CertFile == "" || t.KeyFile == "" {
+		return nil, fmt.Errorf("tls: certFile and keyFile go together")
+	}
+	if t.Email != "" || t.CertDir != "" || t.CA != "" {
+		return nil, fmt.Errorf("tls: email, certDir and acmeCA are for automatic certificates (auto = true)")
+	}
+	return tls, nil
+}
 
 // parseHosts validates the hosts setting
 func parseHosts(hosts []string) ([]string, error) {

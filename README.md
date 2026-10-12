@@ -29,9 +29,9 @@ Every response has an `X-Honey-Cache` header saying how it was served: `HIT`, `M
 
 		docker run -d -p 8080:8080 -v "$PWD/honey.toml:/etc/honey/honey.toml:ro" honey
 
-- **From source:** `go install github.com/davidjwilkins/honey/cmd/honey@latest`
+- **From source** (with Go 1.26 or later): `go install github.com/davidjwilkins/honey/cmd/honey@latest`
 - **systemd:** [`contrib/honey.service`](contrib/honey.service) runs Honey as an unprivileged, sandboxed service, reading `/etc/honey/honey.toml`.  Instructions are at the top of the file.
-- **A whole site:** [`contrib/deploy`](contrib/deploy) runs WordPress behind Honey, behind Caddy for HTTPS, with Docker Compose.
+- **A whole site:** [`contrib/deploy`](contrib/deploy) runs WordPress behind Honey, behind Caddy for HTTPS, with Docker Compose.  Honey can also serve [HTTPS and HTTP/3](#https-and-http3) itself.
 
 `honey -version` prints the version.  Pushing a `v*` tag builds and publishes a release.
 
@@ -46,7 +46,7 @@ A minimal config just needs a backend - the web server running WordPress, which 
 
 All the available settings:
 
-	listen = ":8080"             # address to listen on
+	listen = ":8080"             # address to listen on (plain HTTP)
 	trustedProxies = ["127.0.0.1", "10.0.0.0/8"]  # proxies in front of Honey (default: loopback and private addresses)
 	hosts = ["www.example.com", "*.example.com"]  # the only hosts served; others get a 421 (unset: any)
 
@@ -125,6 +125,19 @@ All the available settings:
 	secret = "a long random string"   # or send this in the secretHeader header
 	secretHeader = "X-Honey-Secret"
 
+	# Serve HTTPS (HTTP/1.1 and HTTP/2) and HTTP/3 too (off unless auto or
+	# certFile is set; see below)
+	[tls]
+	auto = true                  # certificates for the hosts from Let's Encrypt
+	email = "you@example.com"    # given to Let's Encrypt (optional)
+	certDir = "/var/lib/honey/certs"   # where they're kept
+	# acmeCA = "https://acme-staging-v02.api.letsencrypt.org/directory"  # another ACME CA
+	# certFile = "/etc/ssl/example.com/fullchain.pem"   # or your own certificate
+	# keyFile = "/etc/ssl/example.com/privkey.pem"
+	listen = ":443"              # TCP for HTTPS, and UDP for HTTP/3
+	http3 = true
+	redirect = true              # redirect plain HTTP (listen) to HTTPS, except purges
+
 Honey refuses to start if the config has settings it doesn't support.  See [`config/wordpress.toml`](config/wordpress.toml) for an example WordPress setup.
 
 ## Hosts
@@ -136,6 +149,29 @@ Responses are cached separately for each host and protocol, so e.g. a redirect f
 To proxy a site hosted elsewhere, whose server only answers to its own name, set `backend.host` to it: it is sent as the `Host` header instead.
 
 By default any host is served, so a request with a made-up `Host` reaches the backend and is cached.  Set `hosts` to the site's host names to turn the rest away with a `421 Misdirected Request` (`"*.example.com"` allows any subdomain).  Purges are allowed whatever their `Host`, as they apply to every host.  If `[warm] sitemap` is set, its host must be one of them.
+
+## HTTPS and HTTP/3
+
+Honey can face the internet itself, without Caddy or nginx in front for HTTPS.  With `[tls] auto = true`, it gets certificates from [Let's Encrypt](https://letsencrypt.org) for each of the `hosts` (which must be set, without wildcards) when they're first asked for, keeps them in `certDir`, and renews them before they expire.  Or set `certFile` and `keyFile` to a certificate of your own (e.g. from certbot), which Honey loads again when the files change.
+
+	listen = ":80"
+	hosts = ["www.example.com", "example.com"]
+
+	[tls]
+	auto = true
+	email = "you@example.com"
+
+Then Honey serves:
+
+- **HTTPS** on `tls.listen` (`:443`), with HTTP/2 for browsers which support it.
+- **HTTP/3** on the same port over UDP (unless `http3 = false`).  Browsers are told about it in an `Alt-Svc` header, and switch to it for later requests.  [Early Hints](#early-hints) work over both.
+- **Plain HTTP** on `listen`, which redirects to HTTPS (unless `redirect = false`), except for Let's Encrypt's challenges and `PURGE` requests, so that the [WordPress plugin](#purging-from-wordpress) can still send purges to e.g. `http://127.0.0.1:80`.  Requests for hosts which aren't in `hosts` aren't redirected, and get a `421`.
+
+Requests which come over HTTPS or HTTP/3 have `X-Forwarded-Proto: https`, so WordPress knows the visitor used HTTPS, and they're cached separately from plain HTTP ones (see [Hosts](#hosts)).
+
+Ports 80 and 443 must be reachable from the internet (including 443 over UDP, for HTTP/3), and the hosts' DNS must point to Honey.  Let's Encrypt checks you control a host over port 443 (or port 80), so certificates can be had as soon as Honey is reachable.  To try it without using up Let's Encrypt's rate limits, set `acmeCA` to its [staging](https://letsencrypt.org/docs/staging-environment/) directory, whose certificates browsers don't trust.
+
+Listening on ports below 1024 needs root or `CAP_NET_BIND_SERVICE`: the [systemd service](contrib/honey.service) explains how, and Docker allows it.  The service's `/var/lib/honey` (`StateDirectory`) is where certificates are kept by default.  On Linux, HTTP/3 is faster if the UDP buffers may be larger: `sysctl -w net.core.rmem_max=7500000 net.core.wmem_max=7500000`.
 
 ## Proxies in front of Honey
 
@@ -229,7 +265,7 @@ A browser can't start fetching a page's stylesheets, fonts and scripts until the
 
 Honey learns them from the `<head>` of the pages it caches: its stylesheets (not those for print), the scripts which hold it up (not `async` or `defer` ones), and its preloads (e.g. fonts), preconnects and module preloads - up to 10.  A request gets those of the page cached for its URL (for visitors without its cookies), or, for a page which isn't cached (e.g. a cart or checkout), those which every one of its host's recently cached pages have, which are usually the theme's.  Requests served from the cache, and those which don't accept HTML, don't get them.  The admin page's cache browser shows each page's.
 
-They're off by default, as browsers only use them over HTTP/2 or HTTP/3, so the proxy in front of Honey has to pass them on: Caddy does, and nginx does from 1.29, with its `early_hints` directive.  Check that yours does before turning them on, as older proxies may not expect them.
+They're off by default, as browsers only use them over HTTP/2 or HTTP/3: if Honey serves [HTTPS](#https-and-http3) itself, turn them on.  Otherwise the proxy in front of Honey has to pass them on: Caddy does, and nginx does from 1.29, with its `early_hints` directive.  Check that yours does before turning them on, as older proxies may not expect them.
 
 ## Routes
 
@@ -390,7 +426,7 @@ Things which might be worth doing next:
 
 - **Revalidating with the backend:** refresh expired responses with a conditional request (`If-None-Match` / `If-Modified-Since`), so that an unchanged page costs the backend a `304` rather than a full render.
 - **A shared cache** (e.g. Redis), so that several Honey instances behind a load balancer share one cache, and purges reach all of them.
-- **TLS termination** with automatic certificates (e.g. Let's Encrypt), so that Honey can face the internet without another proxy in front.
+- **DNS challenges**, so that Honey can get wildcard certificates (`*.example.com`) automatically.
 - **A login for the admin page**, so that it can be served somewhere other than a private address.
 - **Per-route compression settings** (brotli and gzip are site-wide for now).
 - **More Edge Side Includes:** commenters on classic themes, and parts of pages for logged in users and shoppers (e.g. a cart summary, or the admin bar), so that their pages can mostly be served from the cache too.

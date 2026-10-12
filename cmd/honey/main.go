@@ -28,6 +28,7 @@ import (
 	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/fetch"
 	"github.com/davidjwilkins/honey/metrics"
+	"github.com/davidjwilkins/honey/serve"
 	"github.com/davidjwilkins/honey/warm"
 )
 
@@ -64,15 +65,16 @@ func main() {
 		h.events.Add(events.Info, "", 0, events.Text("started"))
 	}
 	stopPersisting := persistEvery(cacher, cfg.Cache.Persist, cfg.Cache.PersistInterval)
-	server := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           h.handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       2 * time.Minute,
+	server, err := serve.New(serveOptions(cfg, h.handler))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := server.Listen(); err != nil {
+		log.Fatal(err)
 	}
 	// The metrics and admin page are served on their own (private) addresses
 	var private []*http.Server
-	serve := func(addr string, handler http.Handler, what, path string) {
+	servePrivate := func(addr string, handler http.Handler, what, path string) {
 		s := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 		private = append(private, s)
 		go func() {
@@ -85,10 +87,10 @@ func main() {
 	if cfg.MetricsListen != "" {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", h.metrics)
-		serve(cfg.MetricsListen, mux, "metrics", "metrics")
+		servePrivate(cfg.MetricsListen, mux, "metrics", "metrics")
 	}
 	if h.admin != nil {
-		serve(cfg.AdminListen, h.admin, "admin page", "")
+		servePrivate(cfg.AdminListen, h.admin, "admin page", "")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -113,17 +115,41 @@ func main() {
 		}
 	}()
 
-	log.Printf("honey %s listening on %s, proxying to %s", version, cfg.Listen, cfg.Backend)
-	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	plain, secure := server.Addrs()
+	if cfg.TLS != nil {
+		protocols := "HTTPS"
+		if cfg.TLS.HTTP3 {
+			protocols += " and HTTP/3"
+		}
+		log.Printf("honey %s listening on %s, with %s on %s, proxying to %s", version, plain, protocols, secure, cfg.Backend)
+	} else {
+		log.Printf("honey %s listening on %s, proxying to %s", version, plain, cfg.Backend)
+	}
+	if err := server.Serve(); err != nil {
 		log.Fatal(err)
 	}
-	// ListenAndServe returns as soon as Shutdown starts; wait for the
-	// requests in progress to finish before saving the cache and exiting
+	// Serve returns as soon as Shutdown starts; wait for the requests in
+	// progress to finish before saving the cache and exiting
 	<-drained
 	stopPersisting()
 	if cfg.Cache.Persist != "" {
 		saveCache(cacher, cfg.Cache.Persist)
 	}
+}
+
+// serveOptions returns the options for the servers for visitors
+func serveOptions(cfg *config.Config, handler http.Handler) serve.Options {
+	opts := serve.Options{Listen: cfg.Listen, Handler: handler}
+	if cfg.Hosts != nil {
+		opts.HostAllowed = func(host string) bool { return fetch.HostAllowed(host, cfg.Hosts) }
+	}
+	if t := cfg.TLS; t != nil {
+		opts.TLS = &serve.TLS{
+			Listen: t.Listen, Auto: t.Auto, Hosts: cfg.Hosts, Email: t.Email, CertDir: t.CertDir, CA: t.CA,
+			CertFile: t.CertFile, KeyFile: t.KeyFile, HTTP3: t.HTTP3, Redirect: t.Redirect,
+		}
+	}
+	return opts
 }
 
 // snapshotter is a cache which can be saved to and loaded from a file
