@@ -25,9 +25,11 @@ compose() { docker compose -f "$here/docker-compose.yml" "$@"; }
 duration="${DURATION:-20s}"
 concurrency="${CONCURRENCY:-50}"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
-report() { printf '%s\n' "$*" | tee -a "$summary"; }
-
 mkdir -p work
+: > work/report.md
+# report writes a line of the report (to work/report.md too)
+report() { printf '%s\n' "$*" | tee -a "$summary" work/report.md; }
+
 (cd "$root" && CGO_ENABLED=0 go build -o "$here/work/load" ./bench/load && go run ./bench/compare/hero "$here/work/hero.jpg")
 cp page-speed.html work/
 if [ -z "${HONEY_COMPARE_NO_BUILD:-}" ]; then
@@ -53,7 +55,7 @@ load() {
 # row turns the load generator's output into a table row named $1
 row() {
   awk -v name="$1" '
-    /^requests/ { rate = $5; sub(/,$/, "", rate); errors = $9 }
+    /^requests/ { rate = $5; sub(/,$/, "", rate); errors = $8 }
     /^latency/ { p50 = $3; p99 = $7; max = $9 }
     /^cache/ { $1 = ""; cache = $0 }
     END { printf "| %s | %s | %s | %s | %s | %s |%s\n", name, rate, p50, p99, max, errors, cache }'
