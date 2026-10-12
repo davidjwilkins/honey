@@ -144,6 +144,34 @@ counted; the image itself loads no slower.  The comparison reports what
 makes up each Largest Contentful Paint, and the fonts, images and
 stylesheets fetched.
 
+With a classic theme, OceanWP 4.2.7, whose stylesheets are linked rather
+than in the page - its four stylesheets are 297KB, of which the page uses
+34KB, so `removeUnusedCSS` leaves out 62% to 94% of each:
+
+| | Performance | First Contentful Paint | Largest Contentful Paint | Total Blocking Time |
+| --- | --- | --- | --- | --- |
+| Honey (simulated) | 97-98 | 1.54-1.57s | 1.96-2.10s | 87-164ms |
+| Honey, with only `delayScripts` (simulated) | 99 | 1.50-1.54s | 1.95s | 0ms |
+| Honey, with only `preloadMainImage` (simulated) | 96-99 | 1.51-1.55s | 1.96s | 82-182ms |
+| Honey, with only `selfHostFonts` (simulated) | 84-85 | 2.70s | 3.45s | 166-182ms |
+| Honey, with only `removeUnusedCSS` (simulated) | 97-98 | 1.35-1.40s | 1.96-2.11s | 85-139ms |
+| Honey, with only `convertImages` (simulated) | 95-97 | 1.50s | 1.95s | 156-223ms |
+| Honey, with all of `[optimize]` (simulated) | 87-98 | 1.65-2.55s | 2.11-3.45s | 0ms |
+| Honey (throttled by Chrome) | 90 | 1.77s | 1.96s | 341ms |
+| Honey, with all of `[optimize]` (throttled by Chrome) | 99 | 1.61s | 1.67s | 0ms |
+
+With Chrome throttled, all of `[optimize]` is faster here too: the page
+is shown 160ms sooner, and its main image 290ms sooner.  But simulated,
+`selfHostFonts` makes it look over a second slower, and so, in some runs,
+does all of `[optimize]`.  It's the same as above, made worse by the
+theme's icon fonts: with the Google Font served from the site, the page
+is laid out sooner in the fast load, so the icon fonts - Font Awesome's
+is 159KB - are requested before it's first shown, and the simulation
+counts all of them as holding it up, on a slow 4G connection.  Nothing
+loads any slower.  PageSpeed Insights simulates too, so its scores for
+such a theme can be lower with `selfHostFonts`, though visitors get the
+page sooner.
+
 (The featured image is generated: soft light, hills and fine grain, so
 that it compresses as a photo does.  Before October 2026's image
 conversion, it was random noise, which no format compresses, so the
