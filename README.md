@@ -496,6 +496,16 @@ Things which might be worth doing next:
 - **DNS challenges**, so that Honey can get wildcard certificates (`*.example.com`) automatically.
 - **A login for the admin page**, so that it can be served somewhere other than a private address.
 - **Per-route compression settings** (brotli and gzip are site-wide for now).
-- **More Edge Side Includes:** commenters on classic themes, and parts of pages for logged in users and shoppers (e.g. a cart summary, or the admin bar), so that their pages can mostly be served from the cache too.
+- **More Edge Side Includes:** commenters and shoppers on classic themes, and parts of pages for logged in users (e.g. the admin bar), so that their pages can mostly be served from the cache too.
 
-Dropped from the original list: HTTP/2 server push (browsers have removed it), rewriting popular JavaScript libraries to public CDNs (no faster since browsers stopped sharing caches between sites, and it leaks visitors to the CDN), minifying HTML, CSS and JS (risky, and brotli gets most of the benefit), and other page rewriting (fixing mixed content, combining Google Fonts requests, a cookieless asset domain, hotlink protection, an offline cache), which is better done in WordPress or a CDN.
+Cache plugins such as FlyingPress, LiteSpeed Cache and WP Rocket serve pages more slowly than Honey, and don't keep WordPress out of the way as well, but they also change pages so that browsers load them faster, which is most of what Core Web Vitals and PageSpeed measure.  Honey could do much of that once, when a page is cached, so that it costs nothing to serve:
+
+- **Preloading the main image:** learn each page's largest above-the-fold image (its LCP element, usually the featured image), and add `<link rel="preload" fetchpriority="high">` for it, and an Early Hint.
+- **Delaying third-party JavaScript:** load analytics, chat, ad and embed scripts on the visitor's first interaction (scroll, tap, key press) rather than straight away, which helps Interaction to Next Paint and Total Blocking Time the most.  It needs a list of scripts which are safe to delay, and a way to exclude others.
+- **WebP and AVIF images:** convert JPEGs and PNGs the first time they're requested by a browser which accepts them, and cache the result, varying on `Accept`.
+- **Self-hosting Google Fonts:** fetch the stylesheets and fonts a page uses from Google, serve them from the site itself with `font-display: swap`, and preload them, saving a connection to another site (and not telling Google about visitors).
+- **Forwarding purges to a CDN** (Cloudflare, Bunny), so that Honey can be the origin behind a CDN which caches pages near visitors around the world, without pages going out of date there.
+- **Removing unused CSS and inlining critical CSS:** the biggest PageSpeed win, but it needs a headless browser to render each kind of page, so it's the heaviest to build.
+- **Benchmarks against them:** Honey against WP Super Cache, WP Fastest Cache and Nginx's FastCGI cache in the end-to-end tests' Docker setup, so that comparisons rest on numbers.
+
+Dropped from the original list: HTTP/2 server push (browsers have removed it), rewriting popular JavaScript libraries to public CDNs (no faster since browsers stopped sharing caches between sites, and it leaks visitors to the CDN), minifying HTML, CSS and JS (risky, and brotli gets most of the benefit), and other page rewriting (fixing mixed content, combining Google Fonts requests (self-hosting them, above, does better), a cookieless asset domain, hotlink protection, an offline cache), which is better done in WordPress or a CDN.
