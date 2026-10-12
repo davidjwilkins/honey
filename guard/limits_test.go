@@ -104,7 +104,7 @@ func TestLoginLockout(t *testing.T) {
 
 	lockouts := limits.Lockouts()
 	require.Len(t, lockouts, 1)
-	assert.Equal(t, Lockout{Address: "203.0.113.9", Until: clock.t.Add(15 * time.Minute)}, lockouts[0])
+	assert.Equal(t, Lockout{Address: "203.0.113.9", Until: clock.t.Add(15 * time.Minute), From: LockedOutOfLogins}, lockouts[0])
 
 	clock.t = clock.t.Add(15 * time.Minute)
 	assert.Equal(t, http.StatusFound, login(h, "203.0.113.9", "right").Code, "the lockout ends")
@@ -135,7 +135,7 @@ func TestIPv6NetworksAreLockedOutTogether(t *testing.T) {
 	h, limits, _, _ := limited(t, LimitOptions{LoginAttempts: 2, LoginLockout: time.Hour})
 	login(h, "2001:db8:1:2::1", "guess")
 	login(h, "2001:db8:1:2:ffff::9", "guess")
-	assert.Equal(t, []Lockout{{Address: "2001:db8:1:2::/64", Until: limits.Lockouts()[0].Until}}, limits.Lockouts(), "one computer usually has a whole /64")
+	assert.Equal(t, []Lockout{{Address: "2001:db8:1:2::/64", Until: limits.Lockouts()[0].Until, From: LockedOutOfLogins}}, limits.Lockouts(), "one computer usually has a whole /64")
 	assert.Equal(t, http.StatusTooManyRequests, login(h, "2001:db8:1:2::abcd", "right").Code)
 	assert.Equal(t, http.StatusFound, login(h, "2001:db8:1:3::1", "right").Code)
 }
@@ -193,27 +193,27 @@ func TestAllowBackend(t *testing.T) {
 		return r
 	}
 	for i := 0; i < 3; i++ {
-		_, ok := limits.AllowBackend(from("203.0.113.9"))
-		assert.True(t, ok, "a burst")
+		_, why := limits.AllowBackend(from("203.0.113.9"))
+		assert.Empty(t, why, "a burst")
 	}
-	wait, ok := limits.AllowBackend(from("203.0.113.9"))
-	assert.False(t, ok)
+	wait, why := limits.AllowBackend(from("203.0.113.9"))
+	assert.Equal(t, "security.rateLimit", why)
 	assert.Equal(t, 500*time.Millisecond, wait)
-	_, ok = limits.AllowBackend(from("203.0.113.10"))
-	assert.True(t, ok, "each address has its own limit")
+	_, why = limits.AllowBackend(from("203.0.113.10"))
+	assert.Empty(t, why, "each address has its own limit")
 
 	clock.t = clock.t.Add(500 * time.Millisecond)
-	_, ok = limits.AllowBackend(from("203.0.113.9"))
-	assert.True(t, ok, "at the rate")
-	_, ok = limits.AllowBackend(from("203.0.113.9"))
-	assert.False(t, ok)
+	_, why = limits.AllowBackend(from("203.0.113.9"))
+	assert.Empty(t, why, "at the rate")
+	_, why = limits.AllowBackend(from("203.0.113.9"))
+	assert.NotEmpty(t, why)
 	require.NotEmpty(t, log.Recent(1))
 	assert.Equal(t, "rate-limited 203.0.113.9: refused 2 requests to WordPress (it may send 2 a second)", log.Recent(1)[0].Text)
 
 	off := NewLimits(LimitOptions{})
 	for i := 0; i < 100; i++ {
-		_, ok := off.AllowBackend(from("203.0.113.9"))
-		require.True(t, ok, "off by default")
+		_, why := off.AllowBackend(from("203.0.113.9"))
+		require.Empty(t, why, "off by default")
 	}
 	assert.Equal(t, 20, NewLimits(LimitOptions{Rate: 2}).opts.Burst, "bursts of 10 times the rate by default")
 }

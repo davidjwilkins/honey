@@ -54,6 +54,12 @@ type Options struct {
 	// HSTS, if set, is the Strict-Transport-Security header sent with
 	// responses to requests which came over HTTPS
 	HSTS string
+	// AdminIPs, if not nil, are the only addresses the dashboard and login
+	// page are served to (see dashboard)
+	AdminIPs []*net.IPNet
+	// HideUsers blocks anonymous requests which list the site's users (see
+	// listsUsers)
+	HideUsers bool
 	// Limits, if set, locks out addresses which keep failing to log in
 	// (and limits their requests to the backend: see Limits.AllowBackend)
 	Limits *Limits
@@ -75,6 +81,11 @@ var (
 	// installer is WordPress's installer, and its readme (which says its
 	// version)
 	installer = regexp.MustCompile(`(?i)^/(wp-admin/(install|setup-config)\.php|readme\.html)$`)
+	// exploits are what scanners try on every site, which are never part
+	// of a WordPress site: PHPUnit's eval-stdin.php (left in vendor
+	// directories), CGI scripts, router and Java exploits, and the usual
+	// names of web shells
+	exploits = regexp.MustCompile(`(?i)(/eval-stdin\.php$|^/cgi-bin/|^/(actuator|boaform|hnap1|solr|owa|remote/fgt_lang)(/|$)|^/(shell|wso|alfa|c99|r57|b374k|webshell|cmd|up|uploader)\.php$)`)
 )
 
 // blockedPath returns why requests for p are blocked, or "" if they aren't
@@ -95,6 +106,8 @@ func blockedPath(p string) string {
 		return "backups and logs"
 	case installer.MatchString(p):
 		return "the installer"
+	case exploits.MatchString(p):
+		return "known exploits"
 	}
 	return ""
 }
@@ -110,8 +123,11 @@ func Middleware(opts Options, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// Visitors never ask for what blockPaths and XML-RPC's safe mode
+		// block, so those who do are probing for weaknesses
 		if opts.BlockPaths {
 			if why := blockedPath(r.URL.Path); why != "" {
+				opts.Limits.Probed(r)
 				block(w, r, opts, http.StatusForbidden, why, "security.blockPaths")
 				return
 			}
@@ -123,9 +139,20 @@ func Middleware(opts Options, next http.Handler) http.Handler {
 				return
 			case XMLRPCSafe:
 				if why, status := checkXMLRPC(r); why != "" {
+					opts.Limits.Probed(r)
 					block(w, r, opts, status, why, `security.xmlrpc = "safe"`)
 					return
 				}
+			}
+		}
+		if opts.AdminIPs != nil && dashboard(r) && !allowedIP(r, opts.AdminIPs) {
+			block(w, r, opts, http.StatusForbidden, "the dashboard from other addresses", "security.adminIPs")
+			return
+		}
+		if opts.HideUsers {
+			if why := listsUsers(r); why != "" {
+				block(w, r, opts, http.StatusNotFound, why, "security.hideUsers")
+				return
 			}
 		}
 		if opts.Headers || opts.HSTS != "" {

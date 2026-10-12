@@ -136,6 +136,10 @@ All the available settings:
 	rateLimit = 5                # requests a second each address may send to WordPress (off by default; see below)
 	rateBurst = 50               # in bursts of up to this many (default: 10 times rateLimit)
 	allowIPs = ["198.51.100.0/24"]   # never locked out or rate-limited (nor is this host)
+	probeLimit = 5               # probes for sensitive files or exploits before an address is banned from
+	probeBan = "1h"              #   WordPress for this long ("0": never); it's still served cached pages
+	adminIPs = ["198.51.100.0/24"]   # if set, the only addresses the dashboard and login page are served to
+	hideUsers = true             # hide the site's users from visitors who aren't logged in (off by default)
 
 	# Serve HTTPS (HTTP/1.1 and HTTP/2) and HTTP/3 too (off unless auto or
 	# certFile is set; see below)
@@ -313,6 +317,18 @@ An address which fails to log in `loginAttempts` times (10) within `loginLockout
 
 An IPv6 address is counted with the rest of its `/64` network, as one computer usually has a whole one.  `allowIPs` (e.g. your office) and this host are never locked out.  The admin page's dashboard lists the addresses locked out, with a button to unblock each.
 
+### Probing
+
+Visitors never ask for what `blockPaths` and XML-RPC's safe mode block - `.env`, `wp-config.php` backups, PHP in uploads, `system.multicall` - nor for the exploits which scanners try on every site (PHPUnit's `eval-stdin.php`, `/cgi-bin/`, router and Java exploits, and web shells such as `/wso.php`, which are blocked too).  So an address which asks for them `probeLimit` times (5) within 10 minutes is probing for weaknesses, and is banned from WordPress for `probeBan` (an hour): its requests which the cache can't answer get a `429`.  Pages from the cache are still served to it, so that if it's shared (e.g. by a mobile network) its other visitors can still read the site.  Pages which don't exist don't count: anyone can mistype a URL.  `allowIPs` and this host are never banned - add your own addresses, so that e.g. checking that `/.env` is blocked doesn't ban you.  The dashboard lists bans along with lockouts.
+
+### The dashboard
+
+With `adminIPs` set, the dashboard (`wp-admin`) and the login page are only served to those addresses (and this host); anyone else gets a `403`.  The parts of `wp-admin` which serve visitors - `admin-ajax.php` and `admin-post.php`, used by themes' and plugins' forms - and posts' passwords (sent to `wp-login.php?action=postpass`) still work for everyone.  XML-RPC and the REST API's application passwords are other ways to log in: turn XML-RPC off (`xmlrpc = "off"`) if nothing uses it.
+
+### Usernames
+
+A username is half of a login, and WordPress gives them away: `/?author=1` redirects to the first user's archive, at `/author/<username>/`, and the REST API lists users at `/wp-json/wp/v2/users`.  With `hideUsers = true`, visitors who aren't logged in get a `404` for both, and the sitemap of authors is left out.  Honey turns away requests without WordPress's logged in cookie itself, and asks the [WordPress plugin](#purging-from-wordpress) to check the rest (as a made-up cookie gets past Honey, but not WordPress).  Logged in users, and apps with an application password, aren't affected.  It's off by default, as some themes and plugins list authors through the REST API.
+
 ### Rate limiting
 
 With `rateLimit` set, each address may send that many requests a second to WordPress, in bursts of up to `rateBurst`; any more get a `429` with `Retry-After`.  Requests answered from the cache don't count, and are never refused, so visitors don't notice it while a single address can't keep WordPress busy with requests the cache can't answer (e.g. searches, or made-up URLs).  Logged in users' requests all go to WordPress, and the block editor sends dozens at once, so leave room for bursts.
@@ -424,7 +440,7 @@ The admin page's Test a URL says whether a page uses ESI, and whether a visitor 
 - When a category or tag is renamed or deleted: its archive.
 - When the theme, its customizations, menus, widgets, plugins, or the site's title, tagline, reading or permalink settings change: everything.
 
-It also marks lists of recent posts as [shared fragments](#shared-fragments), and purges them when a post changes, so that every page shows new posts straight away.  With block themes, it serves posts' comments as [Edge Side Includes](#edge-side-includes), so that commenters can get cached pages.  And it adds a "Purge cache" button to the admin bar for administrators.  Most of its purges are soft, and some are hard (see [Never waiting for WordPress](#never-waiting-for-wordpress)).
+With Honey's `security.hideUsers`, it hides the site's users from visitors who aren't logged in (see [Usernames](#usernames)).  It also marks lists of recent posts as [shared fragments](#shared-fragments), and purges them when a post changes, so that every page shows new posts straight away.  With block themes, it serves posts' comments as [Edge Side Includes](#edge-side-includes), so that commenters can get cached pages.  And it adds a "Purge cache" button to the admin bar for administrators.  Most of its purges are soft, and some are hard (see [Never waiting for WordPress](#never-waiting-for-wordpress)).
 
 To install it, copy it to `wp-content/mu-plugins/honey-purge.php`, and add to `wp-config.php`:
 
@@ -462,7 +478,6 @@ Things which might be worth doing next:
 
 - **Revalidating with the backend:** refresh expired responses with a conditional request (`If-None-Match` / `If-Modified-Since`), so that an unchanged page costs the backend a `304` rather than a full render.
 - **A shared cache** (e.g. Redis), so that several Honey instances behind a load balancer share one cache, and purges reach all of them.
-- **More protection for WordPress:** only allowing the dashboard from some addresses, and blocking addresses which probe for known exploits.
 - **DNS challenges**, so that Honey can get wildcard certificates (`*.example.com`) automatically.
 - **A login for the admin page**, so that it can be served somewhere other than a private address.
 - **Per-route compression settings** (brotli and gzip are site-wide for now).

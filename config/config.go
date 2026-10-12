@@ -112,7 +112,24 @@ type Security struct {
 	// WordPress (0: no limit), in bursts of up to RateBurst
 	RateLimit float64
 	RateBurst int
+	// ProbeLimit is how many probes for sensitive files or exploits an
+	// address may make (within 10 minutes) before it's banned from
+	// WordPress for ProbeBan (0: never)
+	ProbeLimit int
+	ProbeBan   time.Duration
+	// AdminIPs, if not nil, are the only addresses the dashboard and login
+	// page are served to
+	AdminIPs []*net.IPNet
+	// HideUsers hides the site's users from visitors who aren't logged in
+	HideUsers bool
 }
+
+// DefaultProbeLimit and DefaultProbeBan are the defaults for
+// security.probeLimit and security.probeBan
+const (
+	DefaultProbeLimit = 5
+	DefaultProbeBan   = time.Hour
+)
 
 // DefaultLoginAttempts and DefaultLoginLockout are the defaults for
 // security.loginAttempts and security.loginLockout
@@ -290,6 +307,10 @@ type File struct {
 		LoginLockout  string   `toml:"loginLockout,omitempty"`
 		RateLimit     *float64 `toml:"rateLimit,omitempty"`
 		RateBurst     *int     `toml:"rateBurst,omitempty"`
+		ProbeLimit    *int     `toml:"probeLimit,omitempty"`
+		ProbeBan      string   `toml:"probeBan,omitempty"`
+		AdminIPs      []string `toml:"adminIPs,omitempty"`
+		HideUsers     bool     `toml:"hideUsers,omitempty"`
 	} `toml:"security,omitempty"`
 	TLS struct {
 		Listen   string `toml:"listen,omitempty"`
@@ -363,6 +384,8 @@ func (f *File) Clone() *File {
 	c.Security.AllowIPs = append([]string(nil), f.Security.AllowIPs...)
 	c.Security.LoginAttempts = cloneInt(f.Security.LoginAttempts)
 	c.Security.RateBurst = cloneInt(f.Security.RateBurst)
+	c.Security.ProbeLimit = cloneInt(f.Security.ProbeLimit)
+	c.Security.AdminIPs = append([]string(nil), f.Security.AdminIPs...)
 	if f.Security.RateLimit != nil {
 		rate := *f.Security.RateLimit
 		c.Security.RateLimit = &rate
@@ -783,6 +806,25 @@ func parseSecurity(f *File, tls *TLS) (Security, error) {
 	if sec.RateBurst > 0 && sec.RateLimit == 0 {
 		return sec, fmt.Errorf("security.rateBurst is set, but security.rateLimit isn't")
 	}
+	sec.ProbeLimit = DefaultProbeLimit
+	if s.ProbeLimit != nil {
+		if *s.ProbeLimit < 0 {
+			return sec, fmt.Errorf("security.probeLimit must be 0 (off) or more")
+		}
+		sec.ProbeLimit = *s.ProbeLimit
+	}
+	sec.ProbeBan = DefaultProbeBan
+	if s.ProbeBan != "" {
+		if sec.ProbeBan, err = parseDuration(s.ProbeBan); err != nil || sec.ProbeBan < time.Minute {
+			return sec, fmt.Errorf("security.probeBan must be a duration of at least 1m, e.g. \"1h\"")
+		}
+	}
+	if len(s.AdminIPs) > 0 {
+		if sec.AdminIPs, err = fetch.ParseIPs(s.AdminIPs); err != nil {
+			return sec, fmt.Errorf("security.adminIPs: %w", err)
+		}
+	}
+	sec.HideUsers = s.HideUsers
 	return sec, nil
 }
 
