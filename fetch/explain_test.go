@@ -117,3 +117,20 @@ func TestExplainCached(t *testing.T) {
 	assert.Equal(t, "Cacheable, stale: the next request gets it while it's refreshed", e.Verdict)
 	assert.True(t, e.Cached.Expired)
 }
+
+func TestHitsAreCounted(t *testing.T) {
+	o := noHeadersOrigin()
+	backend, err := url.Parse(o.URL)
+	require.NoError(t, err)
+	c := cache.NewCacher(cache.Options{})
+	proxy := httptest.NewServer(Fetch(c, Forwarder(c), backend))
+	t.Cleanup(proxy.Close)
+	t.Cleanup(o.Close)
+
+	for i := 0; i < 4; i++ {
+		get(t, proxy.URL+"/page")
+	}
+	entries := c.Entries()
+	require.Len(t, entries, 1)
+	assert.Equal(t, int64(3), entries[0].Hits, "the first request fetched it; the rest were hits")
+}

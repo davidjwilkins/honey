@@ -18,6 +18,7 @@
   <p class="brand"><span class="logo">honey</span> <span class="mono muted">{{.Version}} · caching {{.Backend}}{{with .Hosts}} · hosts {{.}}{{end}} · up {{duration .Uptime}}</span></p>
   <nav aria-label="Admin pages" class="tabs">
     <a href="/"{{if eq .Section "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
+    <a href="/cache"{{if eq .Section "cache"}} aria-current="page"{{end}}>Cache</a>
     <a href="/test"{{if eq .Section "test"}} aria-current="page"{{end}}>Test a URL</a>
     <a href="/settings"{{if eq .Section "settings"}} aria-current="page"{{end}}>Settings</a>
   </nav>
