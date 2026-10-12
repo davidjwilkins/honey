@@ -25,9 +25,11 @@ RestartSec=2s
 TimeoutStopSec=40s
 
 # Run as an unprivileged user created for the service.  Listening on a port
-# below 1024 (e.g. 80) needs: AmbientCapabilities=CAP_NET_BIND_SERVICE
+# below 1024 (e.g. 80, or 443 for [tls]) needs:
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
 DynamicUser=yes
-# A writable directory for the persistent cache, at /var/lib/honey
+# A writable directory for the persistent cache and automatic TLS
+# certificates, at /var/lib/honey
 StateDirectory=honey
 StateDirectoryMode=0700
 
