@@ -79,22 +79,19 @@ report "$(load nginx -d "$duration" -paths "$pages" -cache-header X-Cache | row 
 if [ "${WP_SUPER_CACHE:-1}" = 1 ]; then
   compose run --rm -T cli sh /wp-super-cache.sh >&2
   load wordpress -d 3s -paths "$pages" >/dev/null
-  report "$(load wordpress -d "$duration" -paths "$pages" -cache-header WP-Super-Cache | row "WP Super Cache (simple mode)")"
-  # Whether its pages really were cached: its headers and comments, its
-  # cache files and its debug log
-  compose run --rm -T cli sh /wp-super-cache.sh debug >&2
-  # (after PHP's opcache has seen the changes)
-  sleep 3
-  compose run --rm -T --entrypoint sh load -c "for i in 1 2; do wget -S -O /tmp/page --header 'Host: localhost:8080' --header 'Accept: text/html' http://wordpress/post-1/ 2>&1 | grep -i 'HTTP/\|cache\|encoding\|wpsc'; tail -c 200 /tmp/page; echo; done" > work/wpsc-check.txt 2>&1 || true
-  compose run --rm -T cli sh -c "grep -n 'WP_CACHE\|WPCACHEHOME\|stop editing' wp-config.php; cat wp-content/advanced-cache.php; ls wp-content/plugins/wp-super-cache/wp-cache-phase1.php; ls -R wp-content/cache | head -20; grep -E '^\\\$(cache_enabled|super_cache_enabled|wp_cache_mod_rewrite|cache_compression|wp_super_cache_late_init|wp_cache_not_logged_in|wp_super_cache_debug|cache_path)' wp-content/wp-cache-config.php; tail -40 wp-content/cache/wpsc-debug.php 2>/dev/null" >> work/wpsc-check.txt 2>&1 || true
-  compose logs --no-color --no-log-prefix --tail 30 wordpress >> work/wpsc-check.txt 2>&1 || true
+  report "$(load wordpress -d "$duration" -paths "$pages" -cache-header X-WP-Super-Cache | row "WP Super Cache (simple mode)")"
+  # Whether its pages really were served from its cache: its headers, its
+  # cache files and settings, and Apache's log
+  compose run --rm -T --entrypoint sh load -c "wget -S -O /tmp/page --header 'Host: localhost:8080' --header 'Accept: text/html' http://wordpress/post-1/ 2>&1 | grep -i 'HTTP/\|cache\|encoding'; tail -c 200 /tmp/page" > work/wpsc-check.txt 2>&1 || true
+  compose run --rm -T cli sh -c "ls -R wp-content/cache/supercache | head -12; grep -E '^\\\$(cache_enabled|super_cache_enabled|wp_cache_mod_rewrite|cache_compression|wp_cache_slash_check|wpsc_served_header|cache_path)' wp-content/wp-cache-config.php" >> work/wpsc-check.txt 2>&1 || true
+  compose logs --no-color --no-log-prefix --tail 5 wordpress >> work/wpsc-check.txt 2>&1 || true
   tail="see the details below"
 fi
 load honey:8080 -d 3s -paths "$pages" >/dev/null
 report "$(load honey:8080 -d "$duration" -paths "$pages" | row "Honey")"
 report ""
 if [ -n "${tail:-}" ]; then
-  report "<details><summary>WP Super Cache's response to /post-1/, cache files, settings and debug log</summary>"
+  report "<details><summary>WP Super Cache's response to /post-1/, cache files and settings</summary>"
   report ""
   report '```'
   report "$(cat work/wpsc-check.txt)"
@@ -111,7 +108,7 @@ report "| | Requests/s | p50 | p99 | Max | Errors | Cache |"
 report "| --- | --- | --- | --- | --- | --- | --- |"
 if [ "${WP_SUPER_CACHE:-1}" = 1 ]; then
   edits 12
-  report "$(load wordpress -d 30s -paths /,/post-1/ -cache-header WP-Super-Cache | row "WP Super Cache")"
+  report "$(load wordpress -d 30s -paths /,/post-1/ -cache-header X-WP-Super-Cache | row "WP Super Cache")"
   wait
   compose run --rm -T cli sh /wp-super-cache.sh off >&2
 fi

@@ -13,23 +13,10 @@ set_var() {
     sed -i "1a \$$1 = $2;" "$config"
   fi
 }
-if [ "${1:-on}" = debug ]; then
-  # Its debug log, so that the comparison can show what it does (after
-  # it's been timed, as logging slows it down)
-  set_var wp_super_cache_debug 1
-  set_var wp_cache_debug_log "'wpsc-debug.php'"
-  set_var wp_cache_debug_ip "''"
-  # and a header showing whether its first phase runs (which serves cached
-  # pages)
-  mkdir -p wp-content/plugins/wp-super-cache-plugins
-  printf '<?php\nheader("X-WPSC-Phase1: loaded");\n' > wp-content/plugins/wp-super-cache-plugins/probe.php
-  exit 0
-fi
 if [ "${1:-on}" = off ]; then
   wp plugin deactivate wp-super-cache >/dev/null
   wp config set WP_CACHE false --raw >/dev/null
   rm -f wp-content/advanced-cache.php
-  rm -rf wp-content/plugins/wp-super-cache-plugins
   rm -rf wp-content/cache/supercache wp-content/cache/wp-cache-*
   echo "WP Super Cache is off"
   exit 0
@@ -60,6 +47,11 @@ fi
 set_var cache_enabled true
 set_var super_cache_enabled true
 set_var wp_cache_mod_rewrite 0
+# As its settings page sets them: permalinks end in a slash (or it never
+# serves cached pages for them), and say when a page is served from the
+# cache
+set_var wp_cache_slash_check 1
+set_var wpsc_served_header true
 set_var cache_path "WP_CONTENT_DIR . '/cache/'"
 mkdir -p wp-content/cache
 echo "WP Super Cache $(wp plugin get wp-super-cache --field=version) is on (simple mode)"
