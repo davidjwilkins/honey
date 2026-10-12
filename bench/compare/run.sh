@@ -251,6 +251,10 @@ report ""
 report "| | Performance | First Contentful Paint | Largest Contentful Paint | Total Blocking Time | Speed Index | Layout Shift |"
 report "| --- | --- | --- | --- | --- | --- | --- |"
 optimized classic-off "" "Honey"
+# Each optimization on its own, to show what each does to the page
+for option in delayScripts preloadMainImage selfHostFonts removeUnusedCSS convertImages; do
+  optimized "classic-$option" "$option = true" "Honey, with only $option"
+done
 optimized classic-on "$all" "Honey, with all of [optimize]"
 report ""
 report "The CSS the page uses, of each stylesheet it links:"
