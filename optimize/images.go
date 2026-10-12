@@ -251,17 +251,26 @@ func (o *Optimizer) mainImage(r *http.Request, p *page) (head, tail []byte, edit
 		if !known[v] || urls[v] == "" || (same && v == 1) {
 			continue
 		}
+		i := found[v]
+		if same && i >= 0 && !lazyPlugin(p.images[i]) {
+			// It's the main image on every screen, and the browser finds
+			// it as soon as it reads it: it just mustn't wait (a preload
+			// would only compete with the page's stylesheets)
+			if e, ok := eager(p, p.images[i]); ok {
+				edits = append(edits, e)
+			}
+			continue
+		}
+		if i >= 0 && !late(p.images[i]) {
+			continue
+		}
+		// The browser would find it, or start loading it, late: a
+		// background, or a lazy loaded image
 		media := viewports[v].media
 		if same {
 			media = ""
 		}
-		head = append(head, preload(p, found[v], urls[v], media)...)
-	}
-	if same && found[0] >= 0 {
-		// The image is the main one on every screen: it mustn't wait
-		if e, ok := eager(p, p.images[found[0]]); ok {
-			edits = append(edits, e)
-		}
+		head = append(head, preload(p, i, urls[v], media)...)
 	}
 
 	var need []string
@@ -305,6 +314,17 @@ func contains(list []string, s string) bool {
 	return false
 }
 
+// lazyPlugin returns whether a lazy loading plugin shows img (its real
+// src is in a data- attribute)
+func lazyPlugin(img image) bool {
+	return img.attributes["data-src"] != "" || img.attributes["data-srcset"] != "" || img.attributes["data-lazy-src"] != ""
+}
+
+// late returns whether the browser would start loading img late
+func late(img image) bool {
+	return lazyPlugin(img) || strings.EqualFold(strings.TrimSpace(img.attributes["loading"]), "lazy")
+}
+
 // preload returns a <link rel="preload"> for the main image u, shown by
 // the page's image i (or a background, if i is negative), on screens
 // matching media (or all, if it's "")
@@ -322,12 +342,15 @@ func preload(p *page, i int, u, media string) []byte {
 		if src == "" {
 			src = u
 		}
-		b.WriteString(` href="` + html.EscapeString(src) + `"`)
 		if set != "" {
+			// Without an href, which browsers fetch as well as the size
+			// they pick from imagesrcset (Chrome does)
 			b.WriteString(` imagesrcset="` + html.EscapeString(set) + `"`)
 			if sizes != "" && sizes != "auto" {
 				b.WriteString(` imagesizes="` + html.EscapeString(sizes) + `"`)
 			}
+		} else {
+			b.WriteString(` href="` + html.EscapeString(src) + `"`)
 		}
 	} else {
 		b.WriteString(` href="` + html.EscapeString(u) + `"`)
@@ -440,9 +463,9 @@ func (o *Optimizer) report(w http.ResponseWriter, r *http.Request) {
 	}
 	if u != "" {
 		o.opts.Events.Add(events.Info, "main-image", time.Minute, func(e *events.Event) {
-			text := fmt.Sprintf("learned the main image of %s on %s screens, which is now preloaded: %s", report.Path, report.Viewport, u)
+			text := fmt.Sprintf("learned the main image of %s on %s screens: %s", report.Path, report.Viewport, u)
 			if e.Count > 1 {
-				text = fmt.Sprintf("learned the main images of %d pages, which are now preloaded; most recently %s on %s screens: %s", e.Count, report.Path, report.Viewport, u)
+				text = fmt.Sprintf("learned the main images of %d pages, most recently %s on %s screens: %s", e.Count, report.Path, report.Viewport, u)
 			}
 			e.Text = text
 		})

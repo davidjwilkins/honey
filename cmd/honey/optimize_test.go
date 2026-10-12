@@ -66,10 +66,9 @@ preloadMainImage = true
 	require.Eventually(t, func() bool { return renders.Load() == 2 }, 5e9, 1e7)
 	require.Eventually(t, func() bool {
 		_, body = get()
-		return strings.Contains(body, "data-honey-main-image")
+		return strings.Contains(body, `fetchpriority="high"`)
 	}, 5e9, 1e7)
-	assert.Contains(t, body, `<meta charset="UTF-8"><link rel="preload" as="image" href="/wp-content/uploads/hero.jpg" fetchpriority="high" data-honey-main-image>`)
-	assert.Contains(t, body, `<img fetchpriority="high" src="/wp-content/uploads/hero.jpg" alt="">`)
+	assert.Contains(t, body, `<img fetchpriority="high" src="/wp-content/uploads/hero.jpg" alt="">`, "it isn't lazy loaded")
 	assert.NotContains(t, body, `<script id="honey-main-image">`)
 }
 
@@ -101,6 +100,6 @@ preloadMainImage = true
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "http://www.example.com"+optimize.BeaconPath,
 			strings.NewReader(`{"p":"/post/","v":"`+viewport+`","u":"https://www.example.com/hero.jpg"}`)))
 	}
-	require.Eventually(t, func() bool { return strings.Contains(get(), "data-honey-main-image") }, 5e9, 1e7,
+	require.Eventually(t, func() bool { return strings.Contains(get(), `fetchpriority="high"`) }, 5e9, 1e7,
 		"it's learned for the page as it's cached, under the backend's Host")
 }

@@ -97,8 +97,11 @@ func New(opts Options) *Optimizer {
 var (
 	headStart   = regexp.MustCompile(`(?i)<head(?:\s[^>]*)?>`)
 	metaCharset = regexp.MustCompile(`(?i)<meta\s[^>]*charset[^>]*>`)
-	headEnd     = regexp.MustCompile(`(?i)</head\s*>`)
-	bodyEnd     = regexp.MustCompile(`(?i)</body\s*>`)
+	// metaViewport is the viewport's <meta>, which changes which size of
+	// an image a srcset picks, so preloads must come after it
+	metaViewport = regexp.MustCompile(`(?i)<meta\s[^>]*name\s*=\s*["']?viewport["'\s>][^>]*>`)
+	headEnd      = regexp.MustCompile(`(?i)</head\s*>`)
+	bodyEnd      = regexp.MustCompile(`(?i)</body\s*>`)
 	// tokens are the parts of a page which matter: comments, and
 	// elements whose content isn't HTML (which are skipped), scripts,
 	// styles, images and links
@@ -136,9 +139,14 @@ func (o *Optimizer) Rewrite(r *http.Response, body []byte) []byte {
 	if len(edits) == 0 && len(head) == 0 && len(tail) == 0 {
 		return body
 	}
-	// Where the preloads go, at the top of the <head>
+	// Where the preloads go, at the top of the <head>: after its charset,
+	// and its viewport (before which a phone's browser would pick the
+	// image's size as if it were a desktop's)
 	at := headStart.FindIndex(body)
-	if m := metaCharset.FindIndex(body[at[1]:headEnd.FindIndex(body)[0]]); m != nil {
+	inHead := body[at[1]:headEnd.FindIndex(body)[0]]
+	if m := metaViewport.FindIndex(inHead); m != nil {
+		at = []int{at[1] + m[0], at[1] + m[1]}
+	} else if m := metaCharset.FindIndex(inHead); m != nil {
 		at = []int{at[1] + m[0], at[1] + m[1]}
 	}
 	if len(head) > 0 {
