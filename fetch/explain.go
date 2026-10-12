@@ -132,11 +132,20 @@ func Explain(c cache.Cacher, backend *url.URL, opts Options, r *http.Request) Ex
 			// cached for visitors without them
 			e.Key = c.Hash(anonymous)
 			e.Cached = peek(x, canExplain, e.Key)
-			if e.Cached != nil && e.Cached.ESI && e.Cached.FreshFor > 0 {
+			serves := false
+			if e.Cached != nil {
+				resp, _ := x.Peek(e.Key)
+				serves = c.(esiEligible).ESIServes(resp, r)
+			}
+			switch {
+			case e.Cached != nil && e.Cached.ESI && !serves:
+				step(StepStopped, "Not served the cached page",
+					"its bypass cookies are all esiCookies, but the page cached for visitors without them only uses ESI for visitors with other cookies (it says which with "+cache.ESICookiesHeader+")")
+			case serves && e.Cached.FreshFor > 0:
 				step(StepChanged, "Served the cached page, with ESI",
 					"its bypass cookies are all esiCookies, and the page cached for visitors without them uses ESI, so it gets that, with its includes fetched for it")
 				e.Verdict = "Cached page, with its includes fetched for this visitor"
-			} else {
+			default:
 				step(StepOK, "Could get the cached page, with ESI",
 					"its bypass cookies are all esiCookies, so it would get the page cached for visitors without them, if that were fresh and used ESI")
 			}

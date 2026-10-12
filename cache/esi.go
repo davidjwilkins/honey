@@ -1,7 +1,9 @@
 package cache
 
 import (
+	"bytes"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/davidjwilkins/honey/utilities"
@@ -25,8 +27,63 @@ import (
 const SurrogateCapability = `honey="ESI/1.0"`
 
 // ESIHeader marks a cached response as using ESI.  It is only ever set by
-// the cache, and removed before responses are sent to clients.
+// the cache, and removed before responses are sent to clients.  Its value
+// is how (see esiMark): "all" or "personal", then the bypass cookies the
+// page is for, if it says.
 const ESIHeader = "X-Honey-Esi"
+
+// ESICookiesHeader is the response header with which a page which uses ESI
+// says whose personal parts its includes are: the bypass cookies (name
+// prefixes) of the visitors who may be served it, e.g.
+// "X-Honey-Esi-Cookies: comment_author_" for a page whose comments are an
+// include.  It may be sent more than once.  Without it, a page is for all
+// visitors with ESICookies.  It isn't sent on to clients.
+const ESICookiesHeader = "X-Honey-Esi-Cookies"
+
+// esiComment matches <!--esi ... --> comments, whose content is only seen
+// by an ESI processor
+var esiComment = regexp.MustCompile(`(?s)<!--esi.*?-->`)
+
+// esiMark returns the value of ESIHeader for a page which uses ESI, from
+// its header and body:
+//
+//   - "all" if every visitor gets it with its ESI processed
+//   - "personal" if only visitors with bypass cookies do: if it says whose
+//     personal parts it has (with ESICookiesHeader), and all its ESI is in
+//     <!--esi ... --> comments, so that it's as it should be for everyone
+//     else as it is (as a browser would show it without ESI).  It's then
+//     served to them like any other page, compressed once.
+//
+// followed by the bypass cookies it's for, if it says.
+func esiMark(header http.Header, body []byte) string {
+	lines := header.Values(ESICookiesHeader)
+	if len(lines) == 0 {
+		return "all"
+	}
+	var cookies []string
+	for _, line := range lines {
+		for _, name := range strings.Split(line, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				cookies = append(cookies, name)
+			}
+		}
+	}
+	mode := "personal"
+	if bytes.Contains(esiComment.ReplaceAll(body, nil), []byte("<esi:")) {
+		mode = "all"
+	}
+	return strings.Join(append([]string{mode}, cookies...), " ")
+}
+
+// esiCookiesOf returns the bypass cookies a page which uses ESI is for, as
+// its ESIHeader says, and whether it says
+func esiCookiesOf(mark string) ([]string, bool) {
+	fields := strings.Fields(mark)
+	if len(fields) < 2 {
+		return nil, false
+	}
+	return fields[1:], true
+}
 
 // usesESI returns whether r is an HTML response which uses ESI, to a
 // request which Honey said it supports them for
@@ -70,6 +127,26 @@ func (c *defaultCacher) ESIEligible(r *http.Request) bool {
 		found = true
 	}
 	return found
+}
+
+// ESIServes returns whether resp - a cached page - may be served to r, which
+// is ESIEligible: if it uses ESI, for all the bypass cookies r has (see
+// ESICookiesHeader).
+func (c *defaultCacher) ESIServes(resp Response, r *http.Request) bool {
+	if !UsesESI(resp) {
+		return false
+	}
+	covered, says := esiCookiesOf(resp.Header().Get(ESIHeader))
+	if !says {
+		return true
+	}
+	prefixes := c.bypassCookiesFor(r)
+	for _, cookie := range utilities.Cookies(r.Header) {
+		if hasAnyPrefix(cookie[0], prefixes) && !hasAnyPrefix(cookie[0], covered) {
+			return false
+		}
+	}
+	return true
 }
 
 // Derived returns what build makes of resp's body, made once for each

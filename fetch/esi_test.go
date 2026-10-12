@@ -55,17 +55,17 @@ func commenter(r *http.Request) string {
 	return "visitor"
 }
 
-func esiProxy(t *testing.T, o *esiOrigin, opts cache.Options, fetchOpts Options) string {
+func esiProxy(t *testing.T, o *origin, opts cache.Options, fetchOpts Options) string {
 	t.Helper()
 	if opts.BypassCookies == nil {
 		opts.BypassCookies = cache.WordPressBypassCookies
 	}
-	return routeProxy(t, o.origin, opts, fetchOpts).URL
+	return routeProxy(t, o, opts, fetchOpts).URL
 }
 
 func TestESIForVisitors(t *testing.T) {
 	o := newESIOrigin(true, "/post/?honey-esi=comments")
-	proxy := esiProxy(t, o, cache.Options{DefaultTTL: time.Hour}, Options{})
+	proxy := esiProxy(t, o.origin, cache.Options{DefaultTTL: time.Hour}, Options{})
 
 	resp, body := get(t, proxy+"/post/")
 	assert.Equal(t, "MISS", resp.Header.Get("X-Honey-Cache"))
@@ -84,7 +84,7 @@ func TestESIForVisitors(t *testing.T) {
 
 func TestESIForCommenters(t *testing.T) {
 	o := newESIOrigin(true, "/post/?honey-esi=comments")
-	proxy := esiProxy(t, o, cache.Options{DefaultTTL: time.Hour, ESICookies: []string{"comment_author_"}}, Options{})
+	proxy := esiProxy(t, o.origin, cache.Options{DefaultTTL: time.Hour, ESICookies: []string{"comment_author_"}}, Options{})
 	get(t, proxy+"/post/")
 
 	for i := 0; i < 2; i++ {
@@ -110,7 +110,7 @@ func TestESIForCommenters(t *testing.T) {
 
 func TestESIOnlyForSomeCookies(t *testing.T) {
 	o := newESIOrigin(true, "/post/?honey-esi=comments")
-	proxy := esiProxy(t, o, cache.Options{DefaultTTL: time.Hour}, Options{})
+	proxy := esiProxy(t, o.origin, cache.Options{DefaultTTL: time.Hour}, Options{})
 	get(t, proxy+"/post/")
 	resp, body := get(t, proxy+"/post/", "Cookie", "comment_author_abc=Jane")
 	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"), "without esiCookies, commenters go to the backend")
@@ -119,7 +119,7 @@ func TestESIOnlyForSomeCookies(t *testing.T) {
 
 func TestESIOnlyIfThePageSaysSo(t *testing.T) {
 	o := newESIOrigin(false, "/post/?honey-esi=comments")
-	proxy := esiProxy(t, o, cache.Options{}, Options{})
+	proxy := esiProxy(t, o.origin, cache.Options{}, Options{})
 	_, body := get(t, proxy+"/post/")
 	assert.Contains(t, body, `<esi:include src="/post/?honey-esi=comments"/>`)
 	assert.Contains(t, body, "<p>No ESI</p>")
@@ -127,7 +127,7 @@ func TestESIOnlyIfThePageSaysSo(t *testing.T) {
 
 	// Nor can a visitor ask for it
 	o = newESIOrigin(true, "/post/?honey-esi=comments")
-	proxy = esiProxy(t, o, cache.Options{}, Options{})
+	proxy = esiProxy(t, o.origin, cache.Options{}, Options{})
 	_, body = get(t, proxy+"/never-cached/", "Cookie", "wordpress_logged_in_abc=admin", "Surrogate-Capability", `honey="ESI/1.0"`)
 	assert.Contains(t, body, "<p>No ESI</p>", "the backend isn't told the cache supports ESI")
 	assert.NotContains(t, body, "esi")
@@ -142,7 +142,7 @@ func TestESIIncludesStayOnTheSite(t *testing.T) {
 	t.Cleanup(other.Close)
 	for _, src := range []string{other.URL + "/", "//evil.example/", "javascript:alert(1)", ""} {
 		o := newESIOrigin(true, src)
-		proxy := esiProxy(t, o, cache.Options{}, Options{})
+		proxy := esiProxy(t, o.origin, cache.Options{}, Options{})
 		_, body := get(t, proxy+"/post/")
 		assert.Equal(t, `<main>/post/</main> <p>ESI on</p> `, body, src)
 	}
@@ -151,7 +151,7 @@ func TestESIIncludesStayOnTheSite(t *testing.T) {
 
 func TestESIIncludesAreCompressedAndFiltered(t *testing.T) {
 	o := newESIOrigin(true, "comments-page?utm_source=x&amp;honey-esi=comments")
-	proxy := esiProxy(t, o, cache.Options{}, Options{QueryParams: []string{"p"}})
+	proxy := esiProxy(t, o.origin, cache.Options{}, Options{QueryParams: []string{"p"}})
 	resp, err := http.Get(proxy + "/post/" + strings.Repeat("x", 2000) + "/")
 	require.NoError(t, err)
 	body, _ := io.ReadAll(resp.Body)
@@ -247,7 +247,7 @@ func TestESIMarkerComesOnlyFromTheCache(t *testing.T) {
 		w.Header().Set(cache.ESIHeader, "1")
 		io.WriteString(w, `<esi:include src="/a"/>`)
 	})
-	proxy := esiProxy(t, &esiOrigin{origin: o}, cache.Options{}, Options{})
+	proxy := esiProxy(t, o, cache.Options{}, Options{})
 	for _, cookies := range []string{"", "wordpress_logged_in_abc=admin"} {
 		resp, body := get(t, proxy+"/post/", "Cookie", cookies)
 		assert.Equal(t, `<esi:include src="/a"/>`, body, cookies)
