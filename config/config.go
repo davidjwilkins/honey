@@ -137,6 +137,12 @@ type Optimize struct {
 	PreloadMainImage bool
 	// SelfHostFonts serves Google Fonts from the site itself
 	SelfHostFonts bool
+	// RemoveUnusedCSS puts the CSS each page uses in it, in place of the
+	// site's stylesheets, which are loaded once it's shown; keeping the
+	// rules whose selectors match KeepCSSMatching, as well as
+	// optimize.DefaultKeepCSS
+	RemoveUnusedCSS bool
+	KeepCSSMatching []string
 }
 
 // Security configures protecting WordPress (see guard.Options)
@@ -373,6 +379,8 @@ type File struct {
 		DelayScriptsTimeout  string   `toml:"delayScriptsTimeout,omitempty"`
 		PreloadMainImage     bool     `toml:"preloadMainImage,omitempty"`
 		SelfHostFonts        bool     `toml:"selfHostFonts,omitempty"`
+		RemoveUnusedCSS      bool     `toml:"removeUnusedCSS,omitempty"`
+		KeepCSSMatching      []string `toml:"keepCSSMatching,omitempty"`
 	} `toml:"optimize,omitempty"`
 	TLS struct {
 		Listen   string `toml:"listen,omitempty"`
@@ -466,6 +474,7 @@ func (f *File) Clone() *File {
 	c.CDN.Hosts = append([]string(nil), f.CDN.Hosts...)
 	c.Optimize.DelayScriptsMatching = append([]string(nil), f.Optimize.DelayScriptsMatching...)
 	c.Optimize.KeepScriptsMatching = append([]string(nil), f.Optimize.KeepScriptsMatching...)
+	c.Optimize.KeepCSSMatching = append([]string(nil), f.Optimize.KeepCSSMatching...)
 	c.Routes = nil
 	for _, r := range f.Routes {
 		r.Cache = cloneBool(r.Cache)
@@ -893,6 +902,7 @@ func parseOptimize(f *File) (Optimize, error) {
 		DelayScripts:     o.DelayScripts,
 		PreloadMainImage: o.PreloadMainImage,
 		SelfHostFonts:    o.SelfHostFonts,
+		RemoveUnusedCSS:  o.RemoveUnusedCSS,
 	}
 	for _, list := range []struct {
 		name string
@@ -901,10 +911,15 @@ func parseOptimize(f *File) (Optimize, error) {
 	}{
 		{"delayScriptsMatching", o.DelayScriptsMatching, &opt.DelayScriptsMatching},
 		{"keepScriptsMatching", o.KeepScriptsMatching, &opt.KeepScriptsMatching},
+		{"keepCSSMatching", o.KeepCSSMatching, &opt.KeepCSSMatching},
 	} {
 		for _, s := range list.from {
 			if strings.TrimSpace(s) == "" {
-				return opt, fmt.Errorf("optimize.%s: empty text would match every script", list.name)
+				what := "script"
+				if list.name == "keepCSSMatching" {
+					what = "rule"
+				}
+				return opt, fmt.Errorf("optimize.%s: empty text would match every %s", list.name, what)
 			}
 			*list.to = append(*list.to, s)
 		}

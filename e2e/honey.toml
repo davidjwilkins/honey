@@ -24,6 +24,8 @@ delayScriptsMatching = ["honey-e2e-delayed"]
 preloadMainImage = true
 # Google Fonts are served from the site itself
 selfHostFonts = true
+# Pages have the CSS they use, and load their stylesheets once shown
+removeUnusedCSS = true
 
 [security]
 # The tests come from Docker's network: others are made up, with

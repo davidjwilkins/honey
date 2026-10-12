@@ -20,8 +20,9 @@ const (
 	maxHints = 10
 	// maxHintBytes bounds their total length
 	maxHintBytes = 4 << 10
-	// maxHeadBytes is how far into a page its </head> is looked for
-	maxHeadBytes = 64 << 10
+	// maxHeadBytes is how far into a page its </head> is looked for (which
+	// may hold up to 150KB of a page's used CSS: see optimize.usedcss.go)
+	maxHeadBytes = 256 << 10
 	// hintPages is how many of a host's recently cached pages its common
 	// hints are worked out from, and minHintPages how many it needs
 	hintPages    = 8

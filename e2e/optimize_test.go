@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"fmt"
+	"html"
 	"net/http"
 	"regexp"
 	"strings"
@@ -92,4 +93,24 @@ func TestMainImagesArePreloaded(t *testing.T) {
 	// It's in the admin page's events
 	events := get(t, c, adminPage+"/")
 	assert.Contains(t, events.Body, "learned the main image")
+}
+
+func TestUnusedCSSIsRemoved(t *testing.T) {
+	path := newPostWith(t, "Styled post", "<!-- wp:paragraph --><p>Plain words.</p><!-- /wp:paragraph -->")
+	c := client(nil)
+	page := cached(t, c, path)
+	// WordPress puts small stylesheets (like Twenty Twenty-Five's) in the
+	// page itself; WooCommerce's are linked
+	sheet := regexp.MustCompile(`<style data-honey-used-css="([^"]*/woocommerce/assets/css/woocommerce\.css[^"]*)">(.*?)</style>`).FindStringSubmatch(page.Body)
+	require.NotNil(t, sheet, "WooCommerce's stylesheet: %s", page.Body)
+	href, used := html.UnescapeString(sheet[1]), sheet[2]
+	assert.Contains(t, page.Body, `</style><link rel='stylesheet' id='woocommerce-general-css' href='`+sheet[1]+`' media="print" onload="this.onload=null;this.media='all'">`,
+		"it's loaded once the page is shown")
+	assert.Contains(t, page.Body, `<noscript><link rel='stylesheet' id='woocommerce-general-css' href='`+sheet[1]+`' media='all' /></noscript>`)
+	notContains(t, page.Body, `<link rel='stylesheet' id='woocommerce-general-css' href='`+sheet[1]+`' media='all' />`+"\n",
+		"it doesn't hold the page up")
+	whole := get(t, c, href)
+	require.Equal(t, http.StatusOK, whole.StatusCode)
+	assert.Less(t, len(used), len(whole.Body)/2, "the page has less than half of the whole stylesheet")
+	t.Logf("%s: %d of %d bytes used", href, len(used), len(whole.Body))
 }

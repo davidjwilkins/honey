@@ -330,9 +330,10 @@ func build(cfg *config.Config, started time.Time) *honey {
 		}
 	}
 	// Pages are changed as they're cached, so that browsers load them
-	// faster; once a page's main image is learned, it's cached again with
-	// it preloaded
+	// faster; once a page's main image is learned, or its stylesheets
+	// fetched, it's cached again with them
 	var refresh func(host, path string)
+	var fetchStylesheet func(*http.Request) (*http.Response, error)
 	optimizer := optimize.New(optimize.Options{
 		DelayScripts:     cfg.Optimize.DelayScripts,
 		DelayMatching:    cfg.Optimize.DelayScriptsMatching,
@@ -340,6 +341,10 @@ func build(cfg *config.Config, started time.Time) *honey {
 		DelayTimeout:     cfg.Optimize.DelayScriptsTimeout,
 		PreloadMainImage: cfg.Optimize.PreloadMainImage,
 		SelfHostFonts:    cfg.Optimize.SelfHostFonts,
+		RemoveUnusedCSS:  cfg.Optimize.RemoveUnusedCSS,
+		KeepCSSMatching:  cfg.Optimize.KeepCSSMatching,
+		Fetch:            func(r *http.Request) (*http.Response, error) { return fetchStylesheet(r) },
+		Hosts:            cfg.Hosts,
 		BackendHost:      cfg.BackendHost,
 		Events:           eventLog,
 		Refresh:          func(host, path string) { refresh(host, path) },
@@ -396,6 +401,17 @@ func build(cfg *config.Config, started time.Time) *honey {
 	backendTransport := http.DefaultTransport.(*http.Transport).Clone()
 	backendTransport.ResponseHeaderTimeout = cfg.BackendTimeout
 	transport := fetch.StallTimeout(backendTransport, cfg.BackendStallTimeout)
+	// The site's stylesheets are fetched from the backend, for the
+	// optimizer
+	fetchStylesheet = func(r *http.Request) (*http.Response, error) {
+		r = r.Clone(r.Context())
+		r.URL.Scheme, r.URL.Host = cfg.Backend.Scheme, cfg.Backend.Host
+		if cfg.BackendHost != "" {
+			r.Host = cfg.BackendHost
+		}
+		r.Header.Set("User-Agent", "Honey/"+version)
+		return backendTransport.RoundTrip(r)
+	}
 	var recorder *metrics.Recorder
 	if cfg.MetricsListen != "" || cfg.AdminListen != "" || cfg.AdminHost != "" {
 		maxBytes := cfg.Cache.MaxBytes

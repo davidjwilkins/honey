@@ -46,6 +46,15 @@ func TestParseHints(t *testing.T) {
 	}, parseHints([]byte(wordPressHead)))
 }
 
+func TestParseHintsWithUsedCSS(t *testing.T) {
+	// As optimize's removeUnusedCSS leaves a stylesheet: in use once the
+	// page is shown, after its used CSS
+	head := `<html><head><style data-honey-used-css="/style.css">` + strings.Repeat(".x{color:red}", 10000) + `</style>` +
+		`<link rel="stylesheet" href="/style.css" media="print" onload="this.onload=null;this.media='all'">` +
+		`<noscript><link rel="stylesheet" href="/style.css"></noscript></head><body></body></html>`
+	assert.Equal(t, []string{"</style.css>; rel=preload; as=style"}, parseHints([]byte(head)))
+}
+
 func TestParseHintsLimits(t *testing.T) {
 	assert.Nil(t, parseHints([]byte(`<head><link rel="stylesheet" href="/a.css">`)), "without the end of the head, it can't be told what's in it")
 	assert.Nil(t, parseHints([]byte(`<head></head><body>`)))

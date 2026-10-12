@@ -748,11 +748,14 @@ keepScriptsMatching = ["gtag"]
 delayScriptsTimeout = "10s"
 preloadMainImage = true
 selfHostFonts = true
+removeUnusedCSS = true
+keepCSSMatching = [".is-open"]
 `)
 	require.NoError(t, err)
 	assert.Equal(t, Optimize{DelayScripts: true, DelayScriptsMatching: []string{"widget.js"}, KeepScriptsMatching: []string{"gtag"},
-		DelayScriptsTimeout: 10 * time.Second, PreloadMainImage: true, SelfHostFonts: true}, cfg.Optimize)
-	for _, bad := range []string{`delayScriptsTimeout = "soon"`, `delayScriptsMatching = [" "]`, `keepScriptsMatching = [""]`} {
+		DelayScriptsTimeout: 10 * time.Second, PreloadMainImage: true, SelfHostFonts: true,
+		RemoveUnusedCSS: true, KeepCSSMatching: []string{".is-open"}}, cfg.Optimize)
+	for _, bad := range []string{`delayScriptsTimeout = "soon"`, `delayScriptsMatching = [" "]`, `keepScriptsMatching = [""]`, `keepCSSMatching = [" "]`} {
 		_, err := Parse("[backend]\nuri = \"https://www.example.com\"\n[optimize]\n" + bad + "\n")
 		assert.Error(t, err, bad)
 	}

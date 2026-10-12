@@ -123,14 +123,17 @@ fi
 chrome="${CHROME_PATH:-$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)}"
 page=http://localhost:8080/page-speed/
 lighthouse() {
+  # (LIGHTHOUSE_FLAGS, e.g. for throttling the browser itself rather than
+  # simulating it)
   CHROME_PATH="$chrome" npx -y lighthouse@12.8.2 "$page" --quiet --only-categories=performance \
-    --output=json --output-path="$1" --chrome-flags="--headless=new --no-sandbox"
+    --output=json --output-path="$1" --chrome-flags="--headless=new --no-sandbox" ${LIGHTHOUSE_FLAGS:-}
 }
 # median prints the median of jq expression $2 over the reports $1-*.json
 median() {
   for f in work/lh-"$1"-*.json; do jq "$2" "$f"; done | sort -n | awk '{ v[NR] = $1 } END { print v[int((NR + 1) / 2)] }'
 }
-# scores runs Lighthouse 3 times, and reports the medians as a row
+# scores runs Lighthouse 3 times, and reports the medians as a row, and
+# what made up the median run's Largest Contentful Paint
 scores() {
   curl -fsS -o /dev/null "$page"
   curl -fsS -o /dev/null "$page"
@@ -138,6 +141,20 @@ scores() {
   score="$(median "$1" '.categories.performance.score * 100 | round')"
   ms() { median "$1" ".audits[\"$2\"].numericValue | round"; }
   report "| $2 | $score | $(ms "$1" first-contentful-paint) ms | $(ms "$1" largest-contentful-paint) ms | $(ms "$1" total-blocking-time) ms | $(ms "$1" speed-index) ms | $(median "$1" '.audits["cumulative-layout-shift"].numericValue * 1000 | round / 1000') |"
+  lcp_breakdown "$1" "$2" >> work/lcp.md
+}
+# lcp_breakdown describes the Largest Contentful Paint of the median of
+# runs $1 (labelled $2): its phases, and the page's fonts, images and
+# stylesheets, as fetched (unthrottled, so for their sizes, priorities and
+# order rather than their times)
+lcp_breakdown() {
+  f="$(for f in work/lh-"$1"-*.json; do printf '%s %s\n' "$(jq '.audits["largest-contentful-paint"].numericValue' "$f")" "$f"; done |
+    sort -n | awk '{ v[NR] = $2 } END { print v[int((NR + 1) / 2)] }')"
+  printf '**%s**: LCP %s ms (%s)\n\n' "$2" "$(jq '.audits["largest-contentful-paint"].numericValue | round' "$f")" \
+    "$(jq -r '[.audits["largest-contentful-paint-element"].details.items[]? | select(.type == "table") | .items[]? | select(.phase != null) | "\(.phase) \(.timing | round) ms"] | join(", ")' "$f")"
+  jq -r '.audits["network-requests"].details.items[] | select(.resourceType == "Font" or .resourceType == "Image" or .resourceType == "Stylesheet") |
+    "- \(.resourceType) `\(.url | split("?")[0] | split("/")[-1])`: \(.transferSize) bytes, \(.priority) priority, \(.networkRequestTime | round)-\(.networkEndTime | round) ms"' "$f"
+  printf '\n'
 }
 
 report "## Page speed"
@@ -146,24 +163,61 @@ report "Lighthouse 12 (mobile, simulated slow 4G and CPU) on \`/page-speed/\` - 
 report ""
 report "| | Performance | First Contentful Paint | Largest Contentful Paint | Total Blocking Time | Speed Index | Layout Shift |"
 report "| --- | --- | --- | --- | --- | --- | --- |"
+: > work/lcp.md
 scores off "Honey"
 
-# Again with [optimize] on
-{ cat honey.toml; printf '\n[optimize]\ndelayScripts = true\npreloadMainImage = true\nselfHostFonts = true\n'; } > work/honey-optimize.toml
-HONEY_CONFIG=./work/honey-optimize.toml compose up -d --force-recreate honey >/dev/null 2>&1
-for i in $(seq 1 30); do
-  if curl -fsS -o /dev/null "$page" 2>/dev/null; then break; fi
-  sleep 1
-done
-# A phone and a desktop report the page's main image
-for size in 412,915 1350,940; do
-  timeout 60 "$chrome" --headless=new --no-sandbox --window-size="$size" --virtual-time-budget=10000 --dump-dom "$page" >/dev/null 2>&1 || true
-done
-learned=no
-for i in $(seq 1 30); do
-  if curl -fsS "$page" | grep -q data-honey-main-image; then learned=yes; break; fi
-  sleep 1
-done
-scores on "Honey, with [optimize]: delayScripts, preloadMainImage, selfHostFonts"
+# optimized reports the scores with [optimize] settings $2 (TOML lines), as
+# $1 (labelled $3), once Honey has learned the page's main image (and
+# fetched its stylesheets, and Google's fonts)
+optimized() {
+  { cat honey.toml; printf '\n[optimize]\n%s\n' "$2"; } > work/honey-optimize.toml
+  HONEY_CONFIG=./work/honey-optimize.toml compose up -d --force-recreate honey >/dev/null 2>&1
+  for i in $(seq 1 30); do
+    if curl -fsS -o /dev/null "$page" 2>/dev/null; then break; fi
+    sleep 1
+  done
+  # A phone and a desktop report the page's main image
+  for size in 412,915 1350,940; do
+    timeout 60 "$chrome" --headless=new --no-sandbox --window-size="$size" --virtual-time-budget=10000 --dump-dom "$page" >/dev/null 2>&1 || true
+  done
+  learned=no
+  for i in $(seq 1 20); do
+    # (The script which reports it goes, once it's learned)
+    if ! curl -fsS "$page" 2>/dev/null | grep -q 'id="honey-main-image"'; then learned=yes; break; fi
+    sleep 1
+  done
+  case "$2" in *removeUnusedCSS*)
+    for i in $(seq 1 20); do
+      if curl -fsS "$page" 2>/dev/null | grep -q data-honey-used-css; then break; fi
+      sleep 1
+    done
+  esac
+  scores "$1" "$3"
+}
+all="delayScripts = true
+preloadMainImage = true
+selfHostFonts = true"
+optimized on "$all" "Honey, with [optimize]: delayScripts, preloadMainImage, selfHostFonts"
+learned_on=$learned
+optimized css "$all
+removeUnusedCSS = true" "... and removeUnusedCSS"
 report ""
-report "The main image was learned before Lighthouse ran: $learned."
+report "The main image was learned before Lighthouse ran: $learned_on, then $learned."
+report ""
+
+# With Chrome throttled for real, which is closer to what a phone sees:
+# Lighthouse's simulation counts whatever started before the main image was
+# shown, in a fast load, as holding it up
+report "### With Chrome throttled for real, rather than simulated"
+report ""
+report "| | Performance | First Contentful Paint | Largest Contentful Paint | Total Blocking Time | Speed Index | Layout Shift |"
+report "| --- | --- | --- | --- | --- | --- | --- |"
+LIGHTHOUSE_FLAGS=--throttling-method=devtools
+optimized devtools-off "" "Honey, throttled by Chrome"
+optimized devtools-on "$all" "Honey, with delayScripts, preloadMainImage, selfHostFonts, throttled by Chrome"
+LIGHTHOUSE_FLAGS=
+report ""
+report "<details><summary>What made up each Largest Contentful Paint (the median run's), and the fonts, images and stylesheets fetched</summary>"
+report ""
+report "$(cat work/lcp.md)"
+report "</details>"

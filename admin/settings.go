@@ -199,6 +199,11 @@ var sections = []section{
 		{Key: "optimize.selfHostFonts", Kind: kindBool, Help: "Serve Google Fonts from the site itself, rather than having browsers fetch them from Google",
 			get: func(f *config.File) string { return yesNo(f.Optimize.SelfHostFonts) },
 			set: func(f *config.File, v string) error { f.Optimize.SelfHostFonts = v == "yes"; return nil }},
+		{Key: "optimize.removeUnusedCSS", Kind: kindBool, Help: "Put the CSS each page uses in it, and load the site's whole stylesheets once it's shown",
+			get: func(f *config.File) string { return yesNo(f.Optimize.RemoveUnusedCSS) },
+			set: func(f *config.File, v string) error { f.Optimize.RemoveUnusedCSS = v == "yes"; return nil }},
+		list("optimize.keepCSSMatching", "CSS rules always to keep: text in their selectors, e.g. classes scripts add",
+			func(f *config.File) *[]string { return &f.Optimize.KeepCSSMatching }),
 	}},
 	{"Backend", []*field{
 		text("backend.uri", "The web server running WordPress", "",

@@ -2,6 +2,7 @@ package optimize
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"html"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/andybalholm/brotli"
+	"github.com/davidjwilkins/honey/utilities"
 )
 
 // Self-hosting Google Fonts: a page using Google Fonts has the browser
@@ -25,7 +29,8 @@ import (
 // another font while the font loads, unless the page asked otherwise).
 // The fonts are fetched the first time they're asked for.  Both are kept,
 // in memory, and the fonts sent to browsers to keep for a year (their URLs
-// change with them).
+// change with them).  Stylesheets are kept compressed too (with brotli and
+// gzip, as Google sends them), as they hold the page up.
 
 // FontsPath is where self-hosted fonts and their stylesheets are served
 const FontsPath = "/.well-known/honey/fonts/"
@@ -140,6 +145,32 @@ type fontFile struct {
 	body        []byte
 	contentType string
 	fetched     time.Time
+	// br and gzip are a stylesheet's body, compressed
+	br, gzip []byte
+}
+
+// size is how much memory f takes
+func (f *fontFile) size() int {
+	return len(f.body) + len(f.br) + len(f.gzip)
+}
+
+// encoded returns f's body as a browser accepting acceptEncoding is sent
+// it, and its Content-Encoding ("" if it isn't compressed)
+func (f *fontFile) encoded(acceptEncoding string) ([]byte, string) {
+	var available []string
+	if f.br != nil {
+		available = append(available, "br")
+	}
+	if f.gzip != nil {
+		available = append(available, "gzip")
+	}
+	switch utilities.PreferredEncoding(acceptEncoding, available...) {
+	case "br":
+		return f.br, "br"
+	case "gzip":
+		return f.gzip, "gzip"
+	}
+	return f.body, ""
 }
 
 type fontFetch struct {
@@ -203,13 +234,19 @@ func (s *fontStore) serve(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Content-Type", file.contentType)
 	h.Set("X-Content-Type-Options", "nosniff")
+	body := file.body
 	if css {
 		h.Set("Cache-Control", "public, max-age=86400")
+		h.Add("Vary", "Accept-Encoding")
+		var encoding string
+		if body, encoding = file.encoded(r.Header.Get("Accept-Encoding")); encoding != "" {
+			h.Set("Content-Encoding", encoding)
+		}
 	} else {
 		h.Set("Cache-Control", "public, max-age=31536000, immutable")
 		h.Set("Access-Control-Allow-Origin", "*")
 	}
-	http.ServeContent(w, r, "", file.fetched, bytes.NewReader(file.body))
+	http.ServeContent(w, r, "", file.fetched, bytes.NewReader(body))
 }
 
 // get returns the file key, fetching it from upstream if it isn't kept (or,
@@ -293,6 +330,7 @@ func (s *fontStore) fetch(key, upstream string, css bool, f *fontFetch) {
 	file := &fontFile{body: body, contentType: resp.Header.Get("Content-Type"), fetched: s.opts.now()}
 	if css {
 		file.body, file.contentType = s.localCSS(body), "text/css; charset=utf-8"
+		file.br, file.gzip = compressCSS(file.body)
 	} else if !strings.HasPrefix(file.contentType, "font/") {
 		file.contentType = "font/" + key[strings.LastIndexByte(key, '.')+1:]
 	}
@@ -318,17 +356,31 @@ func (s *fontStore) keep(key string, file *fontFile) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old := s.files[key]; old != nil {
-		s.bytes -= len(old.body)
+		s.bytes -= old.size()
 	}
 	for k, f := range s.files {
-		if s.bytes+len(file.body) <= maxFontBytes {
+		if s.bytes+file.size() <= maxFontBytes {
 			break
 		}
 		delete(s.files, k)
-		s.bytes -= len(f.body)
+		s.bytes -= f.size()
 	}
 	s.files[key] = file
-	s.bytes += len(file.body)
+	s.bytes += file.size()
+}
+
+// compressCSS returns css compressed with brotli and gzip
+func compressCSS(css []byte) (br, gz []byte) {
+	var b bytes.Buffer
+	w := brotli.NewWriterLevel(&b, brotli.BestCompression)
+	w.Write(css)
+	w.Close()
+	br = bytes.Clone(b.Bytes())
+	b.Reset()
+	g, _ := gzip.NewWriterLevel(&b, gzip.BestCompression)
+	g.Write(css)
+	g.Close()
+	return br, bytes.Clone(b.Bytes())
 }
 
 // fontsURL returns a Google Fonts stylesheet URL's self-hosted path, or ""

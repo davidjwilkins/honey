@@ -85,6 +85,9 @@ stripCookies = []
 # preloadMainImage = true
 # Serve Google Fonts from the site itself
 # selfHostFonts = true
+# Put the CSS each page uses in it, and load the site's whole stylesheets
+# once it's shown
+# removeUnusedCSS = true
 
 # Don't cache previews, the RSS feed, or the admin and login pages.
 # regex = true matches against the path and query string; otherwise
