@@ -1,0 +1,33 @@
+name: Compare
+
+# Compares Honey with other ways of caching WordPress, and measures its
+# page optimizations with Lighthouse (see bench/compare/run.sh).  It takes a
+# while, so it only runs when the comparison changes, or when asked.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "bench/compare/**"
+      - ".github/workflows/compare.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Compare with other caches
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Compare
+        run: ./bench/compare/run.sh

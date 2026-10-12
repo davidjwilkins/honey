@@ -1,0 +1,95 @@
+# One WordPress, served four ways, for comparing Honey with other caches:
+# see run.sh.  Images come from Google's mirror of Docker Hub.
+name: honey-compare
+
+x-wordpress-env: &wordpress-env
+  WORDPRESS_DB_HOST: db
+  WORDPRESS_DB_USER: wordpress
+  WORDPRESS_DB_PASSWORD: wordpress
+  WORDPRESS_DB_NAME: wordpress
+  WORDPRESS_CONFIG_EXTRA: |
+    define('HONEY_URL', 'http://honey:8080');
+    define('HONEY_SECRET', 'compare-secret-0123456789');
+    define('DISABLE_WP_CRON', true);
+
+services:
+  db:
+    image: mirror.gcr.io/library/mariadb:11.4
+    environment:
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: wordpress
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      retries: 60
+
+  # WordPress on Apache with mod_php: on its own, with WP Super Cache, and
+  # behind Honey
+  wordpress:
+    image: mirror.gcr.io/library/wordpress:7.0-php8.3-apache
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *wordpress-env
+    volumes:
+      - wordpress:/var/www/html
+      - ../../contrib/wordpress/honey-purge.php:/var/www/html/wp-content/mu-plugins/honey-purge.php:ro
+
+  # The same WordPress on PHP-FPM, behind nginx's FastCGI cache
+  fpm:
+    image: mirror.gcr.io/library/wordpress:7.0-php8.3-fpm
+    depends_on:
+      - wordpress
+    environment: *wordpress-env
+    volumes:
+      - wordpress:/var/www/html
+      - ../../contrib/wordpress/honey-purge.php:/var/www/html/wp-content/mu-plugins/honey-purge.php:ro
+
+  nginx:
+    image: mirror.gcr.io/library/nginx:1.29-alpine
+    depends_on:
+      - fpm
+    volumes:
+      - wordpress:/var/www/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  honey:
+    # built by run.sh
+    image: honey:compare
+    depends_on:
+      - wordpress
+    command: ["-config", "/etc/honey/honey.toml"]
+    volumes:
+      # run.sh swaps in a config with [optimize] on, for the page speed tests
+      - ${HONEY_CONFIG:-./honey.toml}:/etc/honey/honey.toml:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  # WP-CLI, for setting WordPress up and editing it during the tests
+  cli:
+    image: mirror.gcr.io/library/wordpress:cli-2.12-php8.3
+    profiles: ["cli"]
+    user: "33:33"
+    environment:
+      <<: *wordpress-env
+      HOME: /tmp
+    volumes:
+      - wordpress:/var/www/html
+      - ../../contrib/wordpress/honey-purge.php:/var/www/html/wp-content/mu-plugins/honey-purge.php:ro
+      - ./setup.sh:/setup.sh:ro
+      - ./wp-super-cache.sh:/wp-super-cache.sh:ro
+      - ./work:/work
+
+  # Runs the load generator inside the network, so that Docker's port
+  # forwarding doesn't limit it
+  load:
+    image: mirror.gcr.io/library/alpine:3.22
+    profiles: ["load"]
+    volumes:
+      - ./work:/work:ro
+    entrypoint: ["/work/load"]
+
+volumes:
+  wordpress:

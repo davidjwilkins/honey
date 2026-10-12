@@ -33,6 +33,7 @@ func main() {
 	uncached := flag.Float64("uncached", 0, "the share of requests (0-1) for made-up search pages, which the cache can't answer")
 	purgeEvery := flag.Duration("purge-every", 0, "soft purge everything this often (needs -secret)")
 	secret := flag.String("secret", "", "control.secret, for purging")
+	cacheHeader := flag.String("cache-header", "X-Honey-Cache", "the response header saying how the cache handled each request")
 	flag.Parse()
 
 	list := strings.Split(*paths, ",")
@@ -86,7 +87,7 @@ func main() {
 				res.latencies = append(res.latencies, time.Since(began))
 				res.bytes += n
 				res.statuses[resp.StatusCode]++
-				res.cache[resp.Header.Get("X-Honey-Cache")]++
+				res.cache[resp.Header.Get(*cacheHeader)]++
 			}
 		}(&results[i])
 	}

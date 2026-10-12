@@ -1,0 +1,20 @@
+# Honey in front of the comparison's WordPress: much like
+# config/wordpress.toml.  run.sh swaps [optimize] on for the page speed tests.
+listen = ":8080"
+hosts = ["localhost"]
+
+[backend]
+uri = "http://wordpress"
+
+[cache]
+defaultTTL = "10m"
+staleIfError = "1h"
+staleWhileRevalidate = "1d"
+
+[control]
+secret = "compare-secret-0123456789"
+
+[[route]]
+match = "(?:[?&]preview=true(?:&|$)|/(?:feed|wp-admin|wp-login))"
+regex = true
+cache = false
