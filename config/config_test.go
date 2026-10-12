@@ -544,3 +544,40 @@ func TestParseTrustedProxies(t *testing.T) {
 	_, err = Parse("trustedProxies = [\"caddy\"]\n[backend]\nuri = \"http://127.0.0.1:8081\"\n")
 	assert.ErrorContains(t, err, "trustedProxies")
 }
+
+func TestExportRoundTrips(t *testing.T) {
+	for _, path := range []string{"wordpress.toml", "../contrib/deploy/honey.toml", "../e2e/honey.toml"} {
+		cfg, err := Load(path)
+		require.NoError(t, err, path)
+		exported, err := cfg.File.TOML()
+		require.NoError(t, err, path)
+		again, err := Parse(string(exported))
+		require.NoError(t, err, "%s exported as:\n%s", path, exported)
+		cfg.File, again.File = nil, nil
+		assert.Equal(t, cfg, again, "%s exported as:\n%s", path, exported)
+	}
+}
+
+func TestExportLeavesOutDefaults(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"http://127.0.0.1:8081\"\n[cache]\nbypassCookies = []\nstaticFiles = false\n")
+	require.NoError(t, err)
+	exported, err := cfg.File.TOML()
+	require.NoError(t, err)
+	assert.Equal(t, "[backend]\nuri = \"http://127.0.0.1:8081\"\n\n[cache]\nbypassCookies = []\nstaticFiles = false\n", string(exported),
+		"an empty list and false are kept, as they aren't the defaults")
+}
+
+func TestClone(t *testing.T) {
+	cfg, err := Load("wordpress.toml")
+	require.NoError(t, err)
+	c := cfg.File.Clone()
+	assert.Equal(t, cfg.File, c)
+	*c.Cache.BypassCookies = append(*c.Cache.BypassCookies, "x")
+	*c.Cache.StaticFiles = false
+	*c.Routes[1].BypassCookies = append(*c.Routes[1].BypassCookies, "y")
+	c.Routes[0].Match = "/other"
+	assert.NotContains(t, *cfg.File.Cache.BypassCookies, "x", "the clone is a deep copy")
+	assert.True(t, *cfg.File.Cache.StaticFiles)
+	assert.Empty(t, *cfg.File.Routes[1].BypassCookies)
+	assert.NotEqual(t, "/other", cfg.File.Routes[0].Match)
+}

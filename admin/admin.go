@@ -19,11 +19,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/davidjwilkins/honey/config"
 	"github.com/davidjwilkins/honey/events"
+	"github.com/davidjwilkins/honey/fetch"
 	"github.com/davidjwilkins/honey/metrics"
 )
 
-//go:embed page.html admin.css admin.js
+//go:embed page.html settings.html admin.css admin.js
 var files embed.FS
 
 var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
@@ -32,7 +34,9 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"percent":  formatPercent,
 	"count":    formatCount,
 	"svg":      svgPercent,
-}).ParseFS(files, "page.html"))
+	"freshFor": freshFor,
+	"int64":    func(n int) int64 { return int64(n) },
+}).ParseFS(files, "page.html", "settings.html"))
 
 // Options configures the admin page.
 type Options struct {
@@ -55,6 +59,16 @@ type Options struct {
 	// Count returns how many cached responses Purge would remove, if set
 	// (see fetch.Counter), so that the page can say before purging.
 	Count func(rawURL string, prefix bool) (int, error)
+	// Explain says how a request would be handled (see fetch.Explain), for
+	// the page which tests URLs, if set.
+	Explain func(r *http.Request) fetch.Explanation
+	// Origin is the scheme and host (e.g. https://www.example.com) of
+	// paths tested without them.
+	Origin string
+	// Settings are Honey's settings, as written in its config file, for
+	// the settings page, if set.  The page never changes them: it lets
+	// them be edited and exported as a new config file.
+	Settings *config.File
 }
 
 // Handler returns the admin page's handler.  As well as the page, it
@@ -66,6 +80,10 @@ func Handler(opts Options) http.Handler {
 	mux.HandleFunc("/stats", a.stats)
 	mux.HandleFunc("/purge", a.purge)
 	mux.HandleFunc("/count", a.count)
+	mux.HandleFunc("/test", a.test)
+	mux.HandleFunc("/settings", a.settings)
+	mux.HandleFunc("/settings/preview", a.settingsPreview)
+	mux.HandleFunc("/settings/export", a.settingsExport)
 	mux.Handle("/admin.css", static("admin.css", "text/css; charset=utf-8"))
 	mux.Handle("/admin.js", static("admin.js", "text/javascript; charset=utf-8"))
 	pages := browserOnly(mux)
@@ -158,12 +176,29 @@ func static(name, contentType string) http.Handler {
 	})
 }
 
-// view is what the page shows
-type view struct {
+// chrome is what every page's header shows
+type chrome struct {
 	Version string
 	Backend string
 	Hosts   string
 	Uptime  time.Duration
+	// Section is the page's: dashboard, test or settings
+	Section string
+}
+
+func (a *admin) chrome(section string) chrome {
+	return chrome{
+		Version: a.opts.Version,
+		Backend: a.opts.Backend,
+		Hosts:   strings.Join(a.opts.Hosts, ", "),
+		Uptime:  time.Since(a.opts.Started),
+		Section: section,
+	}
+}
+
+// view is what the dashboard shows
+type view struct {
+	chrome
 
 	Entries  int
 	Bytes    int64
@@ -253,12 +288,7 @@ var results = []result{
 }
 
 func (a *admin) view() view {
-	v := view{
-		Version: a.opts.Version,
-		Backend: a.opts.Backend,
-		Hosts:   strings.Join(a.opts.Hosts, ", "),
-		Uptime:  time.Since(a.opts.Started),
-	}
+	v := view{chrome: a.chrome("dashboard")}
 	for _, e := range a.opts.Events.Recent(12) {
 		v.Events = append(v.Events, event{Time: formatTime(e.Time), Kind: string(e.Kind), Text: e.Text, Count: e.Count})
 	}
@@ -430,7 +460,7 @@ func (a *admin) stats(w http.ResponseWriter, r *http.Request) {
 	a.render(w, "stats", a.view())
 }
 
-func (a *admin) render(w http.ResponseWriter, name string, v view) {
+func (a *admin) render(w http.ResponseWriter, name string, v any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := page.ExecuteTemplate(w, name, v); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

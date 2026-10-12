@@ -256,6 +256,10 @@ With `[admin] listen` set, that address serves a page showing how the cache is d
 
 and a bar to purge a URL or everything under a path - softly or not - which says how many cached responses it will remove as you type, or to purge the whole cache.  `/metrics` is served there too.
 
+**Test a URL** shows how Honey would handle a request - a URL (or a path), and optionally the visitor's cookies - step by step, without fetching anything: whether its host is served, which route applies, which query parameters and cookies are removed, whether it's cacheable (and if not, why), its cache key, how long it stays fresh, and whether it's in the cache now.
+
+**Settings** shows Honey's settings as a form, with each one's default.  Change them there and it shows the config file they make - what changed, and whether it's valid - and exports it as a new `honey.toml`.  Honey's own config file is never changed: replace it with the export and restart Honey to use the new settings.  The purge secret is never shown on the page, but it is in the export.
+
 It has no login, so only listen on a private address, e.g. `127.0.0.1:9090`, and reach it with an SSH tunnel (`ssh -L 9090:127.0.0.1:9090 your-server`, then open http://localhost:9090/).  To protect it from other websites you visit, it is only served for an IP address or `localhost` (not a hostname, so that a site can't point its own hostname at it), its forms only accept posts from the page itself, and it can't be framed.  With Docker, listen on `":9090"` inside the container and publish it to the host's loopback only: `-p 127.0.0.1:9090:9090`.
 
 ## Metrics

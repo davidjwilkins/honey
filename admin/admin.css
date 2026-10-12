@@ -138,3 +138,74 @@ footer { font-size: 13px; }
   .buckets li:nth-child(even) { visibility: hidden; }
   .big { font-size: 28px; }
 }
+
+/* The tabs */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.tabs a { display: flex; align-items: center; min-height: 40px; padding: 0 14px; border-radius: 6px; color: var(--muted); text-decoration: none; }
+.tabs a:hover { color: var(--text); background: var(--panel); }
+.tabs a[aria-current=page] { background: var(--line); color: var(--text); }
+footer .live { display: inline-flex; align-items: center; gap: 6px; margin-right: 6px; }
+
+/* The settings and test pages */
+.intro { display: flex; flex-direction: column; gap: 4px; }
+.intro h1 { margin: 0; font-size: 24px; font-weight: 600; }
+.small { font-size: 13px; }
+label { font-size: 13px; color: var(--muted); }
+input[type=text], input[type=password], select, textarea {
+  box-sizing: border-box; width: 100%; min-height: 44px; padding: 0 12px;
+  background: var(--bg); color: var(--text); border: 1px solid var(--control); border-radius: 6px;
+  font: 14px var(--mono);
+}
+textarea { padding: 10px 12px; line-height: 1.5; resize: vertical; }
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button.secondary { background: transparent; color: var(--text); border: 1px solid var(--control); font-weight: 500; font-size: 14px; }
+button.secondary:hover { background: var(--line); }
+.secondary-link { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; }
+.fieldrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.field { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.field.wide { flex: 3 1 360px; }
+.field.narrow { flex: 0 0 110px; }
+.verdict { flex-direction: row; flex-wrap: wrap; justify-content: space-between; align-items: center; }
+.verdict.good { border-color: #2f5a41; }
+.verdict.bad { border-color: var(--alert-line); }
+.verdict-text { font-size: 24px; font-weight: 600; }
+.verdict.good .verdict-text { color: #8fe0b0; }
+.verdict.bad .verdict-text { color: var(--bad); }
+.steps { flex: 3 1 520px; }
+.steps ol { list-style: none; margin: 0; padding: 0; }
+.steps li { display: flex; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+.steps li div { display: flex; flex-direction: column; gap: 2px; }
+.steps li .muted { font-size: 14px; overflow-wrap: anywhere; }
+.steps svg { flex: none; margin-top: 2px; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.step-ok svg { stroke: var(--good); }
+.step-changed svg { stroke: var(--accent); }
+.step-stopped svg { stroke: var(--bad); }
+.side { flex: 2 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.key, .toml { margin: 0; padding: 10px 12px; background: var(--bg); border-radius: 6px; font: 13px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--soft); }
+.facts { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; font-size: 14px; }
+.facts dt { color: var(--muted); font-size: 13px; }
+.facts dd { margin: 0; }
+
+.settings { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.fields { flex: 3 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.fields fieldset { margin: 0; }
+.fields legend { float: left; width: 100%; padding: 0; font-size: 16px; font-weight: 600; }
+.setting { display: flex; flex-direction: column; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+.setting label.mono { color: var(--soft); }
+.setting.changed label.mono { color: var(--accent); }
+.setting.changed input, .setting.changed select, .setting.changed textarea { border-color: var(--accent); }
+.setting.invalid input, .setting.invalid select, .setting.invalid textarea { border-color: var(--bad); }
+.setting .check { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.help { font-size: 13px; color: var(--muted); }
+.field-problem { font-size: 13px; color: var(--bad); }
+.code { font-size: 13px; }
+.changes { flex: 2 1 340px; min-width: 0; position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
+.changes .toml span { display: block; }
+.toml .add { color: #8fe0b0; background: #12301f; }
+.toml .del { color: var(--bad); background: var(--problem-bg); }
+.valid { font-size: 13px; color: #8fe0b0; }
+.not-valid { font-size: 13px; color: var(--bad); }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+@media (max-width: 900px) {
+  .changes { position: static; max-height: none; }
+}

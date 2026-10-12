@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"net/url"
@@ -66,6 +67,8 @@ type Config struct {
 	Routes              []Route
 	Control             Control
 	Warm                Warm
+	// File is the settings as they were written, e.g. to export them
+	File *File
 }
 
 // Warm configures warming the cache from a sitemap (see the warm
@@ -154,67 +157,148 @@ type Route struct {
 	BrowserCacheControl *string
 }
 
-// file is the layout of the TOML file
-type file struct {
-	Listen         string    `toml:"listen"`
-	TrustedProxies *[]string `toml:"trustedProxies"`
-	Hosts          *[]string `toml:"hosts"`
+// File is the layout of the TOML file: the settings as they are written,
+// before they are validated, and without defaults filled in.
+type File struct {
+	Listen         string    `toml:"listen,omitempty"`
+	TrustedProxies *[]string `toml:"trustedProxies,omitempty"`
+	Hosts          *[]string `toml:"hosts,omitempty"`
 	Metrics        struct {
-		Listen string `toml:"listen"`
-	} `toml:"metrics"`
+		Listen string `toml:"listen,omitempty"`
+	} `toml:"metrics,omitempty"`
 	Admin struct {
-		Listen string `toml:"listen"`
-	} `toml:"admin"`
+		Listen string `toml:"listen,omitempty"`
+	} `toml:"admin,omitempty"`
 	Log struct {
-		Access bool   `toml:"access"`
-		Format string `toml:"format"`
-	} `toml:"log"`
+		Access bool   `toml:"access,omitempty"`
+		Format string `toml:"format,omitempty"`
+	} `toml:"log,omitempty"`
 	Backend struct {
-		URI          string `toml:"uri"`
-		Host         string `toml:"host"`
-		Timeout      string `toml:"timeout"`
-		StallTimeout string `toml:"stallTimeout"`
-	} `toml:"backend"`
+		URI          string `toml:"uri,omitempty"`
+		Host         string `toml:"host,omitempty"`
+		Timeout      string `toml:"timeout,omitempty"`
+		StallTimeout string `toml:"stallTimeout,omitempty"`
+	} `toml:"backend,omitempty"`
 	Cache struct {
-		MaxSize         string    `toml:"maxSize"`
-		MaxObjectSize   string    `toml:"maxObjectSize"`
-		DefaultTTL      string    `toml:"defaultTTL"`
-		StaleIfError    string    `toml:"staleIfError"`
-		StaleWhileReval string    `toml:"staleWhileRevalidate"`
-		Persist         string    `toml:"persist"`
-		PersistInterval string    `toml:"persistInterval"`
-		AllowedCookies  []string  `toml:"allowedCookies"`
-		BypassCookies   *[]string `toml:"bypassCookies"`
-		StripCookies    []string  `toml:"stripCookies"`
-		BrowserCC       string    `toml:"browserCacheControl"`
-		QueryParams     *[]string `toml:"queryParams"`
-		StaticFiles     *bool     `toml:"staticFiles"`
-		Brotli          *bool     `toml:"brotli"`
-		Gzip            *bool     `toml:"gzip"`
-		CompressMinSize string    `toml:"compressMinSize"`
-	} `toml:"cache"`
+		MaxSize         string    `toml:"maxSize,omitempty"`
+		MaxObjectSize   string    `toml:"maxObjectSize,omitempty"`
+		DefaultTTL      string    `toml:"defaultTTL,omitempty"`
+		StaleIfError    string    `toml:"staleIfError,omitempty"`
+		StaleWhileReval string    `toml:"staleWhileRevalidate,omitempty"`
+		Persist         string    `toml:"persist,omitempty"`
+		PersistInterval string    `toml:"persistInterval,omitempty"`
+		AllowedCookies  []string  `toml:"allowedCookies,omitempty"`
+		BypassCookies   *[]string `toml:"bypassCookies,omitempty"`
+		StripCookies    []string  `toml:"stripCookies,omitempty"`
+		BrowserCC       string    `toml:"browserCacheControl,omitempty"`
+		QueryParams     *[]string `toml:"queryParams,omitempty"`
+		StaticFiles     *bool     `toml:"staticFiles,omitempty"`
+		Brotli          *bool     `toml:"brotli,omitempty"`
+		Gzip            *bool     `toml:"gzip,omitempty"`
+		CompressMinSize string    `toml:"compressMinSize,omitempty"`
+	} `toml:"cache,omitempty"`
 	Warm struct {
-		Sitemap  string  `toml:"sitemap"`
-		Rate     float64 `toml:"rate"`
-		MaxPages int     `toml:"maxPages"`
-		Interval string  `toml:"interval"`
-	} `toml:"warm"`
+		Sitemap  string  `toml:"sitemap,omitempty"`
+		Rate     float64 `toml:"rate,omitempty,omitzero"`
+		MaxPages int     `toml:"maxPages,omitempty,omitzero"`
+		Interval string  `toml:"interval,omitempty"`
+	} `toml:"warm,omitempty"`
 	Control struct {
-		AllowIPs     []string `toml:"allowIPs"`
-		Secret       string   `toml:"secret"`
-		SecretHeader string   `toml:"secretHeader"`
-	} `toml:"control"`
-	Routes []struct {
-		Match         string    `toml:"match"`
-		Regex         bool      `toml:"regex"`
-		Cache         *bool     `toml:"cache"`
-		DefaultTTL    string    `toml:"defaultTTL"`
-		StaleIfError  string    `toml:"staleIfError"`
-		StaleWhileRev string    `toml:"staleWhileRevalidate"`
-		QueryParams   *[]string `toml:"queryParams"`
-		BypassCookies *[]string `toml:"bypassCookies"`
-		BrowserCC     *string   `toml:"browserCacheControl"`
-	} `toml:"route"`
+		AllowIPs     []string `toml:"allowIPs,omitempty"`
+		Secret       string   `toml:"secret,omitempty"`
+		SecretHeader string   `toml:"secretHeader,omitempty"`
+	} `toml:"control,omitempty"`
+	Routes []RouteFile `toml:"route,omitempty"`
+}
+
+// RouteFile is the layout of a [[route]] in the TOML file
+type RouteFile struct {
+	Match         string    `toml:"match"`
+	Regex         bool      `toml:"regex,omitempty"`
+	Cache         *bool     `toml:"cache,omitempty"`
+	DefaultTTL    string    `toml:"defaultTTL,omitempty"`
+	StaleIfError  string    `toml:"staleIfError,omitempty"`
+	StaleWhileRev string    `toml:"staleWhileRevalidate,omitempty"`
+	QueryParams   *[]string `toml:"queryParams,omitempty"`
+	BypassCookies *[]string `toml:"bypassCookies,omitempty"`
+	BrowserCC     *string   `toml:"browserCacheControl,omitempty"`
+}
+
+// Decode decodes the settings in a config file's contents, without
+// validating them (see Parse).  It returns an error if the file isn't
+// TOML, or has settings Honey doesn't support.
+func Decode(data string) (*File, error) {
+	var f File
+	meta, err := toml.Decode(data, &f)
+	if err != nil {
+		return nil, err
+	}
+	if undecoded := meta.Undecoded(); len(undecoded) > 0 {
+		keys := make([]string, len(undecoded))
+		for i, key := range undecoded {
+			keys[i] = key.String()
+		}
+		sort.Strings(keys)
+		return nil, fmt.Errorf("unsupported settings: %s", strings.Join(keys, ", "))
+	}
+	return &f, nil
+}
+
+// TOML encodes the settings as a config file.  Settings which aren't set
+// are left out, so that their defaults apply.
+func (f *File) TOML() ([]byte, error) {
+	var b bytes.Buffer
+	enc := toml.NewEncoder(&b)
+	enc.Indent = ""
+	if err := enc.Encode(f); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
+// Clone returns a deep copy of f, which can be changed without changing f.
+func (f *File) Clone() *File {
+	// Every field is a value, a slice of strings or a pointer to one, or
+	// a pointer to a bool or string, so this is enough
+	c := *f
+	c.TrustedProxies = cloneList(f.TrustedProxies)
+	c.Hosts = cloneList(f.Hosts)
+	c.Cache.AllowedCookies = append([]string(nil), f.Cache.AllowedCookies...)
+	c.Cache.BypassCookies = cloneList(f.Cache.BypassCookies)
+	c.Cache.StripCookies = append([]string(nil), f.Cache.StripCookies...)
+	c.Cache.QueryParams = cloneList(f.Cache.QueryParams)
+	c.Cache.StaticFiles = cloneBool(f.Cache.StaticFiles)
+	c.Cache.Brotli = cloneBool(f.Cache.Brotli)
+	c.Cache.Gzip = cloneBool(f.Cache.Gzip)
+	c.Control.AllowIPs = append([]string(nil), f.Control.AllowIPs...)
+	c.Routes = nil
+	for _, r := range f.Routes {
+		r.Cache = cloneBool(r.Cache)
+		r.QueryParams = cloneList(r.QueryParams)
+		r.BypassCookies = cloneList(r.BypassCookies)
+		if r.BrowserCC != nil {
+			cc := *r.BrowserCC
+			r.BrowserCC = &cc
+		}
+		c.Routes = append(c.Routes, r)
+	}
+	return &c
+}
+
+func cloneList(l *[]string) *[]string {
+	if l == nil {
+		return nil
+	}
+	c := append([]string{}, *l...)
+	return &c
+}
+
+func cloneBool(b *bool) *bool {
+	if b == nil {
+		return nil
+	}
+	c := *b
+	return &c
 }
 
 // Load reads and validates the config file at path.
@@ -232,21 +316,17 @@ func Load(path string) (*Config, error) {
 
 // Parse parses and validates a config file's contents.
 func Parse(data string) (*Config, error) {
-	var f file
-	meta, err := toml.Decode(data, &f)
+	f, err := Decode(data)
 	if err != nil {
 		return nil, err
 	}
-	if undecoded := meta.Undecoded(); len(undecoded) > 0 {
-		keys := make([]string, len(undecoded))
-		for i, key := range undecoded {
-			keys[i] = key.String()
-		}
-		sort.Strings(keys)
-		return nil, fmt.Errorf("unsupported settings: %s", strings.Join(keys, ", "))
-	}
+	return FromFile(f)
+}
 
-	cfg := &Config{Listen: f.Listen, MetricsListen: f.Metrics.Listen, AdminListen: f.Admin.Listen, AccessLog: f.Log.Access, AccessLogFormat: f.Log.Format}
+// FromFile validates the settings in f, and fills in their defaults.
+func FromFile(f *File) (*Config, error) {
+	var err error
+	cfg := &Config{File: f.Clone(), Listen: f.Listen, MetricsListen: f.Metrics.Listen, AdminListen: f.Admin.Listen, AccessLog: f.Log.Access, AccessLogFormat: f.Log.Format}
 	if cfg.AdminListen != "" && cfg.AdminListen == cfg.MetricsListen {
 		return nil, fmt.Errorf("admin.listen and metrics.listen are the same: the admin page serves /metrics too, so only set admin.listen")
 	}
@@ -359,7 +439,7 @@ func Parse(data string) (*Config, error) {
 			return nil, fmt.Errorf("cache.defaultTTL must be a duration of at least 1s, e.g. \"5m\"")
 		}
 	}
-	cfg.Cache.AllowedCookies = f.Cache.AllowedCookies
+	cfg.Cache.AllowedCookies = append([]string(nil), f.Cache.AllowedCookies...)
 	cfg.Cache.BypassCookies = append([]string{}, cache.WordPressBypassCookies...)
 	if f.Cache.BypassCookies != nil {
 		cfg.Cache.BypassCookies, err = cookiePrefixes("cache.bypassCookies", *f.Cache.BypassCookies)

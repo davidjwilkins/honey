@@ -1,0 +1,162 @@
+{{define "test" -}}
+{{template "head" "Test a URL"}}
+<main>
+{{template "top" .}}
+<div class="intro">
+  <h1>Test a URL</h1>
+  <p class="muted">See how Honey's settings apply to a request, step by step. Nothing is fetched or cached.</p>
+</div>
+
+<form method="get" action="/test" class="panel testform">
+  <div class="fieldrow">
+    <div class="field narrow">
+      <label for="method">Method</label>
+      <select id="method" name="method">
+        {{- range .Methods}}<option{{if eq . $.Method}} selected{{end}}>{{.}}</option>{{end -}}
+      </select>
+    </div>
+    <div class="field wide">
+      <label for="test-url">URL</label>
+      <input id="test-url" name="url" type="text" value="{{.URL}}" placeholder="https://www.example.com/blog/" required autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="cookies">Cookies (optional)</label>
+      <input id="cookies" name="cookies" type="text" value="{{.Cookies}}" placeholder="_ga=GA1.2.3; theme=dark" autocomplete="off" spellcheck="false">
+    </div>
+    <button type="submit">Test</button>
+  </div>
+</form>
+
+{{with .Problem}}<p class="notice problem" role="alert">{{.}}</p>{{end}}
+
+{{with .Explanation -}}
+<section class="panel verdict{{if .Cacheable}} good{{else}} bad{{end}}">
+  <div>
+    <h2>Verdict</h2>
+    <p class="verdict-text">{{.Verdict}}</p>
+  </div>
+  {{- if .Cached}}
+  <form method="post" action="/purge">
+    <input type="hidden" name="url" value="{{$.URL}}">
+    <input type="hidden" name="soft" value="1">
+    <button type="submit" class="secondary">Purge this page (soft)</button>
+  </form>
+  {{- end}}
+</section>
+
+<div class="split">
+  <section class="panel steps">
+    <h2>Step by step</h2>
+    <ol>
+    {{- range .Steps}}
+      <li class="step-{{.Outcome}}">
+        <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+          {{- if eq .Outcome "ok"}}<path d="M4 10.5l4 4 8-9"></path>{{else if eq .Outcome "changed"}}<circle cx="10" cy="10" r="7"></circle><path d="M7 10h6"></path>{{else}}<path d="M5 5l10 10M15 5L5 15"></path>{{end -}}
+        </svg>
+        <div><strong>{{.Title}}</strong>{{with .Detail}}<span class="muted">{{.}}</span>{{end}}</div>
+      </li>
+    {{- end}}
+    </ol>
+  </section>
+
+  {{- if .Cacheable}}
+  <div class="side">
+    <section class="panel">
+      <h2>Cache key</h2>
+      <pre class="key">{{.Key}}</pre>
+    </section>
+    <section class="panel">
+      <h2>Freshness</h2>
+      <dl class="facts">
+        <div><dt>Fresh for</dt><dd class="mono">{{duration .DefaultTTL}}</dd></div>
+        <div><dt>Then served while refreshing</dt><dd class="mono">{{if .StaleWhileRevalidate}}{{duration .StaleWhileRevalidate}}{{else}}no{{end}}</dd></div>
+        <div><dt>If the backend fails</dt><dd class="mono">{{if .StaleIfError}}{{duration .StaleIfError}} more{{else}}no{{end}}</dd></div>
+        <div><dt>Browsers get</dt><dd class="mono">{{with .BrowserCacheControl}}{{.}}{{else}}the response's own{{end}}</dd></div>
+      </dl>
+      <p class="muted small">Unless WordPress says how long a response is fresh for, which it doesn't.</p>
+    </section>
+    <section class="panel">
+      <h2>In the cache now</h2>
+      {{- with .Cached}}
+      <p class="mono">{{.StatusCode}} · {{bytes (int64 .Bytes)}} · fetched {{duration .Age}} ago · {{freshFor .FreshFor}}{{if .Expired}} · purged softly{{end}}</p>
+      {{- else}}
+      <p class="muted">Not cached: the next request for it fetches it.</p>
+      {{- end}}
+    </section>
+  </div>
+  {{- end}}
+</div>
+{{- end}}
+</main>
+</body>
+</html>
+{{- end}}
+
+{{define "settings" -}}
+{{template "head" "Settings"}}
+<main>
+{{template "top" .}}
+<div class="intro">
+  <h1>Settings</h1>
+  <p class="muted">Change them here and export a new honey.toml: Honey's own file isn't changed, so replace it with the export and restart Honey to use them. Blank settings use their defaults.</p>
+</div>
+
+<form method="post" action="/settings" id="settings" class="settings">
+  <div class="fields">
+  {{- range .Sections}}
+    <fieldset class="panel">
+      <legend>{{.Title}}</legend>
+      {{- range .Fields}}
+      <div class="setting{{if .Changed}} changed{{end}}{{if .Problem}} invalid{{end}}">
+        <label for="f-{{.Key}}" class="mono">{{.Key}}</label>
+        {{- if eq .Kind "list" "optlist"}}
+        <textarea id="f-{{.Key}}" name="{{.Key}}" rows="2" placeholder="{{if .Default}}default: {{.Default}}{{else}}none{{end}}" spellcheck="false">{{.Value}}</textarea>
+        {{- else if eq .Kind "routes"}}
+        <textarea id="f-{{.Key}}" name="{{.Key}}" rows="12" class="code" spellcheck="false">{{.Value}}</textarea>
+        {{- else if eq .Kind "optbool" "bool" "select"}}
+        <select id="f-{{.Key}}" name="{{.Key}}">
+          {{- $value := .Value}}
+          {{- if eq .Kind "bool"}}<option{{if eq $value "yes"}} selected{{end}}>yes</option><option{{if eq $value "no"}} selected{{end}}>no</option>
+          {{- else}}{{range .Options}}<option value="{{.}}"{{if eq . $value}} selected{{end}}>{{if .}}{{.}}{{else}}default{{end}}</option>{{end}}{{end -}}
+        </select>
+        {{- else if eq .Kind "secret"}}
+        <input id="f-{{.Key}}" name="{{.Key}}" type="password" autocomplete="new-password" placeholder="{{if $.HasSecret}}unchanged{{else}}none{{end}}">
+        {{- else}}
+        <input id="f-{{.Key}}" name="{{.Key}}" type="text" value="{{.Value}}" placeholder="{{with .Default}}default: {{.}}{{end}}" autocomplete="off" spellcheck="false">
+        {{- end}}
+        <p class="help">{{.Help}}{{if eq .Kind "optlist"}}. One a line; "none" for an empty list{{else if eq .Kind "list"}}. One a line{{end}}</p>
+        {{- if and (eq .Kind "secret") $.HasSecret}}
+        <label class="check"><input type="checkbox" name="{{.Key}}.remove" value="1"> Remove the secret</label>
+        {{- end}}
+        {{- with .Problem}}<p class="field-problem" role="alert">{{.}}</p>{{end}}
+      </div>
+      {{- end}}
+    </fieldset>
+  {{- end}}
+  </div>
+
+  <aside class="panel changes" aria-label="Your honey.toml">
+    <div id="preview" aria-live="polite">{{template "preview" .Preview}}</div>
+    <div class="actions">
+      <button type="submit" formaction="/settings/export" id="export">Export honey.toml</button>
+      <button type="submit" class="secondary" id="refresh-preview">Preview</button>
+      <a href="/settings" class="secondary-link">Start again</a>
+    </div>
+    <p class="muted small">The export includes the secret, which this page never shows.</p>
+  </aside>
+</form>
+</main>
+</body>
+</html>
+{{- end}}
+
+{{define "preview" -}}
+<div class="heading">
+  <h2>{{if .Changes}}{{.Changes}} changed line{{if ne .Changes 1}}s{{end}}{{else}}No changes{{end}}</h2>
+  {{- if .Valid}}<span class="valid">valid</span>{{else}}<span class="not-valid">not valid</span>{{end}}
+</div>
+{{- with .Problem}}<p class="notice problem">{{.}}</p>{{end}}
+<pre class="toml">
+{{- range .Lines}}<span class="{{if eq .Op "+"}}add{{else if eq .Op "-"}}del{{end}}">{{.Op}} {{.Text}}</span>{{end -}}
+</pre>
+{{- end}}
