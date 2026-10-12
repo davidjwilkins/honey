@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -541,4 +542,42 @@ func TestAdminCacheBrowser(t *testing.T) {
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
 	assert.True(t, strings.HasPrefix(resp.Header.Get("Location"), "/cache?"), "the purge returns to the cache browser")
 	contains(t, get(t, c, adminPage+resp.Header.Get("Location")).Body, "Nothing cached matches.")
+}
+
+// newPage publishes a page with content, and returns its path
+func newPage(t *testing.T, title, content string) string {
+	t.Helper()
+	slug := fmt.Sprintf("e2e-page-%d-%d", time.Now().UnixNano(), posts.Add(1))
+	wp(t, "post", "create", "--post_type=page", "--post_status=publish", "--post_name="+slug,
+		"--post_title="+title, "--post_content="+content)
+	return "/" + slug + "/"
+}
+
+func TestSharedFragments(t *testing.T) {
+	c := client(nil)
+	// The same Latest Posts block on two pages
+	block := `<!-- wp:latest-posts {"postsToShow":3} /-->`
+	first := newPage(t, "First page with recent posts", block)
+	second := newPage(t, "Second page with recent posts", block)
+	cached(t, c, first)
+	resp := get(t, c, first)
+	contains(t, resp.Body, `<!--honey:fragment name="posts-block-`, "the block is marked as a shared fragment: %s", describe(resp))
+	notContains(t, resp.Body, "token=", "without the token Honey sent")
+	time.Sleep(1500 * time.Millisecond)
+	// The second page is the last one seen with the fragment, so it's the
+	// one Honey refreshes
+	cached(t, c, second)
+
+	title := fmt.Sprintf("Fragment test post %d", time.Now().UnixNano())
+	newPost(t, title)
+	resp = eventually(t, c, first, title)
+	resp = get(t, c, first)
+	assert.Equal(t, "HIT", resp.Cache, "the first page wasn't fetched again: %s", describe(resp))
+	age, _ := strconv.Atoi(resp.Header.Get("Age"))
+	assert.GreaterOrEqual(t, age, 2, "it's the copy cached before the post was published, with the new list")
+	contains(t, resp.Body, "First page with recent posts")
+	contains(t, get(t, c, second).Body, title)
+
+	admin := get(t, c, adminPage+"/cache")
+	contains(t, admin.Body, `class="mono">posts-block-`, "the admin page lists the fragment")
 }

@@ -35,6 +35,16 @@
  *
  * Administrators also get a "Purge cache" button in the admin bar.
  *
+ * Shared fragments: the Latest Posts block and the Recent Posts widget
+ * appear on many pages, so a new post would otherwise leave all of those
+ * out of date.  When Honey asks (with its X-Honey-Fragments header), they
+ * are marked as shared fragments, which Honey keeps separately.  When a
+ * post is published, updated, unpublished or deleted, the fragments are
+ * purged, and Honey updates every cached page showing them without
+ * WordPress rendering each one again.  Lists which differ from page to
+ * page (e.g. marking the current post) aren't marked.  Other blocks can
+ * be marked with the honey_fragment_blocks filter.
+ *
  * Purges are sent when WordPress has finished handling the request, once
  * each, as PURGE requests (see Honey's README).  Most are soft: if Honey's
  * staleWhileRevalidate allows, the old page is served once more while the
@@ -60,6 +70,9 @@ final class Purge {
 
 	/** @var string|null whether to purge everything: "soft", "hard" or null */
 	private static $everything = null;
+
+	/** @var array<string, true> shared fragments to purge */
+	private static $fragments = array();
 
 	/** @var bool whether the shutdown hook has been added */
 	private static $scheduled = false;
@@ -196,6 +209,20 @@ final class Purge {
 		self::url( get_feed_link(), false, $hard );
 		self::url( get_feed_link( 'comments_' . get_default_feed() ), false, $hard );
 		self::url( home_url( '/wp-sitemap' ), true, $hard );
+		if ( 'post' === $post->post_type ) {
+			// The lists of recent posts on every page (see Fragments)
+			self::fragment( 'posts-*' );
+		}
+	}
+
+	/**
+	 * Purges the shared fragments called $name (or, ending with *, whose
+	 * names start with what precedes it).  Honey updates every cached page
+	 * showing them.
+	 */
+	public static function fragment( $name ) {
+		self::$fragments[ $name ] = true;
+		self::schedule();
 	}
 
 	/** Purges the home page (and its other pages), and the posts page. */
@@ -324,7 +351,10 @@ final class Purge {
 		if ( self::$everything ) {
 			$purges['/*'] = 'soft' === self::$everything;
 		}
+		// Purging everything covers the fragments too
+		$fragments        = self::$everything ? array() : array_keys( self::$fragments );
 		self::$paths      = array();
+		self::$fragments  = array();
 		self::$everything = null;
 
 		$base    = untrailingslashit( defined( 'HONEY_URL' ) ? HONEY_URL : self::origin() );
@@ -353,6 +383,22 @@ final class Purge {
 			if ( 200 !== $code ) {
 				error_log( sprintf( 'Honey: purging %s failed: HTTP %d (is HONEY_SECRET set to Honey\'s control.secret?)', $path, $code ) );
 				return;
+			}
+		}
+		if ( $fragments ) {
+			$names = implode( ',', $fragments );
+			self::debug( "purging the shared fragments $names" );
+			$response = wp_remote_request(
+				$base . '/',
+				array(
+					'method'      => 'PURGE',
+					'headers'     => array_merge( $headers, array( 'X-Honey-Fragment' => $names ) ),
+					'timeout'     => 3,
+					'redirection' => 0,
+				)
+			);
+			if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+				error_log( sprintf( 'Honey: purging the shared fragments %s failed', $names ) );
 			}
 		}
 	}
@@ -404,4 +450,57 @@ final class Purge {
 	}
 }
 
+/**
+ * Marks the parts of pages which are the same on every page, such as lists
+ * of recent posts, as shared fragments, for Honey (see Purge).
+ */
+final class Fragments {
+	/** @var string the token Honey sent, which the markers must have */
+	private static $token = '';
+
+	public static function init() {
+		// Only when Honey asks, for a page it's going to cache
+		$token = isset( $_SERVER['HTTP_X_HONEY_FRAGMENTS'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_HONEY_FRAGMENTS'] ) ) : '';
+		if ( ! preg_match( '/^[0-9]{1,20}-[0-9a-f]{32}$/', $token ) ) {
+			return;
+		}
+		self::$token = $token;
+		add_filter( 'render_block', array( __CLASS__, 'block' ), 10, 2 );
+		add_filter( 'widget_display_callback', array( __CLASS__, 'widget' ), 10, 3 );
+	}
+
+	/** Marks the Latest Posts block (and any others in the filter). */
+	public static function block( $content, $block ) {
+		$blocks = apply_filters( 'honey_fragment_blocks', array( 'core/latest-posts' ) );
+		if ( empty( $block['blockName'] ) || ! in_array( $block['blockName'], (array) $blocks, true ) ) {
+			return $content;
+		}
+		// Blocks with the same settings show the same posts
+		$attrs = isset( $block['attrs'] ) ? $block['attrs'] : array();
+		return self::mark( 'posts-block-' . substr( md5( $block['blockName'] . wp_json_encode( $attrs ) ), 0, 12 ), $content );
+	}
+
+	/** Marks the Recent Posts widget, by showing it itself. */
+	public static function widget( $instance, $widget, $args ) {
+		if ( false === $instance || ! is_object( $widget ) || 'recent-posts' !== $widget->id_base ) {
+			return $instance;
+		}
+		ob_start();
+		$widget->widget( $args, $instance );
+		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- the widget's own output
+		echo self::mark( 'posts-widget-' . sanitize_key( $widget->id ), ob_get_clean() );
+		return false; // it has been shown
+	}
+
+	private static function mark( $name, $html ) {
+		// A list which differs from page to page (e.g. marking the current
+		// post) can't be shared
+		if ( '' === trim( $html ) || false !== strpos( $html, 'aria-current' ) || ! preg_match( '/^[a-z0-9][a-z0-9_.-]{0,99}$/', $name ) ) {
+			return $html;
+		}
+		return '<!--honey:fragment name="' . $name . '" token="' . self::$token . '"-->' . $html . '<!--/honey:fragment-->';
+	}
+}
+
 Purge::init();
+Fragments::init();

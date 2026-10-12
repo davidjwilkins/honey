@@ -127,3 +127,26 @@ func (s *store) remove(el *list.Element) {
 		removable.markRemoved()
 	}
 }
+
+// replace replaces the value under key with value, if it is still old,
+// keeping its place in the least recently used order and its deadline.
+func (s *store) replace(key string, old, value interface{}, size int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	el, ok := s.items[key]
+	if !ok {
+		return
+	}
+	entry := el.Value.(*storeEntry)
+	if entry.value != old {
+		return
+	}
+	s.bytes += size - entry.size
+	entry.value, entry.size = value, size
+	if removable, ok := old.(interface{ markRemoved() }); ok {
+		removable.markRemoved()
+	}
+	for s.bytes > s.maxBytes && s.order.Len() > 0 {
+		s.remove(s.order.Back())
+	}
+}

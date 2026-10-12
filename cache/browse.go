@@ -40,6 +40,8 @@ type Entry struct {
 	// RemoveAt is when it will be removed from the cache, even if it isn't
 	// evicted to make room first (zero for never)
 	RemoveAt time.Time
+	// Fragments are the names of the shared fragments in it, if any
+	Fragments []string
 }
 
 // Fresh returns whether e is fresh at now
@@ -100,6 +102,11 @@ func describe(s storeEntry) (Entry, bool) {
 	}
 	if !e.Expired {
 		e.Lifetime = time.Duration(utilities.FreshnessLifetime(r.headers)) * time.Second
+	}
+	for _, s := range r.segments {
+		if s.name != "" {
+			e.Fragments = append(e.Fragments, s.name)
+		}
 	}
 	// The key is the base key (method :: URL), then any variant parts
 	base := r.baseKey
