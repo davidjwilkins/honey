@@ -119,7 +119,7 @@ type expirePurger interface {
 // untrusted requests, it removes no-cache, so that they are served from the
 // cache like any other request.  It always removes the secret header, so
 // that it never reaches the backend.
-func (c Control) applyControl(cacher interface{}, w http.ResponseWriter, r *http.Request, onPurge PurgeHook, log *events.Log) (responded bool) {
+func (c Control) applyControl(cacher interface{}, w http.ResponseWriter, r *http.Request, onPurge purgeHook, log *events.Log) (responded bool) {
 	trusted := c.Trusted(r)
 	r.Header.Del(c.secretHeader())
 	if r.Method == MethodPurge {
@@ -145,7 +145,7 @@ func (c Control) applyControl(cacher interface{}, w http.ResponseWriter, r *http
 
 // purge removes the cached responses for r's URL - or, if the path ends
 // with "*", for every URL starting with what precedes it.
-func purge(cacher interface{}, trusted bool, w http.ResponseWriter, r *http.Request, onPurge PurgeHook, log *events.Log) {
+func purge(cacher interface{}, trusted bool, w http.ResponseWriter, r *http.Request, onPurge purgeHook, log *events.Log) {
 	if !trusted {
 		http.Error(w, "Purging the cache isn't allowed", http.StatusForbidden)
 		return
@@ -225,25 +225,54 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// PurgeHook is called after a purge (see Options.OnPurge), with the path
-// (and query string) purged, whether everything under it was purged, and
-// whether it was soft.
-type PurgeHook func(path string, prefix, soft bool)
+// Purged describes a purge, for Options.OnPurge
+type Purged struct {
+	// Path is the path (and query string) purged - or, with Prefix, the
+	// path everything starting with which was purged
+	Path   string
+	Prefix bool
+	Soft   bool
+	// Cached, for a Prefix purge with Options.ListPurged, are the paths
+	// (and query strings) of the responses it purged, up to maxListed
+	Cached []string
+}
+
+// PurgeHook is called after a purge (see Options.OnPurge)
+type PurgeHook func(Purged)
+
+// maxListed bounds Purged.Cached
+const maxListed = 1000
+
+// purgeHook is what's told of purges: on, with the paths purged if list
+type purgeHook struct {
+	on   PurgeHook
+	list bool
+}
+
+// cachedPathLister is implemented by Cachers which can list the paths they
+// have cached responses for
+type cachedPathLister interface {
+	CachedPaths(prefix string, max int) []string
+}
 
 // purgeURL removes the cached responses for u - or, if prefix is set or
 // the path ends with "*", for every URL starting with u (without the "*"
 // and any query string).  With soft, it expires them instead, if the
-// cache can.  It then calls onPurge, if it isn't nil.
-func purgeURL(p purger, u url.URL, prefix, soft bool, onPurge PurgeHook) int {
+// cache can.  It then tells onPurge, if it's set.
+func purgeURL(p purger, u url.URL, prefix, soft bool, onPurge purgeHook) int {
 	u, prefix = purgeTarget(u, prefix)
+	var cached []string
+	if l, ok := p.(cachedPathLister); ok && onPurge.on != nil && onPurge.list && prefix {
+		cached = l.CachedPaths(u.Path, maxListed)
+	}
 	var purged int
 	if e, ok := p.(expirePurger); ok && soft {
 		purged = e.Expire(&u, prefix)
 	} else {
 		purged = p.Purge(&u, prefix)
 	}
-	if onPurge != nil {
-		onPurge(u.RequestURI(), prefix, soft)
+	if onPurge.on != nil {
+		onPurge.on(Purged{Path: u.RequestURI(), Prefix: prefix, Soft: soft, Cached: cached})
 	}
 	return purged
 }
@@ -329,7 +358,7 @@ func Purger(c cache.Cacher, backend *url.URL, opts Options) func(rawURL string, 
 		if err != nil {
 			return 0, err
 		}
-		return purgeURL(p, *r.URL, prefix, soft, opts.OnPurge), nil
+		return purgeURL(p, *r.URL, prefix, soft, purgeHook{opts.OnPurge, opts.ListPurged}), nil
 	}
 }
 

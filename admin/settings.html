@@ -120,13 +120,13 @@
           {{- else}}{{range .Options}}<option value="{{.}}"{{if eq . $value}} selected{{end}}>{{if .}}{{.}}{{else}}default{{end}}</option>{{end}}{{end -}}
         </select>
         {{- else if eq .Kind "secret"}}
-        <input id="f-{{.Key}}" name="{{.Key}}" type="password" autocomplete="new-password" placeholder="{{if $.HasSecret}}unchanged{{else}}none{{end}}">
+        <input id="f-{{.Key}}" name="{{.Key}}" type="password" autocomplete="new-password" placeholder="{{if .HasSecret}}unchanged{{else}}none{{end}}">
         {{- else}}
         <input id="f-{{.Key}}" name="{{.Key}}" type="text" value="{{.Value}}" placeholder="{{with .Default}}default: {{.}}{{end}}" autocomplete="off" spellcheck="false">
         {{- end}}
         <p class="help">{{.Help}}{{if eq .Kind "optlist"}}. One a line; "none" for an empty list{{else if eq .Kind "list"}}. One a line{{end}}</p>
-        {{- if and (eq .Kind "secret") $.HasSecret}}
-        <label class="check"><input type="checkbox" name="{{.Key}}.remove" value="1"> Remove the secret</label>
+        {{- if and (eq .Kind "secret") .HasSecret}}
+        <label class="check"><input type="checkbox" name="{{.Key}}.remove" value="1"> Remove it</label>
         {{- end}}
         {{- with .Problem}}<p class="field-problem" role="alert">{{.}}</p>{{end}}
       </div>
@@ -142,7 +142,7 @@
       <button type="submit" class="secondary" id="refresh-preview">Preview</button>
       <a href="/settings" class="secondary-link">Start again</a>
     </div>
-    <p class="muted small">The export includes the secret, which this page never shows.</p>
+    <p class="muted small">The export includes the secrets, which this page never shows.</p>
   </aside>
 </form>
 </main>

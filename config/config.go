@@ -74,6 +74,9 @@ type Config struct {
 	// Optimize configures changing pages so that browsers load them
 	// faster (see the optimize package)
 	Optimize Optimize
+	// CDN, if set, is a CDN in front of Honey which purges are passed on
+	// to (see the cdn package)
+	CDN *CDN
 	// File is the settings as they were written, e.g. to export them
 	File *File
 }
@@ -94,6 +97,20 @@ type TLS struct {
 	HTTP3 bool
 	// Redirect is whether plain HTTP requests are redirected to HTTPS
 	Redirect bool
+}
+
+// CDN configures passing purges on to a CDN (see cdn.Options)
+type CDN struct {
+	// Provider is "cloudflare" or "bunny"
+	Provider string
+	// Zone is Cloudflare's zone ID
+	Zone string
+	// Token is a Cloudflare API token which can purge the zone's cache, or
+	// a Bunny account's API key (or, if the file doesn't say, the
+	// HONEY_CDN_TOKEN environment variable)
+	Token string
+	// Hosts are the hosts the CDN serves (default: the hosts)
+	Hosts []string
 }
 
 // Optimize configures changing pages as they're cached, so that browsers
@@ -331,6 +348,12 @@ type File struct {
 		AdminIPs      []string `toml:"adminIPs,omitempty"`
 		HideUsers     bool     `toml:"hideUsers,omitempty"`
 	} `toml:"security,omitempty"`
+	CDN struct {
+		Provider string   `toml:"provider,omitempty"`
+		Zone     string   `toml:"zone,omitempty"`
+		Token    string   `toml:"token,omitempty"`
+		Hosts    []string `toml:"hosts,omitempty"`
+	} `toml:"cdn,omitempty"`
 	Optimize struct {
 		DelayScripts         bool     `toml:"delayScripts,omitempty"`
 		DelayScriptsMatching []string `toml:"delayScriptsMatching,omitempty"`
@@ -427,6 +450,7 @@ func (f *File) Clone() *File {
 	c.Cache.Brotli = cloneBool(f.Cache.Brotli)
 	c.Cache.Gzip = cloneBool(f.Cache.Gzip)
 	c.Control.AllowIPs = append([]string(nil), f.Control.AllowIPs...)
+	c.CDN.Hosts = append([]string(nil), f.CDN.Hosts...)
 	c.Optimize.DelayScriptsMatching = append([]string(nil), f.Optimize.DelayScriptsMatching...)
 	c.Optimize.KeepScriptsMatching = append([]string(nil), f.Optimize.KeepScriptsMatching...)
 	c.Routes = nil
@@ -519,6 +543,9 @@ func FromFile(f *File) (*Config, error) {
 		return nil, err
 	}
 	if cfg.Optimize, err = parseOptimize(f); err != nil {
+		return nil, err
+	}
+	if cfg.CDN, err = parseCDN(f, cfg.Hosts); err != nil {
 		return nil, err
 	}
 
@@ -778,6 +805,51 @@ func cloneInt(n *int) *int {
 	}
 	c := *n
 	return &c
+}
+
+// parseCDN validates the [cdn] settings: nil if there are none
+func parseCDN(f *File, hosts []string) (*CDN, error) {
+	c := f.CDN
+	if c.Provider == "" && c.Zone == "" && c.Token == "" && len(c.Hosts) == 0 {
+		return nil, nil
+	}
+	cdn := &CDN{Provider: c.Provider, Zone: c.Zone, Token: c.Token}
+	switch c.Provider {
+	case "cloudflare":
+		if c.Zone == "" {
+			return nil, fmt.Errorf("cdn.zone (Cloudflare's zone ID, on its overview page) is needed")
+		}
+	case "bunny":
+		if c.Zone != "" {
+			return nil, fmt.Errorf("cdn.zone is only for Cloudflare")
+		}
+	default:
+		return nil, fmt.Errorf("cdn.provider must be \"cloudflare\" or \"bunny\"")
+	}
+	if cdn.Token == "" {
+		cdn.Token = os.Getenv("HONEY_CDN_TOKEN")
+	}
+	if cdn.Token == "" {
+		return nil, fmt.Errorf("cdn.token (or the HONEY_CDN_TOKEN environment variable) is needed")
+	}
+	for _, h := range c.Hosts {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if !hostPattern.MatchString(h) || strings.Contains(h, "*") {
+			return nil, fmt.Errorf("cdn.hosts: %q isn't a host name, e.g. \"www.example.com\"", h)
+		}
+		cdn.Hosts = append(cdn.Hosts, h)
+	}
+	if len(cdn.Hosts) == 0 {
+		for _, h := range hosts {
+			if !strings.Contains(h, "*") {
+				cdn.Hosts = append(cdn.Hosts, h)
+			}
+		}
+	}
+	if len(cdn.Hosts) == 0 {
+		return nil, fmt.Errorf("cdn.hosts (or hosts) is needed: the hosts whose pages are purged from the CDN")
+	}
+	return cdn, nil
 }
 
 // parseOptimize validates the [optimize] settings
