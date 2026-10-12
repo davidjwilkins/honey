@@ -819,3 +819,40 @@ func TestParseCDN(t *testing.T) {
 	_, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cdn]\nprovider = \"bunny\"\ntoken = \"t\"\n")
 	assert.ErrorContains(t, err, "cdn.hosts (or hosts) is needed")
 }
+
+func TestParseCluster(t *testing.T) {
+	base := "[backend]\nuri = \"https://www.example.com\"\n"
+	cfg, err := Parse(base)
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Cluster, "none by default")
+
+	cfg, err = Parse(base + "[cluster]\nlisten = \":8081\"\npeers = [\"http://10.0.0.2:8081/\", \"http://honey.internal:8081\"]\nsecret = \"0123456789abcdef\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, &Cluster{Listen: ":8081", Peers: []string{"http://10.0.0.2:8081", "http://honey.internal:8081"}, Secret: "0123456789abcdef",
+		Lease: 5 * time.Second, PurgeWait: 2 * time.Second}, cfg.Cluster)
+
+	t.Setenv("HONEY_CLUSTER_SECRET", "from the environment")
+	cfg, err = Parse(base + "[cluster]\nlisten = \"10.0.0.1:8081\"\nname = \"web1\"\npeers = [\"http://10.0.0.2:8081\"]\nlease = \"10s\"\npurgeWait = \"0s\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, &Cluster{Listen: "10.0.0.1:8081", Name: "web1", Peers: []string{"http://10.0.0.2:8081"}, Secret: "from the environment",
+		Lease: 10 * time.Second, PurgeWait: -1}, cfg.Cluster, "purgeWait 0 is not waiting")
+	t.Setenv("HONEY_CLUSTER_SECRET", "")
+
+	ok := "listen = \":8081\"\npeers = [\"http://10.0.0.2:8081\"]\nsecret = \"0123456789abcdef\"\n"
+	for bad, want := range map[string]string{
+		"peers = [\"http://10.0.0.2:8081\"]\nsecret = \"0123456789abcdef\"":                             "cluster.listen is needed",
+		"listen = \"8081\"\npeers = [\"http://10.0.0.2:8081\"]\nsecret = \"0123456789abcdef\"":          "cluster.listen",
+		"listen = \":8081\"\nsecret = \"0123456789abcdef\"":                                             "cluster.peers is needed",
+		"listen = \":8081\"\npeers = [\"10.0.0.2:8081\"]\nsecret = \"0123456789abcdef\"":                "isn't a node's cluster address",
+		"listen = \":8081\"\npeers = [\"http://10.0.0.2:8081/cluster\"]\nsecret = \"0123456789abcdef\"": "isn't a node's cluster address",
+		"listen = \":8081\"\npeers = [\"http://10.0.0.2:8081\"]\nsecret = \"short\"":                    "at least 16 characters",
+		"listen = \":8081\"\npeers = [\"http://10.0.0.2:8081\"]":                                        "cluster.secret",
+		ok + "lease = \"100ms\"":   "cluster.lease",
+		ok + "purgeWait = \"-1s\"": "cluster.purgeWait",
+		ok + "name = \"web 1\"":    "cluster.name",
+		ok + "name = \"web@1\"":    "cluster.name",
+	} {
+		_, err := Parse(base + "[cluster]\n" + bad + "\n")
+		assert.ErrorContains(t, err, want, bad)
+	}
+}

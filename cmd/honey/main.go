@@ -28,6 +28,7 @@ import (
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/cdn"
 	"github.com/davidjwilkins/honey/clientip"
+	"github.com/davidjwilkins/honey/cluster"
 	"github.com/davidjwilkins/honey/config"
 	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/fetch"
@@ -121,8 +122,17 @@ func main() {
 		log.Printf("admin page on %s, behind its login", cfg.AdminHost)
 	}
 
+	if h.cluster != nil {
+		servePrivate(cfg.Cluster.Listen, h.cluster.Handler(), "cluster node "+h.cluster.ID(), "")
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if h.cluster != nil {
+		// After loading any saved cache, which it expires: purges may have
+		// been missed while Honey was down
+		go h.cluster.Run(ctx)
+	}
 	if h.warmer != nil {
 		// After loading any saved cache, so that it only fetches what's
 		// missing
@@ -338,6 +348,9 @@ type honey struct {
 	events *events.Log
 	// cdn passes purges on to a CDN, if there is one
 	cdn *cdn.Purger
+	// cluster passes purges on to the other Honeys, if this is one of a
+	// cluster
+	cluster *cluster.Node
 }
 
 // newHandler builds the caching proxy described by cfg.
@@ -466,6 +479,25 @@ func build(cfg *config.Config, started time.Time) *honey {
 	if optimizer != nil {
 		h.optimizer = optimizer
 	}
+	// Purges are passed on to the other Honeys, if this is one of a
+	// cluster, and theirs are applied here
+	var applyPurge func(cluster.Purge)
+	if cfg.Cluster != nil {
+		var err error
+		h.cluster, err = cluster.New(cluster.Options{
+			Name:      cfg.Cluster.Name,
+			Peers:     cfg.Cluster.Peers,
+			Secret:    cfg.Cluster.Secret,
+			Lease:     cfg.Cluster.Lease,
+			PurgeWait: cfg.Cluster.PurgeWait,
+			Events:    eventLog,
+			Apply:     func(p cluster.Purge) { applyPurge(p) },
+			ExpireAll: func() { c.Expire(&url.URL{Path: "/"}, true) },
+		})
+		if err != nil {
+			log.Fatalf("cluster: %v", err)
+		}
+	}
 	// Addresses which keep failing to log in, and (if it's on) their
 	// requests to WordPress.  Requests from this host (e.g. WordPress's
 	// own) are never limited.
@@ -490,6 +522,9 @@ func build(cfg *config.Config, started time.Time) *honey {
 		HideUsers:   cfg.Security.HideUsers,
 		ListPurged:  purger != nil,
 		OnPurge: func(p fetch.Purged) {
+			// The other Honeys first, so that the CDN doesn't fetch the
+			// old version from one of them again
+			h.cluster.Purged(cluster.Purge{Path: p.Path, Prefix: p.Prefix, Soft: p.Soft})
 			purger.Purge(p.Path, p.Prefix, p.Cached)
 			// Converted images are made again from what's there now
 			optimizer.Forget(p.Path, p.Prefix)
@@ -499,10 +534,14 @@ func build(cfg *config.Config, started time.Time) *honey {
 			}
 		},
 	}
-	if purger != nil {
+	if purger != nil || h.cluster != nil {
 		// Pages showing purged shared fragments are updated in the cache
 		// without being purged, but the CDN's copies need purging
 		fetchOpts.OnFragmentPurge = func(names string) {
+			h.cluster.Purged(cluster.Purge{Fragments: names})
+			if purger == nil {
+				return
+			}
 			shows := func(fragments []string) bool {
 				for _, name := range strings.Split(names, ",") {
 					name = strings.TrimSpace(name)
@@ -525,6 +564,27 @@ func build(cfg *config.Config, started time.Time) *honey {
 	h.handler = fetch.FetchWithOptions(c, fetch.NewForwarder(c, transport), cfg.Backend, fetchOpts)
 	// The cache itself, without the metrics, access log and so on
 	proxy := h.handler
+	purgeFragments := fetch.FragmentPurger(c, proxy)
+	applyPurge = func(p cluster.Purge) {
+		if p.Fragments != "" {
+			purgeFragments(p.Fragments)
+			return
+		}
+		u, err := url.ParseRequestURI(p.Path)
+		if err != nil {
+			return
+		}
+		target := &url.URL{Path: u.Path, RawPath: u.RawPath, RawQuery: u.RawQuery}
+		if p.Soft {
+			c.Expire(target, p.Prefix)
+		} else {
+			c.Purge(target, p.Prefix)
+		}
+		optimizer.Forget(p.Path, p.Prefix)
+		if h.warmer != nil && p.Prefix && p.Path == "/" {
+			h.warmer.Trigger()
+		}
+	}
 	if cfg.Warm.Sitemap != nil {
 		// It requests pages from the cache itself, without the metrics or
 		// access log, so that warming isn't counted as visits
@@ -563,6 +623,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 	}
 	// First, so that everything after it knows who each visitor is
 	h.handler = clientip.Middleware(cfg.TrustedProxies, h.handler)
+	h.handler = withHealth(h.cluster, h.handler)
 	if cfg.AdminListen != "" || cfg.AdminHost != "" {
 		h.admin = admin.Handler(admin.Options{
 			Version: version,
@@ -583,16 +644,55 @@ func build(cfg *config.Config, started time.Time) *honey {
 				return optimizer.Report(host, path, body)
 			},
 			// Pages are refreshed for fragments by the cache itself
-			Fragments:      c.Fragments,
-			PurgeFragments: fetch.FragmentPurger(c, proxy),
-			Settings:       cfg.File,
-			Lockouts:       limits.Lockouts,
-			Unblock:        limits.Unblock,
-			PasswordHash:   cfg.AdminPasswordHash,
-			Host:           cfg.AdminHost,
+			Fragments: c.Fragments,
+			PurgeFragments: func(name string) (int, int, error) {
+				fragments, pages, err := purgeFragments(name)
+				if err == nil && fetchOpts.OnFragmentPurge != nil {
+					fetchOpts.OnFragmentPurge(name)
+				}
+				return fragments, pages, err
+			},
+			Settings:     cfg.File,
+			Lockouts:     limits.Lockouts,
+			Unblock:      limits.Unblock,
+			Cluster:      clusterStatus(h.cluster),
+			PasswordHash: cfg.AdminPasswordHash,
+			Host:         cfg.AdminHost,
 		})
 	}
 	return h
+}
+
+// HealthPath is where load balancers can check that Honey is up: it
+// responds 200, or 503 if it's out of touch with the rest of its cluster
+// (see cluster.Node.Healthy)
+const HealthPath = "/.well-known/honey/health"
+
+// withHealth serves HealthPath, and everything else with next
+func withHealth(node *cluster.Node, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != HealthPath {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if !node.Healthy() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			io.WriteString(w, "out of touch with the rest of the cluster\n")
+			return
+		}
+		io.WriteString(w, "ok\n")
+	})
+}
+
+// clusterStatus returns node's Status method, for the admin page, or nil
+// if Honey isn't in a cluster
+func clusterStatus(node *cluster.Node) func() cluster.Status {
+	if node == nil {
+		return nil
+	}
+	return node.Status
 }
 
 // loopback returns the loopback networks

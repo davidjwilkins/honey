@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/cluster"
 	"github.com/davidjwilkins/honey/config"
 	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/fetch"
@@ -89,6 +90,9 @@ type Options struct {
 	// guard.Limits), if set
 	Lockouts func() []guard.Lockout
 	Unblock  func(address string) bool
+	// Cluster returns what this Honey knows of the others in its cluster,
+	// if it's one of a cluster
+	Cluster func() cluster.Status
 	// PasswordHash, if set, is a hash of the password (see HashPassword)
 	// which must be given to see the page (see login.go)
 	PasswordHash string
@@ -278,9 +282,23 @@ type view struct {
 	Events []event
 	// Lockouts are the addresses locked out of logging in, or banned
 	Lockouts []lockoutRow
+	// Cluster is the other Honeys in this one's cluster, if it's in one
+	Cluster *clusterView
 
 	// The result of a purge, if there was one
 	outcome
+}
+
+type clusterView struct {
+	Name    string
+	Healthy bool
+	Peers   []peerRow
+}
+
+type peerRow struct {
+	Name, Address string
+	Seen          string // how long ago it was last heard from
+	Error         string
 }
 
 type lockoutRow struct {
@@ -364,6 +382,21 @@ func (a *admin) view() view {
 		for _, l := range a.opts.Lockouts() {
 			v.Lockouts = append(v.Lockouts, lockoutRow{Address: l.Address, From: l.From, Left: formatDuration(l.Until.Sub(now).Round(time.Second))})
 		}
+	}
+	if a.opts.Cluster != nil {
+		s := a.opts.Cluster()
+		c := &clusterView{Name: s.ID, Healthy: s.Healthy}
+		if name, _, found := strings.Cut(s.ID, "@"); found {
+			c.Name = name
+		}
+		for _, p := range s.Peers {
+			row := peerRow{Name: p.Name, Address: p.Address, Seen: "never", Error: p.Error}
+			if !p.Seen.IsZero() {
+				row.Seen = formatDuration(time.Since(p.Seen).Round(time.Second)) + " ago"
+			}
+			c.Peers = append(c.Peers, row)
+		}
+		v.Cluster = c
 	}
 	if a.opts.Metrics == nil {
 		return v
