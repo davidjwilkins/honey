@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -30,6 +31,7 @@ import (
 	"github.com/davidjwilkins/honey/fetch"
 	"github.com/davidjwilkins/honey/guard"
 	"github.com/davidjwilkins/honey/metrics"
+	"github.com/davidjwilkins/honey/optimize"
 	"github.com/davidjwilkins/honey/serve"
 	"github.com/davidjwilkins/honey/warm"
 )
@@ -261,6 +263,24 @@ func build(cfg *config.Config, started time.Time) *honey {
 	if cfg.AdminListen != "" {
 		eventLog = events.New(events.DefaultMax)
 	}
+	// Pages are changed as they're cached, so that browsers load them
+	// faster; once a page's main image is learned, it's cached again with
+	// it preloaded
+	var refresh func(host, path string)
+	optimizer := optimize.New(optimize.Options{
+		DelayScripts:     cfg.Optimize.DelayScripts,
+		DelayMatching:    cfg.Optimize.DelayScriptsMatching,
+		KeepMatching:     cfg.Optimize.KeepScriptsMatching,
+		DelayTimeout:     cfg.Optimize.DelayScriptsTimeout,
+		PreloadMainImage: cfg.Optimize.PreloadMainImage,
+		BackendHost:      cfg.BackendHost,
+		Events:           eventLog,
+		Refresh:          func(host, path string) { refresh(host, path) },
+	})
+	var rewrite func(*http.Response, []byte) []byte
+	if optimizer != nil {
+		rewrite = optimizer.Rewrite
+	}
 	c := cache.NewCacher(cache.Options{
 		MaxBytes:             cfg.Cache.MaxBytes,
 		MaxObjectBytes:       cfg.Cache.MaxObjectBytes,
@@ -276,7 +296,9 @@ func build(cfg *config.Config, started time.Time) *honey {
 		StripCookies:         cfg.Cache.StripCookies,
 		BrowserCacheControl:  cfg.Cache.BrowserCacheControl,
 		Events:               eventLog,
+		RewritePage:          rewrite,
 	})
+	refresh = func(host, path string) { c.Expire(&url.URL{Path: path}, false) }
 	for _, name := range cfg.Cache.AllowedCookies {
 		c.AddAllowedCookie(name)
 	}
@@ -358,6 +380,8 @@ func build(cfg *config.Config, started time.Time) *honey {
 			Events:   eventLog,
 		})
 	}
+	// Browsers report pages' main images to Honey itself
+	h.handler = optimizer.Middleware(h.handler)
 	// Visitors' requests are guarded; the warmer's and purges' aren't
 	h.handler = guard.Middleware(guard.Options{
 		BlockPaths: cfg.Security.BlockPaths,

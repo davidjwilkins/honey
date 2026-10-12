@@ -69,6 +69,14 @@ stripCookies = []
 # on css and js); add any your plugins use before uncommenting this.
 # queryParams = ["p", "page_id", "s", "paged", "cat", "tag", "author", "m", "year", "monthnum", "day", "post_type", "cpage", "replytocom", "attachment_id", "ver"]
 
+# Change pages as they're cached, so that browsers load them faster
+[optimize]
+# Run analytics, ad, chat and other third-party scripts when the visitor
+# first interacts with the page
+# delayScripts = true
+# Learn each page's main image from visitors' browsers, and preload it
+# preloadMainImage = true
+
 # Don't cache previews, the RSS feed, or the admin and login pages.
 # regex = true matches against the path and query string; otherwise
 # match is a path prefix.

@@ -100,6 +100,11 @@ type Options struct {
 	// max-age=31536000, immutable" for versioned assets.  It doesn't
 	// change how long Honey caches them.
 	BrowserCacheControl string
+	// RewritePage, if set, changes the body of each response as it's
+	// cached - e.g. to make pages load faster (see the optimize package).
+	// It's given the backend's response, and returns body itself if it
+	// doesn't change it.
+	RewritePage func(r *http.Response, body []byte) []byte
 }
 
 type defaultCacher struct {
@@ -118,6 +123,7 @@ type defaultCacher struct {
 	stripCookies       []string
 	esiCookies         []string
 	browserCC          string
+	rewritePage        func(r *http.Response, body []byte) []byte
 	recompressor       *recompressor
 	// store holds both cached responses (keyed by their hash) and the
 	// Vary header last seen for each URL (keyed by varyKey)
@@ -167,6 +173,7 @@ func NewCacher(opts Options) *defaultCacher {
 		fragments:          newFragments(),
 		events:             opts.Events,
 		browserCC:          opts.BrowserCacheControl,
+		rewritePage:        opts.RewritePage,
 		recompressor:       &recompressor{},
 		store:              newStore(opts.MaxBytes),
 	}
@@ -392,6 +399,15 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	resp.body, _ = io.ReadAll(r.Body)
 	resp.body = exactly(resp.body)
 	r.Body.Close()
+	if c.rewritePage != nil {
+		if rewritten := c.rewritePage(r, resp.body); len(rewritten) != len(resp.body) || !bytes.Equal(rewritten, resp.body) {
+			resp.body = exactly(rewritten)
+			if r.Header.Get("Content-Length") != "" {
+				r.Header.Set("Content-Length", strconv.Itoa(len(resp.body)))
+			}
+			r.ContentLength = int64(len(resp.body))
+		}
+	}
 	// Shared fragments (see fragments.go) are kept separately, and their
 	// markers' tokens removed
 	if r.Request != nil && isHTML(r.Header) {

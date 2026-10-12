@@ -16,6 +16,13 @@ esiCookies = ["comment_author_", "woocommerce_items_in_cart", "wp_woocommerce_se
 # Browsers waiting for WordPress get the page's stylesheets and scripts first
 earlyHints = true
 
+[optimize]
+# Third-party scripts (and the tests' own) wait until the visitor interacts
+delayScripts = true
+delayScriptsMatching = ["honey-e2e-delayed"]
+# Pages' main images are learned from visitors' browsers, and preloaded
+preloadMainImage = true
+
 [security]
 # The tests come from Docker's network: others are made up, with
 # X-Forwarded-For (Docker's gateway is a trusted proxy)
