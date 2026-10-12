@@ -171,6 +171,12 @@
 {{end}}</pre>
       <p class="muted small">The headers it Varies on: requests with others get another copy.</p>
       {{- end}}
+      {{- if .Hints}}
+      <h2>Early Hints</h2>
+      <pre class="key">{{range .Hints}}Link: {{.}}
+{{end}}</pre>
+      <p class="muted small">From its &lt;head&gt;. With cache.earlyHints on, they are sent to browsers which wait for WordPress to render this page, e.g. for logged in users.</p>
+      {{- end}}
     </section>
   </div>
   <section class="panel actions-panel">

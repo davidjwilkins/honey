@@ -130,6 +130,9 @@ type Cache struct {
 	QueryParams []string
 	// StaticFiles is whether static files (images, css, js...) are cached
 	StaticFiles bool
+	// EarlyHints is whether browsers are sent 103 Early Hints while their
+	// requests wait for the backend (see fetch.Options)
+	EarlyHints bool
 	// Brotli and Gzip are whether compressible responses are compressed
 	// with each, for clients which accept them
 	Brotli           bool
@@ -198,6 +201,7 @@ type File struct {
 		BrowserCC       string    `toml:"browserCacheControl,omitempty"`
 		QueryParams     *[]string `toml:"queryParams,omitempty"`
 		StaticFiles     *bool     `toml:"staticFiles,omitempty"`
+		EarlyHints      *bool     `toml:"earlyHints,omitempty"`
 		Brotli          *bool     `toml:"brotli,omitempty"`
 		Gzip            *bool     `toml:"gzip,omitempty"`
 		CompressMinSize string    `toml:"compressMinSize,omitempty"`
@@ -274,6 +278,7 @@ func (f *File) Clone() *File {
 	c.Cache.StripCookies = append([]string(nil), f.Cache.StripCookies...)
 	c.Cache.QueryParams = cloneList(f.Cache.QueryParams)
 	c.Cache.StaticFiles = cloneBool(f.Cache.StaticFiles)
+	c.Cache.EarlyHints = cloneBool(f.Cache.EarlyHints)
 	c.Cache.Brotli = cloneBool(f.Cache.Brotli)
 	c.Cache.Gzip = cloneBool(f.Cache.Gzip)
 	c.Control.AllowIPs = append([]string(nil), f.Control.AllowIPs...)
@@ -431,6 +436,9 @@ func FromFile(f *File) (*Config, error) {
 		return nil, fmt.Errorf("cache.maxObjectSize can't be larger than cache.maxSize")
 	}
 	cfg.Cache.StaticFiles = f.Cache.StaticFiles == nil || *f.Cache.StaticFiles
+	// Off unless asked for, as the proxy in front of Honey (if any) must
+	// pass them on
+	cfg.Cache.EarlyHints = f.Cache.EarlyHints != nil && *f.Cache.EarlyHints
 	cfg.Cache.Brotli = f.Cache.Brotli == nil || *f.Cache.Brotli
 	cfg.Cache.Gzip = f.Cache.Gzip == nil || *f.Cache.Gzip
 	if f.Cache.CompressMinSize != "" {

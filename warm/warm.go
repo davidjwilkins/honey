@@ -279,7 +279,8 @@ type discard struct {
 func (d *discard) Header() http.Header { return d.header }
 
 func (d *discard) WriteHeader(status int) {
-	if d.status == 0 {
+	// Not informational responses (e.g. Early Hints)
+	if d.status == 0 && status >= 200 {
 		d.status = status
 	}
 }

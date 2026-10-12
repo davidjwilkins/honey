@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptrace"
+	"net/textproto"
 	"net/url"
 	"os"
 	"os/exec"
@@ -613,4 +615,38 @@ func TestSharedFragments(t *testing.T) {
 
 	admin := get(t, c, adminPage+"/cache")
 	contains(t, admin.Body, `class="mono">posts-block-`, "the admin page lists the fragment")
+}
+
+func TestEarlyHints(t *testing.T) {
+	_, path := newPost(t, "Hinted post")
+	anonymous := client(nil)
+	cached(t, anonymous, path)
+
+	// The admin waits for WordPress, so is sent the page's stylesheets first
+	admin := client(logIn(t, "admin"))
+	var hints []string
+	trace := &httptrace.ClientTrace{Got1xxResponse: func(code int, header textproto.MIMEHeader) error {
+		if code == http.StatusEarlyHints {
+			hints = append(hints, header.Values("Link")...)
+		}
+		return nil
+	}}
+	req, err := http.NewRequest(http.MethodGet, site+path, nil)
+	require.NoError(t, err)
+	req.Header.Set("Accept", "text/html")
+	resp, err := admin.Do(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
+	require.NoError(t, err)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	assert.Equal(t, "NO-CACHE", resp.Header.Get("X-Honey-Cache"))
+	require.NotEmpty(t, hints, "Early Hints were sent")
+	assert.Contains(t, strings.Join(hints, "\n"), "rel=preload; as=style", "for the theme's stylesheets")
+	// WordPress sends Link headers of its own (e.g. for the REST API)
+	notContains(t, strings.Join(resp.Header.Values("Link"), "\n"), "rel=preload", "they're only in the 103")
+
+	// The cache browser shows them
+	list := get(t, anonymous, adminPage+"/cache?"+url.Values{"path": {path}}.Encode())
+	link := regexp.MustCompile(`href="(/cache/entry\?key=[^"]+)" class="mono path">` + regexp.QuoteMeta(path) + `<`).FindStringSubmatch(list.Body)
+	require.Len(t, link, 2)
+	contains(t, get(t, anonymous, adminPage+html.UnescapeString(link[1])).Body, "Early Hints")
 }

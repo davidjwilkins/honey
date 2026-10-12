@@ -78,6 +78,8 @@ var sections = []section{
 			func(f *config.File) **[]string { return &f.Cache.QueryParams }),
 		optBool("cache.staticFiles", "Cache images, css, js, fonts and documents", "yes",
 			func(f *config.File) **bool { return &f.Cache.StaticFiles }),
+		optBool("cache.earlyHints", "Send browsers 103 Early Hints with the page's stylesheets and scripts while WordPress renders it (the proxy in front of Honey must pass them on)", "no",
+			func(f *config.File) **bool { return &f.Cache.EarlyHints }),
 		optBool("cache.brotli", "Brotli compress responses for browsers which accept it", "yes",
 			func(f *config.File) **bool { return &f.Cache.Brotli }),
 		optBool("cache.gzip", "Gzip compress them for browsers which don't", "yes",

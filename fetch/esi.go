@@ -77,6 +77,11 @@ func (e *esiWriter) WriteHeader(status int) {
 	if e.wroteHead {
 		return
 	}
+	if status >= 100 && status < 200 && status != http.StatusSwitchingProtocols {
+		// Informational, e.g. Early Hints: the response is still to come
+		e.ResponseWriter.WriteHeader(status)
+		return
+	}
 	e.wroteHead = true
 	h := e.Header()
 	if h.Get(cache.ESIHeader) == "" {
@@ -249,7 +254,7 @@ type esiEligible interface {
 // cookies, if there is a fresh one which uses ESI.  Its includes are then
 // fetched as the visitor (see esiWriter).  It returns false if there isn't
 // one, in which case the request should go to the backend.
-func serveESIPage(c cache.Cacher, w http.ResponseWriter, r *http.Request, filterQuery func(*http.Request)) bool {
+func serveESIPage(c cache.Cacher, w http.ResponseWriter, r *http.Request, filterQuery func(*http.Request), earlyHints bool) bool {
 	anonymous := forESIPage(c, r, filterQuery)
 	if anonymous == nil {
 		return false
@@ -260,6 +265,10 @@ func serveESIPage(c cache.Cacher, w http.ResponseWriter, r *http.Request, filter
 	}
 	if age, err := strconv.Atoi(resp.Age()); err != nil || age >= freshnessLifetime(resp) {
 		return false
+	}
+	// The page waits for its includes
+	if earlyHints && wantsEarlyHints(r) {
+		sendEarlyHints(w, cache.EarlyHints(resp))
 	}
 	_, responded, _ := RespondFromCache(c, w, anonymous)
 	return responded

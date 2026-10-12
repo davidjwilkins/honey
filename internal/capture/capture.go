@@ -32,9 +32,12 @@ func (w *Writer) record(status int) {
 	w.cache = w.Header().Get("X-Honey-Cache")
 }
 
-// WriteHeader records the status and the X-Honey-Cache header.
+// WriteHeader records the status and the X-Honey-Cache header, unless it is
+// informational.
 func (w *Writer) WriteHeader(status int) {
-	if !w.wroteHeader {
+	// Informational responses (e.g. 103 Early Hints) come before the
+	// response itself
+	if !w.wroteHeader && (status >= 200 || status == http.StatusSwitchingProtocols) {
 		w.record(status)
 	}
 	w.ResponseWriter.WriteHeader(status)

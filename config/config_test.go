@@ -602,3 +602,12 @@ func TestClone(t *testing.T) {
 	assert.Empty(t, *cfg.File.Routes[1].BypassCookies)
 	assert.NotEqual(t, "/other", cfg.File.Routes[0].Match)
 }
+
+func TestParseEarlyHints(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n")
+	require.NoError(t, err)
+	assert.False(t, cfg.Cache.EarlyHints, "off by default")
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cache]\nearlyHints = true\n")
+	require.NoError(t, err)
+	assert.True(t, cfg.Cache.EarlyHints)
+}
