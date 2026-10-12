@@ -65,6 +65,9 @@ type CachedResponse struct {
 	Usable bool
 	// Expired is whether it has been soft purged
 	Expired bool
+	// ESI is whether it uses Edge Side Includes, which are fetched for
+	// each visitor
+	ESI bool
 }
 
 // explainer is implemented by Cachers which can say how they would handle
@@ -124,6 +127,20 @@ func Explain(c cache.Cacher, backend *url.URL, opts Options, r *http.Request) Ex
 		}
 		step(StepStopped, "Not cacheable", reason)
 		e.Verdict = "Not cached: every request goes to the backend"
+		if anonymous := forESIPage(c, r, queryFilter(c, opts.QueryParams)); anonymous != nil {
+			// Its cookies are all esiCookies, so it may get the page
+			// cached for visitors without them
+			e.Key = c.Hash(anonymous)
+			e.Cached = peek(x, canExplain, e.Key)
+			if e.Cached != nil && e.Cached.ESI && e.Cached.FreshFor > 0 {
+				step(StepChanged, "Served the cached page, with ESI",
+					"its bypass cookies are all esiCookies, and the page cached for visitors without them uses ESI, so it gets that, with its includes fetched for it")
+				e.Verdict = "Cached page, with its includes fetched for this visitor"
+			} else {
+				step(StepOK, "Could get the cached page, with ESI",
+					"its bypass cookies are all esiCookies, so it would get the page cached for visitors without them, if that were fresh and used ESI")
+			}
+		}
 		return e
 	}
 	e.Cacheable = true
@@ -183,22 +200,9 @@ func Explain(c cache.Cacher, backend *url.URL, opts Options, r *http.Request) Ex
 	}
 
 	e.Key = c.Hash(r)
-	if canExplain {
-		if resp, found := x.Peek(e.Key); found {
-			age, _ := strconv.Atoi(resp.Age())
-			lifetime := freshnessLifetime(resp)
-			cached := &CachedResponse{
-				StatusCode: resp.StatusCode(),
-				Bytes:      len(resp.Body()),
-				Age:        time.Duration(age) * time.Second,
-				FreshFor:   time.Duration(lifetime-age) * time.Second,
-				Usable:     age < lifetime+utilities.StaleWhileRevalidate(resp.Header()),
-			}
-			if ex, ok := resp.(expirer); ok {
-				cached.Expired = ex.Expired()
-			}
-			e.Cached = cached
-		}
+	e.Cached = peek(x, canExplain, e.Key)
+	if e.Cached != nil && e.Cached.ESI {
+		step(StepChanged, "Uses ESI", "the cached page has Edge Side Includes, which are fetched for each visitor")
 	}
 	switch {
 	case e.Cached == nil:
@@ -211,6 +215,31 @@ func Explain(c cache.Cacher, backend *url.URL, opts Options, r *http.Request) Ex
 		e.Verdict = "Cacheable, but too old to serve: the next request fetches it again"
 	}
 	return e
+}
+
+// peek describes the response cached under key, if there is one
+func peek(x explainer, canExplain bool, key string) *CachedResponse {
+	if !canExplain {
+		return nil
+	}
+	resp, found := x.Peek(key)
+	if !found {
+		return nil
+	}
+	age, _ := strconv.Atoi(resp.Age())
+	lifetime := freshnessLifetime(resp)
+	cached := &CachedResponse{
+		StatusCode: resp.StatusCode(),
+		Bytes:      len(resp.Body()),
+		Age:        time.Duration(age) * time.Second,
+		FreshFor:   time.Duration(lifetime-age) * time.Second,
+		Usable:     age < lifetime+utilities.StaleWhileRevalidate(resp.Header()),
+		ESI:        cache.UsesESI(resp),
+	}
+	if ex, ok := resp.(expirer); ok {
+		cached.Expired = ex.Expired()
+	}
+	return cached
 }
 
 // routeMatch describes the route numbered n (from 1), if c can say

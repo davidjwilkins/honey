@@ -42,6 +42,8 @@ type Entry struct {
 	RemoveAt time.Time
 	// Fragments are the names of the shared fragments in it, if any
 	Fragments []string
+	// ESI is whether it uses Edge Side Includes (see esi.go)
+	ESI bool
 }
 
 // Fresh returns whether e is fresh at now
@@ -99,6 +101,7 @@ func describe(s storeEntry) (Entry, bool) {
 		Hits:        r.hits.Load(),
 		RemoveAt:    s.removeAt,
 		Stale:       time.Duration(utilities.StaleWhileRevalidate(r.headers)) * time.Second,
+		ESI:         r.headers.Get(ESIHeader) != "",
 	}
 	if !e.Expired {
 		e.Lifetime = time.Duration(utilities.FreshnessLifetime(r.headers)) * time.Second

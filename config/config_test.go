@@ -411,6 +411,27 @@ func TestParseStripCookies(t *testing.T) {
 	}
 }
 
+func TestParseESICookies(t *testing.T) {
+	cfg, err := Parse("[backend]\nuri = \"https://www.example.com\"\n")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Cache.ESICookies, "off by default")
+
+	cfg, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cache]\nesiCookies = [\"comment_author_\"]\n")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"comment_author_"}, cfg.Cache.ESICookies)
+
+	for _, tc := range []struct{ config, err string }{
+		{"[cache]\nesiCookies = [\"\"]", `cache.esiCookies: "" isn't a cookie name`},
+		{"[cache]\nesiCookies = [\"_ga\"]", `cache.esiCookies: "_ga" isn't one of the bypass cookies`},
+		{"[cache]\nbypassCookies = []\nesiCookies = [\"comment_author_\"]", `isn't one of the bypass cookies`},
+	} {
+		_, err := Parse("[backend]\nuri = \"https://www.example.com\"\n" + tc.config)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}
+
 func TestParseBrowserCacheControl(t *testing.T) {
 	cfg, err := Parse(`
 [backend]

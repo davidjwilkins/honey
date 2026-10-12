@@ -10,6 +10,8 @@ uri = "http://wordpress"
 defaultTTL = "5m"
 staleIfError = "1h"
 staleWhileRevalidate = "1d"
+# Commenters get cached pages, with their comments section fetched for them
+esiCookies = ["comment_author_"]
 
 [[route]]
 match = "(?:[?&]preview=true(?:&|$)|/(?:feed|wp-admin|wp-login))"

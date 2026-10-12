@@ -92,6 +92,8 @@ var sections = []section{
 	{"Cookies", []*field{
 		optList("cache.bypassCookies", "Visitors with these cookies (name prefixes) aren't cached: logged in, commenters, shoppers", "WordPress and WooCommerce's",
 			func(f *config.File) **[]string { return &f.Cache.BypassCookies }),
+		list("cache.esiCookies", "Bypass cookies whose visitors get cached pages anyway, if the pages use ESI for the personal parts: commenters",
+			func(f *config.File) *[]string { return &f.Cache.ESICookies }),
 		list("cache.allowedCookies", "Cookies passed to WordPress, with a cached copy for each value",
 			func(f *config.File) *[]string { return &f.Cache.AllowedCookies }),
 		list("cache.stripCookies", "Cookies (name prefixes) removed from responses, so that they're cached",

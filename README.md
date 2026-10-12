@@ -72,6 +72,8 @@ All the available settings:
 	compressMinSize = "1KB"      # smaller responses aren't compressed
 	bypassCookies = ["wordpress_logged_in_", "wp-postpass_", "comment_author_",
 	    "woocommerce_items_in_cart", "wp_woocommerce_session_"]  # (the default) see below
+	esiCookies = ["comment_author_"]   # bypass cookies whose visitors get cached pages anyway, if they
+	                                   # use Edge Side Includes for the personal parts (see below)
 	allowedCookies = ["site_lang_id"]  # cookies passed to the backend on cached requests, and part of the cache key
 	stripCookies = ["pll_language"]    # cookies removed from responses, which are then cached (see below)
 	browserCacheControl = "no-cache"   # Cache-Control for browsers (unset: the cached response's own)
@@ -181,7 +183,7 @@ The default covers WordPress and WooCommerce:
 | `comment_author_` | Visitors who have left a comment (the form is filled in with their name and email) |
 | `woocommerce_items_in_cart`, `wp_woocommerce_session_` | Shoppers with a cart |
 
-Add any your plugins use (e.g. a membership plugin's), or set `bypassCookies = []` to turn this off.  A route can override it - e.g. `bypassCookies = []` for `/wp-content/uploads/`, so that logged in users' images still come from the cache.
+Add any your plugins use (e.g. a membership plugin's), or set `bypassCookies = []` to turn this off.  Commenters can get cached pages too, if the pages use [Edge Side Includes](#edge-side-includes) for their comments.  A route can override it - e.g. `bypassCookies = []` for `/wp-content/uploads/`, so that logged in users' images still come from the cache.
 
 Other cookies don't stop a request being cached - most visitors have some, e.g. analytics cookies - but they are removed from it before it is sent to the backend, so that one visitor's cookies (a theme switcher's, say) can't change the page which is cached for everyone.  The exceptions are `allowedCookies`, which are passed on, and which responses are cached separately for each value of (whether or not the backend sends `Vary: Cookie`).  So if a plugin remembers something about visitors who aren't logged in in a cookie - a cart, or a currency - add it to `bypassCookies` (their pages aren't cached) or `allowedCookies` (a copy of each page is cached for each value), or the plugin won't see it.
 
@@ -310,6 +312,20 @@ Honey keeps each fragment's content separately.  Whenever it caches a page with 
 
 The [WordPress plugin](#purging-from-wordpress) marks the Latest Posts block and the Recent Posts widget as fragments (other blocks can be added with its `honey_fragment_blocks` filter), and purges them when a post is published, updated, unpublished or deleted.  Lists which differ from page to page, such as one marking the current post, aren't marked.  The admin page's Cache tab lists the fragments, and can purge them.
 
+## Edge Side Includes
+
+Some pages differ between visitors in just one part - the comment form, filled in with a commenter's name and email, say.  With [Edge Side Includes](https://www.w3.org/TR/esi-lang/), the backend leaves that part out, with a tag saying where to get it:
+
+	<esi:include src="/hello-world/?honey-esi=comments.4f2a"/>
+
+Honey caches the page, and fills in its includes for each visitor when it serves it, by requesting each `src` from itself, with the visitor's cookies.  An include which is the same for everyone comes from the cache like any other page, and one for a visitor with bypass cookies comes from the backend.  So the page is cached once, and only the part which differs is fetched for each visitor.
+
+Honey tells the backend it supports them by sending `Surrogate-Capability: honey="ESI/1.0"` with requests for pages it may cache, and only processes an HTML page's tags if it responds with `Surrogate-Control: content="ESI/1.0"` (which visitors don't get).  It supports `<esi:include src="..." alt="..."/>`, `<esi:remove>` and `<!--esi ... -->`.  Includes must be on the same site, are fetched at the same time, up to 20 a page and 3 deep, within 10 seconds; one which fails leaves a gap rather than failing the page.  Their `honey-esi` query parameter is always kept, whatever `queryParams` says.  A page with includes differs between visitors, so browsers get it with `Cache-Control: private, no-cache`, and without an `Etag`, and it is compressed as it's served.
+
+Visitors with bypass cookies don't get cached pages, but those whose bypass cookies are all `esiCookies` (cookie name prefixes) do, if the page cached for visitors without the cookies is fresh and uses ESI: the personal parts are the includes, fetched from the backend with their cookies.  Otherwise their requests go to the backend as usual.  Set `esiCookies = ["comment_author_"]` for commenters, with the [WordPress plugin](#purging-from-wordpress): with a block theme, it leaves the Comments block out of the post's page, in favour of an include of the same address with `?honey-esi=comments.<id>`, which shows just the Comments block.  So commenters get the post from the cache, and only its comments from WordPress, with their name filled in and their comments awaiting moderation shown.  Purging the post purges its comments too, as they're under its address.  Classic themes aren't supported yet.
+
+The admin page's Test a URL says whether a page uses ESI, and whether a visitor with the cookies you give would get it.
+
 ### Purging from WordPress
 
 [`contrib/wordpress/honey-purge.php`](contrib/wordpress/honey-purge.php) is a must-use plugin which purges pages when they change, so that visitors see edits straight away:
@@ -319,7 +335,7 @@ The [WordPress plugin](#purging-from-wordpress) marks the Latest Posts block and
 - When a category or tag is renamed or deleted: its archive.
 - When the theme, its customizations, menus, widgets, plugins, or the site's title, tagline, reading or permalink settings change: everything.
 
-It also marks lists of recent posts as [shared fragments](#shared-fragments), and purges them when a post changes, so that every page shows new posts straight away.  And it adds a "Purge cache" button to the admin bar for administrators.  Most of its purges are soft, and some are hard (see [Never waiting for WordPress](#never-waiting-for-wordpress)).
+It also marks lists of recent posts as [shared fragments](#shared-fragments), and purges them when a post changes, so that every page shows new posts straight away.  With block themes, it serves posts' comments as [Edge Side Includes](#edge-side-includes), so that commenters can get cached pages.  And it adds a "Purge cache" button to the admin bar for administrators.  Most of its purges are soft, and some are hard (see [Never waiting for WordPress](#never-waiting-for-wordpress)).
 
 To install it, copy it to `wp-content/mu-plugins/honey-purge.php`, and add to `wp-config.php`:
 
@@ -360,6 +376,6 @@ Things which might be worth doing next:
 - **TLS termination** with automatic certificates (e.g. Let's Encrypt), so that Honey can face the internet without another proxy in front.
 - **A login for the admin page**, so that it can be served somewhere other than a private address.
 - **Per-route compression settings** (brotli and gzip are site-wide for now).
-- **Edge Side Includes (ESI):** cache pages with `<esi:include src="...">` tags in place of the parts which differ between visitors (e.g. a cart summary, or "Howdy, admin"), and fetch and cache each of those parts separately, so that pages for logged in users and shoppers can mostly be served from the cache too.  This could build on [shared fragments](#shared-fragments), which already cache pages with parts kept separately.  WordPress would have to output the tags, which few plugins do.
+- **More Edge Side Includes:** commenters on classic themes, and parts of pages for logged in users and shoppers (e.g. a cart summary, or the admin bar), so that their pages can mostly be served from the cache too.
 
 Dropped from the original list: HTTP/2 server push (browsers have removed it), rewriting popular JavaScript libraries to public CDNs (no faster since browsers stopped sharing caches between sites, and it leaks visitors to the CDN), minifying HTML, CSS and JS (risky, and brotli gets most of the benefit), and other page rewriting (fixing mixed content, combining Google Fonts requests, a cookieless asset domain, hotlink protection, an offline cache), which is better done in WordPress or a CDN.

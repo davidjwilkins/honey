@@ -76,8 +76,9 @@ func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, op
 	var self http.HandlerFunc
 	purgeFragments := FragmentPurger(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { self(w, r) }))
 	self = func(w http.ResponseWriter, r *http.Request) {
-		// Only the cache sends this to the backend (see forBackend)
+		// Only the cache sends these to the backend (see forBackend)
 		r.Header.Del(cache.FragmentTokenHeader)
+		r.Header.Del("Surrogate-Capability")
 		if r.Method == MethodPurge && r.Header.Get(FragmentPurgeHeader) != "" {
 			handleFragmentPurge(w, r, opts, purgeFragments)
 			return
@@ -103,6 +104,16 @@ func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, op
 			return
 		}
 		serve(w, r)
+	}
+	// Cached pages which use Edge Side Includes are put together for each
+	// visitor, with their includes requested from the proxy itself
+	inner := self
+	self = func(w http.ResponseWriter, r *http.Request) {
+		visitor := r.Clone(r.Context())
+		SwitchBackend(visitor, backend)
+		ew, finish := withESI(w, visitor, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { self(w, r) }), opts.Control.secretHeader())
+		defer finish()
+		inner(ew, r)
 	}
 	return self
 }
@@ -138,10 +149,12 @@ func queryFilter(c cache.Cacher, keep []string) func(*http.Request) {
 		if params == nil || r.URL.RawQuery == "" {
 			return
 		}
-		kept := make(map[string]bool, len(params))
+		kept := make(map[string]bool, len(params)+1)
 		for _, name := range params {
 			kept[name] = true
 		}
+		// Names what an ESI include renders
+		kept[ESIParam] = true
 		query := r.URL.Query()
 		for name := range query {
 			if !kept[name] {
@@ -216,6 +229,11 @@ func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http
 			// whatever happens.
 			defer flights.Finish(hash, f, singleflight.Result{Retry: true})
 			handler.ServeHTTP(w, forBackend(r, hash, f))
+			return
+		}
+		// Visitors with some bypass cookies (e.g. commenters) can still be
+		// served a cached page which uses ESI for their personal parts
+		if serveESIPage(c, w, r, filterQuery) {
 			return
 		}
 		w.Header().Set("X-Honey-Cache", "NO-CACHE")
@@ -451,6 +469,8 @@ func forBackend(r *http.Request, hash string, leading *singleflight.Flight) *htt
 	// The backend marks shared fragments with this, so that the cache can
 	// tell them from markers in the page's content (see cache/fragments.go)
 	r.Header.Set(cache.FragmentTokenHeader, cache.NewFragmentToken(time.Now()))
+	// and may use Edge Side Includes (see cache/esi.go)
+	r.Header.Set("Surrogate-Capability", cache.SurrogateCapability)
 	return r
 }
 

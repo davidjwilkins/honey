@@ -194,3 +194,24 @@ func (q *recompressor) run() {
 func (q *recompressor) wait() {
 	q.pending.Wait()
 }
+
+// Compress compresses body for a client which sent acceptEncoding, quickly
+// (e.g. for a page put together for one visitor), with brotli or gzip if
+// it accepts either and it's worth it.  It returns the coding used, and the
+// compressed body, or "" if it isn't compressed.
+func Compress(acceptEncoding string, body []byte) (string, []byte) {
+	if len(body) < DefaultCompressMinBytes {
+		return "", body
+	}
+	switch utilities.PreferredEncoding(acceptEncoding, "br", "gzip") {
+	case "br":
+		if compressed := compressBrotli(body, fastBrotliQuality); len(compressed) < len(body) {
+			return "br", compressed
+		}
+	case "gzip":
+		if compressed := compressGzip(body); len(compressed) < len(body) {
+			return "gzip", compressed
+		}
+	}
+	return "", body
+}

@@ -342,15 +342,47 @@ func TestCommentsAppearOnceApproved(t *testing.T) {
 	require.Equal(t, http.StatusFound, resp.StatusCode, resp.Body)
 
 	eventually(t, anonymous, path, "What a lovely honey cache.")
-	page := get(t, anonymous, path)
-	assert.Equal(t, "HIT", page.Cache)
+	// The comments may be refreshed before the page around them is
+	page := cached(t, anonymous, path)
+	contains(t, page.Body, "What a lovely honey cache.")
 	notContains(t, page.Body, "jane@example.com")
 
-	// The commenter's details are filled in on the form for them only
+	// The commenter gets the cached page too, with the comments section
+	// (an Edge Side Include) fetched for them, so that their details are
+	// filled in on the form for them only
 	page = get(t, commenter, path)
-	assert.Equal(t, "NO-CACHE", page.Cache)
+	assert.Equal(t, "HIT", page.Cache, describe(page))
+	contains(t, page.Body, "Commented post")
+	contains(t, page.Body, "What a lovely honey cache.")
 	contains(t, page.Body, "jane@example.com")
+	assert.Equal(t, "private, no-cache", page.Header.Get("Cache-Control"))
 	notContains(t, get(t, anonymous, path).Body, "jane@example.com")
+}
+
+func TestCommentsAreEdgeSideIncludes(t *testing.T) {
+	_, path := newPost(t, "Post with comments")
+	anonymous := client(nil)
+	page := cached(t, anonymous, path)
+	contains(t, page.Body, `id="commentform"`, "the comments section is filled in: %s", text(page.Body))
+	notContains(t, page.Body, "esi:")
+	assert.Equal(t, "private, no-cache", page.Header.Get("Cache-Control"))
+	assert.Empty(t, page.Header.Get("Etag"))
+	assert.Empty(t, page.Header.Get("Surrogate-Control"))
+
+	include := get(t, anonymous, path+"?honey-esi=comments.0000000000000000")
+	assert.Equal(t, http.StatusNotFound, include.StatusCode, "only the comments sections WordPress has shown")
+
+	// Logged in users still go to WordPress, which shows them the page
+	// without an include
+	admin := get(t, client(logIn(t, "admin")), path)
+	assert.Equal(t, "NO-CACHE", admin.Cache)
+	contains(t, admin.Body, `id="commentform"`)
+	notContains(t, admin.Body, "esi:")
+
+	tested := get(t, anonymous, adminPage+"/test?"+url.Values{"url": {site + path}}.Encode())
+	contains(t, tested.Body, "Uses ESI", "the admin page says the page uses ESI")
+	tested = get(t, anonymous, adminPage+"/test?"+url.Values{"url": {site + path}, "cookies": {"comment_author_abc=Jane"}}.Encode())
+	contains(t, tested.Body, "Served the cached page, with ESI", "and that commenters get it")
 }
 
 func TestPasswordProtectedPosts(t *testing.T) {
@@ -529,7 +561,8 @@ func TestAdminCacheBrowser(t *testing.T) {
 	list := get(t, c, adminPage+"/cache?"+url.Values{"path": {path}}.Encode())
 	require.Equal(t, http.StatusOK, list.StatusCode)
 	contains(t, list.Body, `class="mono path">`+path+`<`)
-	link := regexp.MustCompile(`href="(/cache/entry\?key=[^"]+)"`).FindStringSubmatch(list.Body)
+	// (not its comments, which are under it: see TestCommentsAreEdgeSideIncludes)
+	link := regexp.MustCompile(`href="(/cache/entry\?key=[^"]+)" class="mono path">` + regexp.QuoteMeta(path) + `<`).FindStringSubmatch(list.Body)
 	require.Len(t, link, 2, "the post links to its details")
 
 	entry := get(t, c, adminPage+html.UnescapeString(link[1]))
@@ -538,7 +571,7 @@ func TestAdminCacheBrowser(t *testing.T) {
 	contains(t, entry.Body, "Content-Type: text/html")
 
 	resp := do(t, c, http.MethodPost, adminPage+"/purge",
-		url.Values{"url": {site + path}, "return": {"/cache?path=" + url.QueryEscape(path)}}, "Origin", adminPage)
+		url.Values{"url": {site + path}, "prefix": {"1"}, "return": {"/cache?path=" + url.QueryEscape(path)}}, "Origin", adminPage)
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
 	assert.True(t, strings.HasPrefix(resp.Header.Get("Location"), "/cache?"), "the purge returns to the cache browser")
 	contains(t, get(t, c, adminPage+resp.Header.Get("Location")).Body, "Nothing cached matches.")
