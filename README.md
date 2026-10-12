@@ -233,6 +233,8 @@ If the proxy is somewhere else (e.g. a CDN, or a load balancer with a public add
 
 With `persist` set, Honey saves the cache to that file every `persistInterval` (5 minutes by default) and when it shuts down, and loads it when it starts, so a restart or deploy doesn't leave WordPress to take the full load while the cache fills up again.  Responses which expired while Honey was stopped aren't loaded, and ages carry on from when they were first cached.
 
+What the [optimizer](#optimizing-pages) has learned is kept too, in a file next to it (`persist` with `.optimize` added): pages' main images, self-hosted Google Fonts, and converted images (with whatever couldn't be converted, and when each was last checked against its original).  So after a restart, pages aren't cached again with scripts asking browsers for their main images, fonts aren't fetched from Google again, and images aren't converted again.  The site's stylesheets, for removing unused CSS, are fetched from the backend again as pages need them, which is quick.
+
 - The file is replaced atomically, so it is never left half written, and only its owner can read it.
 - A missing or unreadable file is logged, and Honey starts with an empty cache.  So is one saved by a version of Honey which keys responses differently.
 - On shutdown, Honey waits for requests in progress to finish (for up to 30 seconds) before saving.
@@ -582,7 +584,6 @@ Things which might be worth doing next:
 
 Cache plugins such as FlyingPress, LiteSpeed Cache and WP Rocket serve pages more slowly than Honey, and don't keep WordPress out of the way as well, but they also change pages so that browsers load them faster, which is most of what Core Web Vitals and PageSpeed measure.  Honey [delays third-party scripts, preloads pages' main images, self-hosts Google Fonts, removes unused CSS and converts images to AVIF and WebP](#optimizing-pages), and [purges a CDN](#behind-a-cdn) in front of it, and could do more of it, once, when a page is cached, so that it costs nothing to serve:
 
-- **Keeping converted images on disk**, with the [cache snapshots](#keeping-the-cache-across-restarts), so that they're not converted again after a restart.
 - **Removing unused CSS from `<style>`s** too: block themes put most of their CSS in the page itself, which can't be loaded later, so it would have to be right.
 - **More benchmarks:** [Honey against WP Super Cache and nginx's FastCGI cache](bench#against-other-caches) is measured; WP Fastest Cache, W3 Total Cache and LiteSpeed (with its own server) could be too.
 
