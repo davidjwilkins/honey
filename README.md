@@ -165,6 +165,8 @@ All the available settings:
 	preloadMainImage = true      # learn each page's main image from visitors' browsers, and preload it
 	selfHostFonts = true         # serve Google Fonts from the site itself
 	removeUnusedCSS = true       # put the CSS each page uses in it, and load the whole stylesheets once it's shown
+	convertImages = true         # convert JPEGs and PNGs to AVIF and WebP for browsers which accept them
+	convertImagesMaxSize = "256MB"   # memory for converted images
 	keepCSSMatching = [".is-open"]   # rules always to keep: text in their selectors
 
 	# Serve HTTPS (HTTP/1.1 and HTTP/2) and HTTP/3 too (off unless auto or
@@ -325,6 +327,10 @@ The scripts delayed are those whose `src`, `id` or (for inline scripts) code con
 
 Rules for what the visitor does (`:hover`, `:focus` and the like) and pseudo elements (`::before`) are kept if what they're for is on the page; `@media` and `@supports` blocks keep the rules in them which are used; `@font-face` rules are all kept (browsers only load fonts which are used), and `@keyframes` if a kept rule names them.  Rules for classes scripts commonly add as a page loads - `.js` (for themes which swap `no-js` for it), web font loaders', lazy loaders', and sliders' (Swiper, Slick, Owl) - are always kept, as are those whose selectors contain any of `keepCSSMatching`; selectors Honey doesn't understand are kept too.  Relative `url()`s are made relative to the site.  Stylesheets from other sites, for print (or other media), which `@import` others, or of over 1MB are left as they are, as are any after a page's first 150KB of used CSS.  Stylesheets are kept in memory, for up to 2,000, and fetched again hourly (the old one is used meanwhile).  `<style>`s in the page are left as they are.
 
+**Converting images.**  AVIF and WebP images are a fraction of the size of JPEGs and PNGs - an AVIF is often less than half the size of the JPEG it's made from, looking the same - so a page's images, and its main image above all, are shown sooner.  With `convertImages = true`, a JPEG or PNG requested by a browser which accepts AVIF or WebP (as its `Accept` header says) is converted in the background, from the response which passes through Honey, and later requests for it get the converted image, at the same URL, with the original's `Cache-Control` and `Vary: Accept` (which originals are sent with too, so that browsers' and proxies' caches keep them apart).  JPEGs become AVIF for browsers which take it (nearly all, now), or WebP; PNGs become lossless WebP, which keeps logos, screenshots and text exactly as they are.  Only images which come out at least 10% smaller are served converted.  The encoders are pure Go ([gav1d](https://github.com/gen2brain/gav1d) for AVIF and [webp-go-pure](https://github.com/SeriousBug/webp-go-pure) for WebP), converting a 2 megapixel photo in under half a second, a quarter of the server's cores at a time.
+
+Images whose colours or orientation would change are left as they are: JPEGs rotated by their EXIF orientation, with a colour profile other than sRGB (e.g. an iPhone's Display P3, or Adobe RGB) or in CMYK, and animated PNGs.  So are images under 2KB, over 16MB or 40 megapixels (2.5 megapixels for PNGs, as lossless WebP takes more memory), sent with cookies, `Cache-Control: private` or `no-store` or compressed, and those fetched by logged in users (or anyone with the [bypass cookies](#logged-in-users-and-sessions)), whom WordPress might send images others don't get.  Converted images are kept in memory (up to `convertImagesMaxSize`, 256MB by default), forgotten when their URL is [purged](#purging-and-refreshing), and checked against the original daily (a request then gets the original, and if it has changed, it's converted again).  The admin page's events show how many images have been converted, and how much smaller they are.
+
 ## Routes
 
 Each `[[route]]` either stops the requests it matches from being cached (`cache = false`), or overrides some of the `[cache]` settings for them: `defaultTTL`, `staleIfError` and `staleWhileRevalidate` (`"0"` turns them off), `queryParams`, `bypassCookies` and `browserCacheControl`.
@@ -468,6 +474,8 @@ A purge with Honey's soft mode leaves the old page to be served once more while 
 
 The CDN has to be told to cache pages (CDNs usually only cache static files by default) - and, as it can't tell visitors apart, not to for visitors with WordPress's [bypass cookies](#logged-in-users-and-sessions).  It should respect the `Cache-Control` headers Honey sends.  With Cloudflare, add a Cache Rule which makes requests eligible for cache unless their cookies contain `wordpress_logged_in_`, `wp-postpass_`, `comment_author_`, `woocommerce_items_in_cart` or `wp_woocommerce_session_` (and leaves the Edge TTL to the origin's `Cache-Control`).  With Bunny, turn on Cache HTML (or set the Smart Cache), and add an Edge Rule which bypasses the cache for those cookies.  Visitors with them then reach Honey, which serves them as usual - with [Edge Side Includes](#edge-side-includes) for commenters and shoppers.
 
+With [`convertImages`](#optimizing-pages), an image's URL serves AVIF, WebP or the original depending on the browser's `Accept` header, and the CDN has to keep them apart, or it may send AVIF to a browser which can't show it.  Most CDNs only cache one copy of a URL unless told to vary on `Accept`: Cloudflare ignores `Vary: Accept` unless "Vary for Images" is on (on the plans which have it), and Bunny's Vary Cache settings decide what it keeps apart.  If your CDN can't vary on `Accept` for images, either turn `convertImages` off, or have the CDN not cache `.jpg`, `.jpeg` and `.png` files (e.g. a Cloudflare Cache Rule which bypasses the cache for them), leaving them to Honey and browsers.  Honey logs a reminder when it starts with both.
+
 ## Shared fragments
 
 Some parts of a page are the same on every page - a list of recent posts in a sidebar, say.  When one changes, every page showing it is out of date, but purging every page would make WordPress render the whole site again.  Instead, the backend can mark such a part as a shared fragment:
@@ -533,7 +541,7 @@ Against other caches, on the same WordPress (a GitHub Actions runner, with compr
 | WP Super Cache | 1,287 | 36ms | 108ms |
 | Honey | 19,858 | 1.9ms | 11ms |
 
-While a post is being edited, WP Super Cache's slowest requests take seconds (they wait for WordPress), and Honey's 141ms.  With [`[optimize]`](#optimizing-pages), Lighthouse scores a post with Google Analytics, the Meta pixel and Hotjar 99-100, with no Total Blocking Time, and (with Chrome throttled like a phone on 4G) its main image shown 360ms sooner; removing unused CSS shows the page first 300ms sooner.  See [`bench`](bench#against-other-caches) for how they're measured, and the caveats.
+While a post is being edited, WP Super Cache's slowest requests take seconds (they wait for WordPress), and Honey's 141ms.  With all of [`[optimize]`](#optimizing-pages), Lighthouse scores a post with a featured image, Google Analytics, the Meta pixel and Hotjar 100, with no Total Blocking Time, and (with Chrome throttled like a phone on 4G) shows it first in half the time, and its featured image (converted to AVIF, a quarter of the size) 210ms sooner.  See [`bench`](bench#against-other-caches) for how they're measured, and the caveats.
 
 ### Memory
 
@@ -572,9 +580,9 @@ Things which might be worth doing next:
 - **Per-route compression settings** (brotli and gzip are site-wide for now).
 - **More Edge Side Includes:** commenters and shoppers on classic themes, and parts of pages for logged in users (e.g. the admin bar), so that their pages can mostly be served from the cache too.
 
-Cache plugins such as FlyingPress, LiteSpeed Cache and WP Rocket serve pages more slowly than Honey, and don't keep WordPress out of the way as well, but they also change pages so that browsers load them faster, which is most of what Core Web Vitals and PageSpeed measure.  Honey [delays third-party scripts, preloads pages' main images, self-hosts Google Fonts and removes unused CSS](#optimizing-pages), and [purges a CDN](#behind-a-cdn) in front of it, and could do more of it, once, when a page is cached, so that it costs nothing to serve:
+Cache plugins such as FlyingPress, LiteSpeed Cache and WP Rocket serve pages more slowly than Honey, and don't keep WordPress out of the way as well, but they also change pages so that browsers load them faster, which is most of what Core Web Vitals and PageSpeed measure.  Honey [delays third-party scripts, preloads pages' main images, self-hosts Google Fonts, removes unused CSS and converts images to AVIF and WebP](#optimizing-pages), and [purges a CDN](#behind-a-cdn) in front of it, and could do more of it, once, when a page is cached, so that it costs nothing to serve:
 
-- **WebP and AVIF images:** convert JPEGs and PNGs the first time they're requested by a browser which accepts them, and cache the result, varying on `Accept`.
+- **Keeping converted images on disk**, with the [cache snapshots](#keeping-the-cache-across-restarts), so that they're not converted again after a restart.
 - **Removing unused CSS from `<style>`s** too: block themes put most of their CSS in the page itself, which can't be loaded later, so it would have to be right.
 - **More benchmarks:** [Honey against WP Super Cache and nginx's FastCGI cache](bench#against-other-caches) is measured; WP Fastest Cache, W3 Total Cache and LiteSpeed (with its own server) could be too.
 

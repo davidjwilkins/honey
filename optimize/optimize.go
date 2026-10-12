@@ -43,6 +43,15 @@ type Options struct {
 	// SelfHostFonts serves Google Fonts from the site itself (see
 	// fonts.go)
 	SelfHostFonts bool
+	// ConvertImages converts JPEGs and PNGs to AVIF and WebP for browsers
+	// which accept them (see convert.go), keeping up to
+	// ConvertedImagesBytes of them (or DefaultConvertedBytes)
+	ConvertImages        bool
+	ConvertedImagesBytes int
+	// PrivateCookies are cookie name prefixes which mark visitors who may
+	// be shown what others aren't (e.g. logged in users), whose requests
+	// images aren't converted from
+	PrivateCookies []string
 	// RemoveUnusedCSS puts the CSS each page uses in it, in place of the
 	// site's stylesheets, which are loaded once it's shown (see
 	// usedcss.go)
@@ -79,17 +88,18 @@ type Options struct {
 
 // Optimizer changes pages as Options say
 type Optimizer struct {
-	opts   Options
-	delay  []string
-	keep   []string
-	images *imageStore
-	fonts  *fontStore
-	css    *cssStore
+	opts    Options
+	delay   []string
+	keep    []string
+	images  *imageStore
+	fonts   *fontStore
+	css     *cssStore
+	convert *imageConverter
 }
 
 // New returns an Optimizer, or nil if opts turn nothing on
 func New(opts Options) *Optimizer {
-	if !opts.DelayScripts && !opts.PreloadMainImage && !opts.SelfHostFonts && !opts.RemoveUnusedCSS {
+	if !opts.DelayScripts && !opts.PreloadMainImage && !opts.SelfHostFonts && !opts.RemoveUnusedCSS && !opts.ConvertImages {
 		return nil
 	}
 	if opts.now == nil {
@@ -117,6 +127,9 @@ func New(opts Options) *Optimizer {
 	}
 	if opts.RemoveUnusedCSS {
 		o.css = newCSSStore(&o.opts)
+	}
+	if opts.ConvertImages {
+		o.convert = newImageConverter(&o.opts)
 	}
 	return o
 }

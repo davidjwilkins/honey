@@ -143,6 +143,11 @@ type Optimize struct {
 	// optimize.DefaultKeepCSS
 	RemoveUnusedCSS bool
 	KeepCSSMatching []string
+	// ConvertImages converts JPEGs and PNGs to AVIF and WebP for browsers
+	// which accept them, keeping up to ConvertedImagesBytes of them (0:
+	// optimize.DefaultConvertedBytes)
+	ConvertImages        bool
+	ConvertedImagesBytes int64
 }
 
 // Security configures protecting WordPress (see guard.Options)
@@ -381,6 +386,8 @@ type File struct {
 		SelfHostFonts        bool     `toml:"selfHostFonts,omitempty"`
 		RemoveUnusedCSS      bool     `toml:"removeUnusedCSS,omitempty"`
 		KeepCSSMatching      []string `toml:"keepCSSMatching,omitempty"`
+		ConvertImages        bool     `toml:"convertImages,omitempty"`
+		ConvertImagesMaxSize string   `toml:"convertImagesMaxSize,omitempty"`
 	} `toml:"optimize,omitempty"`
 	TLS struct {
 		Listen   string `toml:"listen,omitempty"`
@@ -903,6 +910,13 @@ func parseOptimize(f *File) (Optimize, error) {
 		PreloadMainImage: o.PreloadMainImage,
 		SelfHostFonts:    o.SelfHostFonts,
 		RemoveUnusedCSS:  o.RemoveUnusedCSS,
+		ConvertImages:    o.ConvertImages,
+	}
+	if o.ConvertImagesMaxSize != "" {
+		var err error
+		if opt.ConvertedImagesBytes, err = parseSize(o.ConvertImagesMaxSize); err != nil || opt.ConvertedImagesBytes <= 0 {
+			return opt, fmt.Errorf("optimize.convertImagesMaxSize must be a size, e.g. \"256MB\"")
+		}
 	}
 	for _, list := range []struct {
 		name string

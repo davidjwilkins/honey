@@ -26,6 +26,8 @@ preloadMainImage = true
 selfHostFonts = true
 # Pages have the CSS they use, and load their stylesheets once shown
 removeUnusedCSS = true
+# Browsers which take AVIF and WebP get images converted to them
+convertImages = true
 
 [security]
 # The tests come from Docker's network: others are made up, with

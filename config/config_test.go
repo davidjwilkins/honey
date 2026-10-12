@@ -750,12 +750,14 @@ preloadMainImage = true
 selfHostFonts = true
 removeUnusedCSS = true
 keepCSSMatching = [".is-open"]
+convertImages = true
+convertImagesMaxSize = "64MB"
 `)
 	require.NoError(t, err)
 	assert.Equal(t, Optimize{DelayScripts: true, DelayScriptsMatching: []string{"widget.js"}, KeepScriptsMatching: []string{"gtag"},
 		DelayScriptsTimeout: 10 * time.Second, PreloadMainImage: true, SelfHostFonts: true,
-		RemoveUnusedCSS: true, KeepCSSMatching: []string{".is-open"}}, cfg.Optimize)
-	for _, bad := range []string{`delayScriptsTimeout = "soon"`, `delayScriptsMatching = [" "]`, `keepScriptsMatching = [""]`, `keepCSSMatching = [" "]`} {
+		RemoveUnusedCSS: true, KeepCSSMatching: []string{".is-open"}, ConvertImages: true, ConvertedImagesBytes: 64 << 20}, cfg.Optimize)
+	for _, bad := range []string{`delayScriptsTimeout = "soon"`, `delayScriptsMatching = [" "]`, `keepScriptsMatching = [""]`, `keepCSSMatching = [" "]`, `convertImagesMaxSize = "lots"`, `convertImagesMaxSize = "0"`} {
 		_, err := Parse("[backend]\nuri = \"https://www.example.com\"\n[optimize]\n" + bad + "\n")
 		assert.Error(t, err, bad)
 	}

@@ -397,11 +397,11 @@ func beacon(need []string) []byte {
 	return []byte(`<script id="honey-main-image">` + s + `</script>`)
 }
 
-// Middleware handles reports of pages' main images (see BeaconPath) and
-// requests for self-hosted fonts (see FontsPath), and passes everything else
-// on to next
+// Middleware handles reports of pages' main images (see BeaconPath),
+// requests for self-hosted fonts (see FontsPath) and for images which may be
+// converted (see convert.go), and passes everything else on to next
 func (o *Optimizer) Middleware(next http.Handler) http.Handler {
-	if o == nil || (o.images == nil && o.fonts == nil) {
+	if o == nil || (o.images == nil && o.fonts == nil && o.convert == nil) {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -410,10 +410,19 @@ func (o *Optimizer) Middleware(next http.Handler) http.Handler {
 			o.report(w, r)
 		case o.fonts != nil && strings.HasPrefix(r.URL.Path, FontsPath):
 			o.fonts.serve(w, r)
+		case o.convert != nil && o.convert.serveImage(w, r, next):
 		default:
 			next.ServeHTTP(w, r)
 		}
 	})
+}
+
+// Forget forgets what's been made from the URL path (e.g. converted
+// images), or everything under it if prefix, as it's been purged
+func (o *Optimizer) Forget(path string, prefix bool) {
+	if o != nil && o.convert != nil {
+		o.convert.forget(path, prefix)
+	}
 }
 
 // report records a page's main image, as a browser reports it
