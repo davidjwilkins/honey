@@ -108,19 +108,33 @@ nginx gzips every response.  Without compression nginx is faster - on a
 4 vCPU virtual machine, 12,200 requests a second against Honey's 9,700 -
 but browsers always ask for it.
 
-Lighthouse 12 (a phone, with simulated slow 4G and CPU), on a post with a
+Lighthouse 12 (a phone, on slow 4G with a slow CPU), on a post with a
 featured image, a Google Font, Google Analytics, the Meta pixel and
-Hotjar, served from Honey's cache; the median of 3 runs:
+Hotjar, served from Honey's cache; the median of 3 runs.  Lighthouse
+usually simulates the slow network and CPU, from a fast load of the page;
+it can also have Chrome slow them down for real, which takes longer but
+is closer to what a phone sees:
 
 | | Performance | First Contentful Paint | Largest Contentful Paint | Total Blocking Time |
 | --- | --- | --- | --- | --- |
-| Honey | 94-98 | 1.35s | 1.80s | 113-275ms |
-| Honey, with `delayScripts`, `preloadMainImage` and `selfHostFonts` | 99 | 1.35s | 1.80-2.10s | 0ms |
+| Honey (simulated) | 94-98 | 1.35s | 1.80s | 113-275ms |
+| Honey, with `delayScripts`, `preloadMainImage` and `selfHostFonts` (simulated) | 99 | 1.35s | 1.95s | 0ms |
+| ... and `removeUnusedCSS` (simulated) | 99 | 1.05s | 1.95s | 0ms |
+| Honey (throttled by Chrome) | 92 | 1.22s | 2.03s | 318ms |
+| Honey, with `delayScripts`, `preloadMainImage` and `selfHostFonts` (throttled by Chrome) | 100 | 1.22s | 1.67s | 0ms |
 
-Delaying the third-party scripts takes Total Blocking Time to nothing.
-The Largest Contentful Paint was 150-300ms later with `[optimize]` in
-four runs out of five - probably because the self-hosted font now loads
-alongside the image, where from Google it loaded later, though that isn't
-confirmed.  The page's main image hadn't been learned when
-Lighthouse ran, so it isn't preloaded; on this page (an `<img>` the browser
-finds straight away) it would only be given `fetchpriority="high"`.
+Delaying the third-party scripts takes Total Blocking Time to nothing,
+and removing unused CSS shows the page 300ms sooner.
+
+With Chrome throttled, `[optimize]` shows the page's main image 360ms
+sooner, as it isn't waiting on connections to Google or on the
+third-party scripts.  Simulated, it's 150ms later: Lighthouse's
+simulation counts what started before the main image was shown in the
+fast load as holding it up, and with `selfHostFonts` the font starts
+sooner (from the site itself, rather than after connecting to two of
+Google's), so it's counted.  The image itself loads no slower: what grows
+is the delay between it loading and being shown, and only with
+`selfHostFonts` (with each setting on its own, `delayScripts` and
+`preloadMainImage` leave it at 1.80s).  The comparison reports what makes
+up each Largest Contentful Paint, and the fonts, images and stylesheets
+fetched.

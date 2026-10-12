@@ -205,15 +205,13 @@ report ""
 report "The main image was learned before Lighthouse ran: $learned_on, then $learned."
 report ""
 
-# Which setting changes the Largest Contentful Paint, and whether Chrome
-# throttled for real (rather than simulated) agrees
-report "### Each setting on its own, and with real throttling"
+# With Chrome throttled for real, which is closer to what a phone sees:
+# Lighthouse's simulation counts whatever started before the main image was
+# shown, in a fast load, as holding it up
+report "### With Chrome throttled for real, rather than simulated"
 report ""
 report "| | Performance | First Contentful Paint | Largest Contentful Paint | Total Blocking Time | Speed Index | Layout Shift |"
 report "| --- | --- | --- | --- | --- | --- | --- |"
-optimized delay "delayScripts = true" "delayScripts"
-optimized image "preloadMainImage = true" "preloadMainImage"
-optimized fonts "selfHostFonts = true" "selfHostFonts"
 LIGHTHOUSE_FLAGS=--throttling-method=devtools
 optimized devtools-off "" "Honey, throttled by Chrome"
 optimized devtools-on "$all" "Honey, with delayScripts, preloadMainImage, selfHostFonts, throttled by Chrome"

@@ -1,6 +1,7 @@
 package optimize
 
 import (
+	"compress/gzip"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -95,11 +97,30 @@ func TestSelfHostFontsServe(t *testing.T) {
 	assert.Less(t, strings.Index(body, "font-display: swap;"), strings.Index(body, "font-display: block;"), "the page's own choice comes later, and wins")
 	assert.Contains(t, g.agents[0], "Chrome/", "Google is asked as a browser which takes WOFF2")
 
+	// Compressed for browsers which accept it, as it holds the page up
+	for encoding, decode := range map[string]func(io.Reader) io.Reader{
+		"br":   func(r io.Reader) io.Reader { return brotli.NewReader(r) },
+		"gzip": func(r io.Reader) io.Reader { z, err := gzip.NewReader(r); require.NoError(t, err); return z },
+	} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "http://www.example.com/.well-known/honey/fonts/css2?family=Inter:wght@400;700&display=swap", nil)
+		req.Header.Set("Accept-Encoding", encoding)
+		h.ServeHTTP(w, req)
+		assert.Equal(t, encoding, w.Header().Get("Content-Encoding"))
+		assert.Equal(t, "Accept-Encoding", w.Header().Get("Vary"))
+		assert.Less(t, w.Body.Len(), len(body), encoding)
+		decoded, err := io.ReadAll(decode(w.Body))
+		require.NoError(t, err)
+		assert.Equal(t, body, string(decoded), encoding)
+	}
+	assert.Empty(t, css.Header().Get("Content-Encoding"), "and as it is for those which don't")
+
 	font := get(h, "/.well-known/honey/fonts/s/inter/v18/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2")
 	require.Equal(t, http.StatusOK, font.Code)
 	assert.Equal(t, "wOF2 font data", font.Body.String())
 	assert.Equal(t, "font/woff2", font.Header().Get("Content-Type"))
 	assert.Equal(t, "public, max-age=31536000, immutable", font.Header().Get("Cache-Control"))
+	assert.Empty(t, font.Header().Get("Content-Encoding"), "fonts are compressed already")
 
 	requests := g.requests.Load()
 	get(h, "/.well-known/honey/fonts/css2?family=Inter:wght@400;700&display=swap")
