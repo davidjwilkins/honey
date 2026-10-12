@@ -146,7 +146,7 @@ for i in $(seq 1 30); do
 done
 # A phone and a desktop report the page's main image
 for size in 412,915 1350,940; do
-  "$chrome" --headless=new --no-sandbox --window-size="$size" --virtual-time-budget=10000 --dump-dom "$page" >/dev/null 2>&1 || true
+  timeout 60 "$chrome" --headless=new --no-sandbox --window-size="$size" --virtual-time-budget=10000 --dump-dom "$page" >/dev/null 2>&1 || true
 done
 learned=no
 for i in $(seq 1 30); do
