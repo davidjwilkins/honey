@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -44,9 +45,16 @@ var version = "dev"
 func main() {
 	configPath := flag.String("config", "honey.toml", "path to the config file")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	hashPassword := flag.Bool("hash-password", false, "read a password for the admin page from stdin, and print its hash for [admin] passwordHash")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("honey", version)
+		return
+	}
+	if *hashPassword {
+		if err := printPasswordHash(os.Stdin, os.Stdout, os.Stderr); err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 
@@ -74,7 +82,7 @@ func main() {
 		h.events.Add(events.Info, "", 0, events.Text("started"))
 	}
 	stopPersisting := persistEvery(cacher, cfg.Cache.Persist, cfg.Cache.PersistInterval)
-	server, err := serve.New(serveOptions(cfg, h.handler))
+	server, err := serve.New(serveOptions(cfg, withAdminHost(cfg, h)))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -98,8 +106,11 @@ func main() {
 		mux.Handle("/metrics", h.metrics)
 		servePrivate(cfg.MetricsListen, mux, "metrics", "metrics")
 	}
-	if h.admin != nil {
+	if h.admin != nil && cfg.AdminListen != "" {
 		servePrivate(cfg.AdminListen, h.admin, "admin page", "")
+	}
+	if cfg.AdminHost != "" {
+		log.Printf("admin page on %s, behind its login", cfg.AdminHost)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -148,15 +159,55 @@ func main() {
 	}
 }
 
+// withAdminHost returns the handler for visitors: h's, and the admin
+// page's for its host, if it has one
+func withAdminHost(cfg *config.Config, h *honey) http.Handler {
+	if cfg.AdminHost == "" || h.admin == nil {
+		return h.handler
+	}
+	admin := clientip.Middleware(cfg.TrustedProxies, h.admin)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if hst, _, err := net.SplitHostPort(host); err == nil {
+			host = hst
+		}
+		if strings.EqualFold(host, cfg.AdminHost) {
+			admin.ServeHTTP(w, r)
+			return
+		}
+		h.handler.ServeHTTP(w, r)
+	})
+}
+
+// printPasswordHash reads a password from in, and writes its hash to out
+func printPasswordHash(in io.Reader, out, prompt io.Writer) error {
+	fmt.Fprint(prompt, "Password for the admin page (at least 12 characters): ")
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && line == "" {
+		return fmt.Errorf("reading the password: %w", err)
+	}
+	fmt.Fprintln(prompt)
+	hash, err := admin.HashPassword(strings.TrimRight(line, "\r\n"))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, hash)
+	return nil
+}
+
 // serveOptions returns the options for the servers for visitors
 func serveOptions(cfg *config.Config, handler http.Handler) serve.Options {
 	opts := serve.Options{Listen: cfg.Listen, Handler: handler}
-	if cfg.Hosts != nil {
-		opts.HostAllowed = func(host string) bool { return fetch.HostAllowed(host, cfg.Hosts) }
+	hosts := cfg.Hosts
+	if cfg.Hosts != nil && cfg.AdminHost != "" {
+		hosts = append(append([]string(nil), cfg.Hosts...), cfg.AdminHost)
+	}
+	if hosts != nil {
+		opts.HostAllowed = func(host string) bool { return fetch.HostAllowed(host, hosts) }
 	}
 	if t := cfg.TLS; t != nil {
 		opts.TLS = &serve.TLS{
-			Listen: t.Listen, Auto: t.Auto, Hosts: cfg.Hosts, Email: t.Email, CertDir: t.CertDir, CA: t.CA,
+			Listen: t.Listen, Auto: t.Auto, Hosts: hosts, Email: t.Email, CertDir: t.CertDir, CA: t.CA,
 			CertFile: t.CertFile, KeyFile: t.KeyFile, HTTP3: t.HTTP3, Redirect: t.Redirect,
 		}
 	}
@@ -265,7 +316,7 @@ func newHandler(cfg *config.Config) http.Handler {
 func build(cfg *config.Config, started time.Time) *honey {
 	// What's worth knowing about, for the admin page
 	var eventLog *events.Log
-	if cfg.AdminListen != "" {
+	if cfg.AdminListen != "" || cfg.AdminHost != "" {
 		eventLog = events.New(events.DefaultMax)
 	}
 	// Purges are passed on to the CDN in front of Honey, if there is one
@@ -346,7 +397,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 	backendTransport.ResponseHeaderTimeout = cfg.BackendTimeout
 	transport := fetch.StallTimeout(backendTransport, cfg.BackendStallTimeout)
 	var recorder *metrics.Recorder
-	if cfg.MetricsListen != "" || cfg.AdminListen != "" {
+	if cfg.MetricsListen != "" || cfg.AdminListen != "" || cfg.AdminHost != "" {
 		maxBytes := cfg.Cache.MaxBytes
 		if maxBytes == 0 {
 			maxBytes = cache.DefaultMaxBytes
@@ -451,7 +502,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 	}
 	// First, so that everything after it knows who each visitor is
 	h.handler = clientip.Middleware(cfg.TrustedProxies, h.handler)
-	if cfg.AdminListen != "" {
+	if cfg.AdminListen != "" || cfg.AdminHost != "" {
 		h.admin = admin.Handler(admin.Options{
 			Version: version,
 			Backend: cfg.Backend.String(),
@@ -473,6 +524,8 @@ func build(cfg *config.Config, started time.Time) *honey {
 			Settings:       cfg.File,
 			Lockouts:       limits.Lockouts,
 			Unblock:        limits.Unblock,
+			PasswordHash:   cfg.AdminPasswordHash,
+			Host:           cfg.AdminHost,
 		})
 	}
 	return h

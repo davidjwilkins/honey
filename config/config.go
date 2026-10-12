@@ -17,6 +17,7 @@ import (
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/clientip"
 	"github.com/davidjwilkins/honey/fetch"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // DefaultListen is the address Honey listens on if none is configured.
@@ -48,6 +49,13 @@ type Config struct {
 	// AdminListen is the address to serve the admin page (and metrics) on,
 	// e.g. "127.0.0.1:9090", or "" not to serve it
 	AdminListen string
+	// AdminHost, if set, is a host name the admin page is also served for
+	// on Honey's own listeners (e.g. over HTTPS), behind its login
+	AdminHost string
+	// AdminPasswordHash, if set, is the bcrypt hash of the admin page's
+	// password (see admin.Options.PasswordHash): from the file, or the
+	// HONEY_ADMIN_PASSWORD_HASH environment variable
+	AdminPasswordHash string
 	// AccessLog is whether to log each request to stdout, in
 	// AccessLogFormat ("text" or "json")
 	AccessLog       bool
@@ -292,7 +300,9 @@ type File struct {
 		Listen string `toml:"listen,omitempty"`
 	} `toml:"metrics,omitempty"`
 	Admin struct {
-		Listen string `toml:"listen,omitempty"`
+		Listen       string `toml:"listen,omitempty"`
+		Host         string `toml:"host,omitempty"`
+		PasswordHash string `toml:"passwordHash,omitempty"`
 	} `toml:"admin,omitempty"`
 	Log struct {
 		Access bool   `toml:"access,omitempty"`
@@ -515,6 +525,24 @@ func FromFile(f *File) (*Config, error) {
 	if cfg.AdminListen != "" && cfg.AdminListen == cfg.MetricsListen {
 		return nil, fmt.Errorf("admin.listen and metrics.listen are the same: the admin page serves /metrics too, so only set admin.listen")
 	}
+	cfg.AdminPasswordHash = f.Admin.PasswordHash
+	if cfg.AdminPasswordHash == "" {
+		cfg.AdminPasswordHash = os.Getenv("HONEY_ADMIN_PASSWORD_HASH")
+	}
+	if cfg.AdminPasswordHash != "" {
+		if _, err := bcrypt.Cost([]byte(cfg.AdminPasswordHash)); err != nil {
+			return nil, fmt.Errorf("admin.passwordHash isn't a password hash: make one with honey -hash-password")
+		}
+	}
+	if f.Admin.Host != "" {
+		cfg.AdminHost = strings.ToLower(f.Admin.Host)
+		if !hostPattern.MatchString(cfg.AdminHost) || strings.HasPrefix(cfg.AdminHost, "*") {
+			return nil, fmt.Errorf("admin.host: %q isn't a host name, e.g. \"honey.example.com\"", f.Admin.Host)
+		}
+		if cfg.AdminPasswordHash == "" {
+			return nil, fmt.Errorf("admin.host needs admin.passwordHash: the admin page is only served for a host name behind a login")
+		}
+	}
 	switch cfg.AccessLogFormat {
 	case "":
 		cfg.AccessLogFormat = "text"
@@ -544,6 +572,9 @@ func FromFile(f *File) (*Config, error) {
 	}
 	if cfg.Security, err = parseSecurity(f, cfg.TLS); err != nil {
 		return nil, err
+	}
+	if cfg.AdminHost != "" && cfg.Hosts != nil && fetch.HostAllowed(cfg.AdminHost, cfg.Hosts) {
+		return nil, fmt.Errorf("admin.host (%s) is one of the hosts: give the admin page its own host name", cfg.AdminHost)
 	}
 	if cfg.Optimize, err = parseOptimize(f); err != nil {
 		return nil, err

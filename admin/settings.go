@@ -302,6 +302,10 @@ var sections = []section{
 	{"Admin and logs", []*field{
 		text("admin.listen", "The address of this page", "off",
 			func(f *config.File) *string { return &f.Admin.Listen }),
+		text("admin.host", "A host name this page is also served for, through Honey (over HTTPS with [tls]), behind its login", "",
+			func(f *config.File) *string { return &f.Admin.Host }),
+		secret("admin.passwordHash", "The hash of this page's password, from honey -hash-password: it's never shown",
+			func(f *config.File) *string { return &f.Admin.PasswordHash }),
 		text("metrics.listen", "An address for just the metrics", "off",
 			func(f *config.File) *string { return &f.Metrics.Listen }),
 		{Key: "log.access", Kind: kindBool, Help: "Log each request",

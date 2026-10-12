@@ -22,6 +22,9 @@
     <a href="/test"{{if eq .Section "test"}} aria-current="page"{{end}}>Test a URL</a>
     <a href="/settings"{{if eq .Section "settings"}} aria-current="page"{{end}}>Settings</a>
   </nav>
+  {{- if .Login}}
+  <form method="post" action="/logout" class="logout"><button type="submit" class="secondary">Log out</button></form>
+  {{- end}}
 </header>
 {{- end}}
 
