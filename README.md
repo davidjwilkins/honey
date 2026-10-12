@@ -518,6 +518,17 @@ If Honey is behind another proxy (e.g. Caddy or nginx for TLS), `allowIPs` is ch
 
 A cache hit takes Honey about 12µs of CPU, so a small server can answer tens of thousands of requests a second from the cache, against a few dozen from WordPress itself.  [`bench`](bench) has benchmarks, and a script which runs them against a real WordPress, with results.
 
+Against other caches, on the same WordPress (a GitHub Actions runner, with compressed responses, as browsers ask for):
+
+| | Requests/s | p50 | p99 |
+| --- | --- | --- | --- |
+| WordPress, no cache | 47 | 815ms | 7.2s |
+| nginx's FastCGI cache | 1,846 | 28ms | 47ms |
+| WP Super Cache | 1,287 | 36ms | 108ms |
+| Honey | 19,858 | 1.9ms | 11ms |
+
+While a post is being edited, WP Super Cache's slowest requests take seconds (they wait for WordPress), and Honey's 141ms.  With [`[optimize]`](#optimizing-pages), Lighthouse scores a post with Google Analytics, the Meta pixel and Hotjar 99, with no Total Blocking Time.  See [`bench`](bench#against-other-caches) for how they're measured, and the caveats.
+
 ### Memory
 
 `maxSize` bounds what's cached; Honey also needs memory for requests in progress and its compressors (about 30MB).  By default, Go lets its memory grow to twice what's in use before collecting the garbage, so Honey sets a soft limit of `maxSize` plus a quarter, plus 128MB (448MB for a 256MB cache), and Go collects more often as it nears it.  Set `GOMEMLIMIT` (e.g. `GOMEMLIMIT=1GiB`) to choose your own.
@@ -559,6 +570,6 @@ Cache plugins such as FlyingPress, LiteSpeed Cache and WP Rocket serve pages mor
 
 - **WebP and AVIF images:** convert JPEGs and PNGs the first time they're requested by a browser which accepts them, and cache the result, varying on `Accept`.
 - **Removing unused CSS and inlining critical CSS:** the biggest PageSpeed win, but it needs a headless browser to render each kind of page, so it's the heaviest to build.
-- **Benchmarks against them:** Honey against WP Super Cache, WP Fastest Cache and Nginx's FastCGI cache in the end-to-end tests' Docker setup, so that comparisons rest on numbers.
+- **More benchmarks:** [Honey against WP Super Cache and nginx's FastCGI cache](bench#against-other-caches) is measured; WP Fastest Cache, W3 Total Cache and LiteSpeed (with its own server) could be too.
 
 Dropped from the original list: HTTP/2 server push (browsers have removed it), rewriting popular JavaScript libraries to public CDNs (no faster since browsers stopped sharing caches between sites, and it leaks visitors to the CDN), minifying HTML, CSS and JS (risky, and brotli gets most of the benefit), and other page rewriting (fixing mixed content, combining Google Fonts requests (self-hosting them, above, does better), a cookieless asset domain, hotlink protection, an offline cache), which is better done in WordPress or a CDN.
