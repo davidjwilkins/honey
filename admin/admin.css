@@ -240,3 +240,10 @@ button.secondary:hover { background: var(--line); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .lockouts table { width: 100%; }
 .lockouts form { display: inline; }
+
+/* Logging in */
+main.login { align-items: center; padding-top: 12vh; }
+main.login form { display: flex; flex-direction: column; gap: 10px; width: min(380px, 100%); padding: 24px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+main.login h1 { margin: 0 0 6px; font-size: 20px; }
+main.login .actions { margin-top: 6px; }
+.logout { margin: 0; }

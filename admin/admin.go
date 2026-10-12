@@ -1,6 +1,6 @@
 // Package admin serves Honey's admin page: how the cache is doing, and a
-// form to purge it.  It has no login, so it must only be served on a
-// private address.
+// form to purge it.  Without a password (see Options.PasswordHash), it has
+// no login, so it must only be served on a private address.
 package admin
 
 import (
@@ -27,7 +27,7 @@ import (
 	"github.com/davidjwilkins/honey/metrics"
 )
 
-//go:embed page.html settings.html browse.html admin.css admin.js
+//go:embed page.html settings.html browse.html login.html admin.css admin.js
 var files embed.FS
 
 var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
@@ -38,7 +38,7 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"svg":      svgPercent,
 	"freshFor": freshFor,
 	"int64":    func(n int) int64 { return int64(n) },
-}).ParseFS(files, "page.html", "settings.html", "browse.html"))
+}).ParseFS(files, "page.html", "settings.html", "browse.html", "login.html"))
 
 // Options configures the admin page.
 type Options struct {
@@ -84,12 +84,25 @@ type Options struct {
 	// guard.Limits), if set
 	Lockouts func() []guard.Lockout
 	Unblock  func(address string) bool
+	// PasswordHash, if set, is a hash of the password (see HashPassword)
+	// which must be given to see the page (see login.go)
+	PasswordHash string
+	// Host, if set, is a host name the page is served for (as well as IP
+	// addresses and localhost), e.g. through Honey's own HTTPS listener.
+	// It needs a PasswordHash.
+	Host string
+
+	// now is the time (for tests)
+	now func() time.Time
 }
 
 // Handler returns the admin page's handler.  As well as the page, it
 // serves the metrics at /metrics.
 func Handler(opts Options) http.Handler {
 	a := &admin{opts: opts, results: map[string]outcome{}}
+	if opts.PasswordHash != "" {
+		a.logins = newLogins(opts.PasswordHash, opts.now)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", a.page)
 	mux.HandleFunc("/stats", a.stats)
@@ -104,11 +117,21 @@ func Handler(opts Options) http.Handler {
 	mux.HandleFunc("/settings/export", a.settingsExport)
 	mux.Handle("/admin.css", static("admin.css", "text/css; charset=utf-8"))
 	mux.Handle("/admin.js", static("admin.js", "text/javascript; charset=utf-8"))
-	pages := browserOnly(mux)
+	var pages http.Handler = mux
+	if a.logins != nil {
+		mux.HandleFunc("/login", a.login)
+		mux.HandleFunc("/logout", a.logout)
+		if opts.Metrics != nil {
+			mux.Handle("/metrics", opts.Metrics)
+		}
+		pages = a.requireLogin(mux)
+	}
+	pages = a.browserOnly(pages)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Prometheus may scrape by hostname, and the metrics are only
-		// numbers, so they don't need the page's protections
-		if r.URL.Path == "/metrics" && opts.Metrics != nil {
+		// numbers, so they don't need the page's protections - except on
+		// its public host
+		if r.URL.Path == "/metrics" && opts.Metrics != nil && !a.publicHost(r.Host) {
 			opts.Metrics.ServeHTTP(w, r)
 			return
 		}
@@ -124,6 +147,8 @@ type admin struct {
 	// make the page show anything)
 	mu      sync.Mutex
 	results map[string]outcome
+	// logins are who's logged in, if there's a password
+	logins *logins
 }
 
 // outcome is the outcome of a purge (or of unblocking an address)
@@ -138,15 +163,16 @@ type outcome struct {
 const maxResults = 100
 
 // browserOnly protects the page from other websites the admin visits:
-//   - It is only served to requests for an IP address or localhost, so
-//     that a site can't use DNS rebinding (pointing its own hostname at
-//     the admin address) to read it or post to it.
+//   - It is only served to requests for an IP address or localhost (or
+//     its public host, which needs a login), so that a site can't use DNS
+//     rebinding (pointing its own hostname at the admin address) to read
+//     it or post to it.
 //   - Posts must come from the page itself (by their Origin), so that
 //     other sites can't submit its forms.
 //   - It can't be framed, and only runs its own script.
-func browserOnly(next http.Handler) http.Handler {
+func (a *admin) browserOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !privateHost(r.Host) {
+		if !privateHost(r.Host) && !(a.logins != nil && a.publicHost(r.Host)) {
 			http.Error(w, "The admin page is only served for an IP address or localhost (e.g. http://127.0.0.1:9090/), not a hostname.", http.StatusMisdirectedRequest)
 			return
 		}
@@ -204,6 +230,8 @@ type chrome struct {
 	Uptime  time.Duration
 	// Section is the page's: dashboard, cache, test or settings
 	Section string
+	// Login is whether there's a login, so a way to log out
+	Login bool
 }
 
 func (a *admin) chrome(section string) chrome {
@@ -213,6 +241,7 @@ func (a *admin) chrome(section string) chrome {
 		Hosts:   strings.Join(a.opts.Hosts, ", "),
 		Uptime:  time.Since(a.opts.Started),
 		Section: section,
+		Login:   a.logins != nil,
 	}
 }
 

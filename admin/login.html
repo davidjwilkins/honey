@@ -1,0 +1,19 @@
+{{define "login" -}}
+{{template "head" "Log in"}}
+<main class="login">
+  <form method="post" action="/login" class="card">
+    <p class="brand"><span class="logo">honey</span></p>
+    <h1>Log in</h1>
+    {{- if .Insecure}}
+    <p class="field-problem" role="alert">This page isn't served over HTTPS, so the password would be sent where anyone could read it.  Open it with https://, or through an SSH tunnel to http://127.0.0.1.</p>
+    {{- end}}
+    <input type="hidden" name="next" value="{{.Next}}">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required autofocus{{if .Insecure}} disabled{{end}}>
+    {{- with .Problem}}<p class="field-problem" role="alert">{{.}}</p>{{end}}
+    <div class="actions"><button type="submit"{{if .Insecure}} disabled{{end}}>Log in</button></div>
+  </form>
+</main>
+</body>
+</html>
+{{- end}}

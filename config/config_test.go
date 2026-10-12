@@ -8,6 +8,7 @@ import (
 	"github.com/davidjwilkins/honey/clientip"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestLoadExampleConfig(t *testing.T) {
@@ -754,6 +755,32 @@ selfHostFonts = true
 	for _, bad := range []string{`delayScriptsTimeout = "soon"`, `delayScriptsMatching = [" "]`, `keepScriptsMatching = [""]`} {
 		_, err := Parse("[backend]\nuri = \"https://www.example.com\"\n[optimize]\n" + bad + "\n")
 		assert.Error(t, err, bad)
+	}
+}
+
+func TestParseAdminLogin(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("correct horse battery staple"), 4)
+	require.NoError(t, err)
+	base := "hosts = [\"www.example.com\"]\n[backend]\nuri = \"https://www.example.com\"\n[admin]\n"
+	cfg, err := Parse(base + "host = \"Honey.example.com\"\npasswordHash = \"" + string(hash) + "\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, "honey.example.com", cfg.AdminHost)
+	assert.Equal(t, string(hash), cfg.AdminPasswordHash)
+
+	t.Setenv("HONEY_ADMIN_PASSWORD_HASH", string(hash))
+	cfg, err = Parse(base + "listen = \"127.0.0.1:9090\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, string(hash), cfg.AdminPasswordHash, "from the environment")
+	t.Setenv("HONEY_ADMIN_PASSWORD_HASH", "")
+
+	for bad, problem := range map[string]string{
+		"host = \"honey.example.com\"":                                                   "needs admin.passwordHash",
+		"passwordHash = \"hunter2\"":                                                     "isn't a password hash",
+		"host = \"www.example.com\"\npasswordHash = \"" + string(hash) + "\"":            "is one of the hosts",
+		"host = \"https://honey.example.com/\"\npasswordHash = \"" + string(hash) + "\"": "isn't a host name",
+	} {
+		_, err := Parse(base + bad + "\n")
+		assert.ErrorContains(t, err, problem, bad)
 	}
 }
 

@@ -114,6 +114,10 @@ All the available settings:
 	# Prometheus metrics at /metrics.  Use a separate, private address.
 	[admin]
 	listen = "127.0.0.1:9090"
+	# host = "honey.example.com"   # also serve it for this host, on Honey's own listeners (HTTPS with [tls]),
+	                               # which needs a login
+	# passwordHash = "$2a$12$..."  # its password's hash, from `honey -hash-password` (or set the
+	                               # HONEY_ADMIN_PASSWORD_HASH environment variable)
 
 	# Or just the metrics, at http://127.0.0.1:9091/metrics (off unless set)
 	[metrics]
@@ -401,7 +405,19 @@ and a bar to purge a URL or everything under a path - softly or not - which says
 
 **Settings** shows Honey's settings as a form, with each one's default.  Change them there and it shows the config file they make - what changed, and whether it's valid - and exports it as a new `honey.toml`.  Honey's own config file is never changed: replace it with the export and restart Honey to use the new settings.  The purge secret is never shown on the page, but it is in the export.
 
-It has no login, so only listen on a private address, e.g. `127.0.0.1:9090`, and reach it with an SSH tunnel (`ssh -L 9090:127.0.0.1:9090 your-server`, then open http://localhost:9090/).  To protect it from other websites you visit, it is only served for an IP address or `localhost` (not a hostname, so that a site can't point its own hostname at it), its forms only accept posts from the page itself, and it can't be framed.  With Docker, listen on `":9090"` inside the container and publish it to the host's loopback only: `-p 127.0.0.1:9090:9090`.
+Without a password, it has no login, so only listen on a private address, e.g. `127.0.0.1:9090`, and reach it with an SSH tunnel (`ssh -L 9090:127.0.0.1:9090 your-server`, then open http://localhost:9090/).  To protect it from other websites you visit, it is only served for an IP address or `localhost` (not a hostname, so that a site can't point its own hostname at it), its forms only accept posts from the page itself, and it can't be framed.  With Docker, listen on `":9090"` inside the container and publish it to the host's loopback only: `-p 127.0.0.1:9090:9090`.
+
+**Logging in.**  To reach it from anywhere instead, give it a password and a host name of its own:
+
+	$ honey -hash-password
+	Password for the admin page (at least 12 characters): ****************
+	$2a$12$Cn0...
+
+	[admin]
+	host = "honey.example.com"
+	passwordHash = "$2a$12$Cn0..."
+
+Point `honey.example.com`'s DNS at Honey, and it serves the admin page for that host on its own listeners - over HTTPS, with a certificate it gets itself, if [`[tls]`](#https-and-http3) has `auto = true` (or behind a proxy which serves HTTPS) - and nowhere else on the site.  With a password, every page (and `/metrics`, on that host) needs logging in, wherever it's served (`listen` too, which can then be left out).  The password is only accepted over HTTPS, or from Honey's own host (e.g. through an SSH tunnel), so that it can't be read on the way.  Logging in gives the browser a session cookie (`HttpOnly`, `SameSite=Strict`, and `Secure` over HTTPS), which lasts until it hasn't been used for 12 hours, or for 7 days at most, or until **Log out**; sessions are kept in memory, so restarting Honey logs everyone out.  An address which gets the password wrong 5 times in 15 minutes can't try again for 15 minutes, and the admin page's events show wrong passwords and logins.  Only the hash is kept, in the config file (or the `HONEY_ADMIN_PASSWORD_HASH` environment variable), and the settings page never shows it.
 
 ## Metrics
 
@@ -536,7 +552,6 @@ Things which might be worth doing next:
 - **Revalidating with the backend:** refresh expired responses with a conditional request (`If-None-Match` / `If-Modified-Since`), so that an unchanged page costs the backend a `304` rather than a full render.
 - **A shared cache** (e.g. Redis), so that several Honey instances behind a load balancer share one cache, and purges reach all of them.
 - **DNS challenges**, so that Honey can get wildcard certificates (`*.example.com`) automatically.
-- **A login for the admin page**, so that it can be served somewhere other than a private address.
 - **Per-route compression settings** (brotli and gzip are site-wide for now).
 - **More Edge Side Includes:** commenters and shoppers on classic themes, and parts of pages for logged in users (e.g. the admin bar), so that their pages can mostly be served from the cache too.
 
