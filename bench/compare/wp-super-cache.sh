@@ -19,12 +19,17 @@ if [ "${1:-on}" = debug ]; then
   set_var wp_super_cache_debug 1
   set_var wp_cache_debug_log "'wpsc-debug.php'"
   set_var wp_cache_debug_ip "''"
+  # and a header showing whether its first phase runs (which serves cached
+  # pages)
+  mkdir -p wp-content/plugins/wp-super-cache-plugins
+  printf '<?php\nheader("X-WPSC-Phase1: loaded");\n' > wp-content/plugins/wp-super-cache-plugins/probe.php
   exit 0
 fi
 if [ "${1:-on}" = off ]; then
   wp plugin deactivate wp-super-cache >/dev/null
   wp config set WP_CACHE false --raw >/dev/null
   rm -f wp-content/advanced-cache.php
+  rm -rf wp-content/plugins/wp-super-cache-plugins
   rm -rf wp-content/cache/supercache wp-content/cache/wp-cache-*
   echo "WP Super Cache is off"
   exit 0

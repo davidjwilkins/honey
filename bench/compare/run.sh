@@ -83,8 +83,10 @@ if [ "${WP_SUPER_CACHE:-1}" = 1 ]; then
   # Whether its pages really were cached: its headers and comments, its
   # cache files and its debug log
   compose run --rm -T cli sh /wp-super-cache.sh debug >&2
-  compose run --rm -T --entrypoint sh load -c "wget -S -O /tmp/page --header 'Host: localhost:8080' http://wordpress/post-1/ 2>&1 | grep -i 'HTTP/\|cache\|encoding'; tail -c 300 /tmp/page" > work/wpsc-check.txt 2>&1 || true
-  compose run --rm -T cli sh -c "ls -R wp-content/cache | head -30; grep -E '^\\\$(cache_enabled|super_cache_enabled|wp_cache_mod_rewrite|cache_compression|wp_super_cache_late_init|wp_cache_not_logged_in|wp_super_cache_debug)' wp-content/wp-cache-config.php; tail -40 wp-content/cache/wpsc-debug.php 2>/dev/null" >> work/wpsc-check.txt 2>&1 || true
+  # (after PHP's opcache has seen the changes)
+  sleep 3
+  compose run --rm -T --entrypoint sh load -c "for i in 1 2; do wget -S -O /tmp/page --header 'Host: localhost:8080' --header 'Accept: text/html' http://wordpress/post-1/ 2>&1 | grep -i 'HTTP/\|cache\|encoding\|wpsc'; tail -c 200 /tmp/page; echo; done" > work/wpsc-check.txt 2>&1 || true
+  compose run --rm -T cli sh -c "grep -n 'WP_CACHE\|WPCACHEHOME\|stop editing' wp-config.php; cat wp-content/advanced-cache.php; ls wp-content/plugins/wp-super-cache/wp-cache-phase1.php; ls -R wp-content/cache | head -20; grep -E '^\\\$(cache_enabled|super_cache_enabled|wp_cache_mod_rewrite|cache_compression|wp_super_cache_late_init|wp_cache_not_logged_in|wp_super_cache_debug|cache_path)' wp-content/wp-cache-config.php; tail -40 wp-content/cache/wpsc-debug.php 2>/dev/null" >> work/wpsc-check.txt 2>&1 || true
   compose logs --no-color --no-log-prefix --tail 30 wordpress >> work/wpsc-check.txt 2>&1 || true
   tail="see the details below"
 fi
