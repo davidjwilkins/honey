@@ -23,6 +23,7 @@ import (
 	"github.com/davidjwilkins/honey/config"
 	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/fetch"
+	"github.com/davidjwilkins/honey/guard"
 	"github.com/davidjwilkins/honey/metrics"
 )
 
@@ -78,6 +79,10 @@ type Options struct {
 	// the settings page, if set.  The page never changes them: it lets
 	// them be edited and exported as a new config file.
 	Settings *config.File
+	// Lockouts lists the addresses locked out of logging in, and Unblock
+	// ends one's lockout (see guard.Limits), if set
+	Lockouts func() []guard.Lockout
+	Unblock  func(address string) bool
 }
 
 // Handler returns the admin page's handler.  As well as the page, it
@@ -88,6 +93,7 @@ func Handler(opts Options) http.Handler {
 	mux.HandleFunc("/", a.page)
 	mux.HandleFunc("/stats", a.stats)
 	mux.HandleFunc("/purge", a.purge)
+	mux.HandleFunc("/unblock", a.unblock)
 	mux.HandleFunc("/count", a.count)
 	mux.HandleFunc("/test", a.test)
 	mux.HandleFunc("/cache", a.browse)
@@ -119,10 +125,12 @@ type admin struct {
 	results map[string]outcome
 }
 
-// outcome is the outcome of a purge
+// outcome is the outcome of a purge (or of unblocking an address)
 type outcome struct {
 	Purged  *purged
 	Problem string
+	// Unblocked is the address unblocked
+	Unblocked string
 }
 
 // maxResults bounds the outcomes waiting to be shown
@@ -233,9 +241,16 @@ type view struct {
 	RecentError    bool   // whether it was in the last hour
 
 	Events []event
+	// Lockouts are the addresses locked out of logging in
+	Lockouts []lockoutRow
 
 	// The result of a purge, if there was one
 	outcome
+}
+
+type lockoutRow struct {
+	Address string
+	Left    string // e.g. "12m 30s"
 }
 
 type result struct {
@@ -307,6 +322,12 @@ func (a *admin) view() view {
 	v := view{chrome: a.chrome("dashboard")}
 	for _, e := range a.opts.Events.Recent(12) {
 		v.Events = append(v.Events, event{Time: formatTime(e.Time), Kind: string(e.Kind), Text: e.Text, Count: e.Count})
+	}
+	if a.opts.Lockouts != nil {
+		now := time.Now()
+		for _, l := range a.opts.Lockouts() {
+			v.Lockouts = append(v.Lockouts, lockoutRow{Address: l.Address, Left: formatDuration(l.Until.Sub(now).Round(time.Second))})
+		}
 	}
 	if a.opts.Metrics == nil {
 		return v
@@ -514,6 +535,33 @@ func (a *admin) purge(w http.ResponseWriter, r *http.Request) {
 		result.Purged = &purged{Target: target, Prefix: prefix, Soft: soft, Count: count}
 		a.logPurge(*result.Purged)
 	}
+	a.redirectWith(w, r, result)
+}
+
+// unblock ends an address's lockout
+func (a *admin) unblock(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	address := strings.TrimSpace(r.PostFormValue("address"))
+	var result outcome
+	switch {
+	case a.opts.Unblock == nil:
+		result.Problem = "Addresses aren't locked out."
+	case a.opts.Unblock(address):
+		result.Unblocked = address
+		a.opts.Events.Add(events.Info, "", 0, events.Text("unblocked "+address+" from the admin page"))
+	default:
+		result.Problem = fmt.Sprintf("%s isn't locked out.", address)
+	}
+	a.redirectWith(w, r, result)
+}
+
+// redirectWith redirects to the page a form was posted from (see
+// returnTo), which then shows result
+func (a *admin) redirectWith(w http.ResponseWriter, r *http.Request, result outcome) {
 	id := make([]byte, 16)
 	rand.Read(id)
 	key := hex.EncodeToString(id)

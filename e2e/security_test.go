@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -125,4 +126,32 @@ func TestSecurityHeaders(t *testing.T) {
 	login := get(t, c, "/wp-login.php")
 	assert.Equal(t, "SAMEORIGIN", login.Header.Get("X-Frame-Options"))
 	assert.Contains(t, login.Header.Get("Content-Security-Policy"), "frame-ancestors 'self'")
+}
+
+func TestPasswordGuessersAreLockedOut(t *testing.T) {
+	const attacker = "203.0.113.66"
+	jar := newJar(t)
+	c := client(jar)
+	attempt := func(password string) page {
+		get(t, c, "/wp-login.php", "X-Forwarded-For", attacker) // the test cookie
+		return do(t, c, http.MethodPost, "/wp-login.php", url.Values{
+			"log": {"admin"}, "pwd": {password}, "testcookie": {"1"}, "wp-submit": {"Log In"},
+		}, "X-Forwarded-For", attacker)
+	}
+	for i := 0; i < 10; i++ {
+		resp := attempt("guess")
+		require.Equal(t, http.StatusOK, resp.StatusCode, "WordPress shows the form again")
+		contains(t, resp.Body, "is incorrect", "attempt %d", i+1)
+	}
+	resp := attempt("password")
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode, "locked out, even with the right password")
+	assert.NotEmpty(t, resp.Header.Get("Retry-After"))
+	logIn(t, "admin") // from another address
+
+	dashboard := get(t, c, adminPage+"/")
+	contains(t, dashboard.Body, `<th scope="row" class="mono">`+attacker+`</th>`, "the admin page lists the lockout")
+	contains(t, dashboard.Body, "locked out "+attacker+" from logging in")
+	unblock := do(t, c, http.MethodPost, adminPage+"/unblock", url.Values{"address": {attacker}}, "Origin", adminPage)
+	require.Equal(t, http.StatusSeeOther, unblock.StatusCode)
+	assert.Equal(t, http.StatusFound, attempt("password").StatusCode, "unblocked, it can log in")
 }

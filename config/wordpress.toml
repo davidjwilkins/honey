@@ -128,6 +128,10 @@ allowIPs = []
 # blockPaths = true
 # xmlrpc = "safe"             # or "off", if nothing uses XML-RPC
 # headers = true
+# loginAttempts = 10          # failed logins before an address is locked out of logging in
+# loginLockout = "15m"
+# rateLimit = 5               # requests a second an address may send to WordPress (cache hits
+#                             # don't count); off by default: set trustedProxies first
 
 # Serve HTTPS and HTTP/3 without a proxy in front, with certificates from
 # Let's Encrypt for the hosts (which must be set).  Set listen = ":80" for

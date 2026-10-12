@@ -238,3 +238,5 @@ button.secondary:hover { background: var(--line); }
 .fragments summary { cursor: pointer; font-weight: 600; }
 .small-button { height: 34px; padding: 0 12px; font-size: 13px; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.lockouts table { width: 100%; }
+.lockouts form { display: inline; }
