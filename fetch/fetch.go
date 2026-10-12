@@ -73,7 +73,15 @@ type Options struct {
 func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, opts Options) http.HandlerFunc {
 	filterQuery := queryFilter(c, opts.QueryParams)
 	serve := serveFromCache(c, handler, filterQuery)
-	return func(w http.ResponseWriter, r *http.Request) {
+	var self http.HandlerFunc
+	purgeFragments := FragmentPurger(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { self(w, r) }))
+	self = func(w http.ResponseWriter, r *http.Request) {
+		// Only the cache sends this to the backend (see forBackend)
+		r.Header.Del(cache.FragmentTokenHeader)
+		if r.Method == MethodPurge && r.Header.Get(FragmentPurgeHeader) != "" {
+			handleFragmentPurge(w, r, opts, purgeFragments)
+			return
+		}
 		SwitchBackend(r, backend)
 		if opts.Hosts != nil && r.Method != MethodPurge && !HostAllowed(r.Host, opts.Hosts) {
 			host := r.Host
@@ -96,6 +104,7 @@ func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, op
 		}
 		serve(w, r)
 	}
+	return self
 }
 
 // router is implemented by Cachers with per-route settings
@@ -439,6 +448,9 @@ func forBackend(r *http.Request, hash string, leading *singleflight.Flight) *htt
 			r.Header.Del(name)
 		}
 	}
+	// The backend marks shared fragments with this, so that the cache can
+	// tell them from markers in the page's content (see cache/fragments.go)
+	r.Header.Set(cache.FragmentTokenHeader, cache.NewFragmentToken(time.Now()))
 	return r
 }
 

@@ -275,6 +275,8 @@ func build(cfg *config.Config, started time.Time) *honey {
 		},
 	}
 	h.handler = fetch.FetchWithOptions(c, fetch.NewForwarder(c, transport), cfg.Backend, fetchOpts)
+	// The cache itself, without the metrics, access log and so on
+	proxy := h.handler
 	if cfg.Warm.Sitemap != nil {
 		// It requests pages from the cache itself, without the metrics or
 		// access log, so that warming isn't counted as visits
@@ -308,10 +310,13 @@ func build(cfg *config.Config, started time.Time) *honey {
 			Explain: func(r *http.Request) fetch.Explanation {
 				return fetch.Explain(c, cfg.Backend, fetchOpts, r)
 			},
-			Origin:   siteOrigin(cfg),
-			Entries:  c.Entries,
-			Entry:    c.Entry,
-			Settings: cfg.File,
+			Origin:  siteOrigin(cfg),
+			Entries: c.Entries,
+			Entry:   c.Entry,
+			// Pages are refreshed for fragments by the cache itself
+			Fragments:      c.Fragments,
+			PurgeFragments: fetch.FragmentPurger(c, proxy),
+			Settings:       cfg.File,
 		})
 	}
 	return h

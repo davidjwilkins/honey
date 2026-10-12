@@ -292,6 +292,24 @@ They can also make Honey fetch a fresh copy, and cache it, by sending `Cache-Con
 
 Purges ignore the host, so they work however they reach Honey: `curl -X PURGE http://127.0.0.1:8080/blog/*` purges `/blog/` for every host Honey caches.
 
+A `PURGE` with an `X-Honey-Fragment` header purges [shared fragments](#shared-fragments) instead of a URL: a name, a name ending with `*` for every fragment starting with what precedes it, or several separated by commas.
+
+	curl -X PURGE -H "X-Honey-Secret: $SECRET" -H "X-Honey-Fragment: posts-*" https://www.example.com/
+
+## Shared fragments
+
+Some parts of a page are the same on every page - a list of recent posts in a sidebar, say.  When one changes, every page showing it is out of date, but purging every page would make WordPress render the whole site again.  Instead, the backend can mark such a part as a shared fragment:
+
+	<!--honey:fragment name="posts-widget-recent-posts-2" token="TOKEN"-->
+	  ...the list...
+	<!--/honey:fragment-->
+
+Honey keeps each fragment's content separately.  Whenever it caches a page with a fragment, which the backend has just rendered, that becomes the fragment's current content, and every other cached page showing the fragment is rebuilt with it the next time it's served - once per change, with a new `Etag`, not every time.  Purging a fragment (above) refreshes one page which shows it, to get its new content, so a change reaches every page while WordPress renders only one.
+
+`TOKEN` is the value of the `X-Honey-Fragments` header Honey sends the backend with each request for a page it may cache.  It is different for every request, so markers in a page's content (e.g. typed into a post) aren't fragments, and can't change other pages.  Honey removes it from the page.  Only HTML pages have fragments, a page has at most 50, of up to 64KB each, and Honey keeps up to 1,000.  A fragment must be the same on every page which shows it, and each host's are kept separately.  Fragments aren't kept across restarts: pages from a [snapshot](#keeping-the-cache-across-restarts) are served as they were cached until they're refreshed.
+
+The [WordPress plugin](#purging-from-wordpress) marks the Latest Posts block and the Recent Posts widget as fragments (other blocks can be added with its `honey_fragment_blocks` filter), and purges them when a post is published, updated, unpublished or deleted.  Lists which differ from page to page, such as one marking the current post, aren't marked.  The admin page's Cache tab lists the fragments, and can purge them.
+
 ### Purging from WordPress
 
 [`contrib/wordpress/honey-purge.php`](contrib/wordpress/honey-purge.php) is a must-use plugin which purges pages when they change, so that visitors see edits straight away:
@@ -301,7 +319,7 @@ Purges ignore the host, so they work however they reach Honey: `curl -X PURGE ht
 - When a category or tag is renamed or deleted: its archive.
 - When the theme, its customizations, menus, widgets, plugins, or the site's title, tagline, reading or permalink settings change: everything.
 
-It also adds a "Purge cache" button to the admin bar for administrators.  Most of its purges are soft, and some are hard (see [Never waiting for WordPress](#never-waiting-for-wordpress)).
+It also marks lists of recent posts as [shared fragments](#shared-fragments), and purges them when a post changes, so that every page shows new posts straight away.  And it adds a "Purge cache" button to the admin bar for administrators.  Most of its purges are soft, and some are hard (see [Never waiting for WordPress](#never-waiting-for-wordpress)).
 
 To install it, copy it to `wp-content/mu-plugins/honey-purge.php`, and add to `wp-config.php`:
 
@@ -342,6 +360,6 @@ Things which might be worth doing next:
 - **TLS termination** with automatic certificates (e.g. Let's Encrypt), so that Honey can face the internet without another proxy in front.
 - **A login for the admin page**, so that it can be served somewhere other than a private address.
 - **Per-route compression settings** (brotli and gzip are site-wide for now).
-- **Edge Side Includes (ESI):** cache pages with `<esi:include src="...">` tags in place of the parts which differ between visitors (e.g. a cart summary, or "Howdy, admin"), and fetch and cache each of those parts separately, so that pages for logged in users and shoppers can mostly be served from the cache too.  WordPress would have to output the tags, which few plugins do.
+- **Edge Side Includes (ESI):** cache pages with `<esi:include src="...">` tags in place of the parts which differ between visitors (e.g. a cart summary, or "Howdy, admin"), and fetch and cache each of those parts separately, so that pages for logged in users and shoppers can mostly be served from the cache too.  This could build on [shared fragments](#shared-fragments), which already cache pages with parts kept separately.  WordPress would have to output the tags, which few plugins do.
 
 Dropped from the original list: HTTP/2 server push (browsers have removed it), rewriting popular JavaScript libraries to public CDNs (no faster since browsers stopped sharing caches between sites, and it leaks visitors to the CDN), minifying HTML, CSS and JS (risky, and brotli gets most of the benefit), and other page rewriting (fixing mixed content, combining Google Fonts requests, a cookieless asset domain, hotlink protection, an offline cache), which is better done in WordPress or a CDN.

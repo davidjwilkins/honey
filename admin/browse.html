@@ -1,6 +1,10 @@
 {{define "outcome" -}}
 {{with .Purged -}}
+{{if .Fragment -}}
+<p class="notice ok" role="status">Purged {{.Count}} shared fragment{{if ne .Count 1}}s{{end}} called <span class="mono">{{.Target}}</span>{{if .Pages}}: refreshing {{.Pages}} page{{if ne .Pages 1}}s{{end}} to get {{if eq .Count 1}}its{{else}}their{{end}} new content, for every page showing {{if eq .Count 1}}it{{else}}them{{end}}{{end}}.</p>
+{{- else -}}
 <p class="notice ok" role="status">{{if .Soft}}Expired{{else}}Purged{{end}} {{.Count}} cached response{{if ne .Count 1}}s{{end}} for <span class="mono">{{.Target}}</span>{{if .Prefix}} and everything under it{{end}}{{if .Soft}}: they'll be refreshed the next time they're requested{{end}}.</p>
+{{- end}}
 {{- end}}
 {{with .Problem -}}
 <p class="notice problem" role="alert">{{.}}</p>
@@ -48,6 +52,35 @@
   <button type="submit" name="soft" value="1" class="secondary">Expire (soft)</button>
   <button type="submit" class="danger">Purge</button>
 </form>
+{{- end}}
+
+{{- if .Fragments}}
+<details class="panel fragments">
+  <summary>{{len .Fragments}} shared fragment{{if ne (len .Fragments) 1}}s{{end}}</summary>
+  <p class="muted small">Parts of pages which are the same on every page, such as lists of recent posts. When one changes, every cached page showing it is updated, without the backend rendering each one again.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th scope="col">Name</th><th scope="col">Host</th><th scope="col" class="num">Size</th><th scope="col" class="num">Changed</th><th scope="col"><span class="visually-hidden">Purge</span></th></tr></thead>
+      <tbody>
+      {{- range .Fragments}}
+        <tr>
+          <th scope="row" class="mono">{{.Name}}</th>
+          <td class="muted">{{.Host}}</td>
+          <td class="num mono">{{bytes (int64 .Bytes)}}</td>
+          <td class="num mono">{{.Changed}}</td>
+          <td class="num">
+            <form method="post" action="/purge">
+              <input type="hidden" name="fragment" value="{{.Name}}">
+              <input type="hidden" name="return" value="{{$.Return}}">
+              <button type="submit" class="secondary small-button">Purge</button>
+            </form>
+          </td>
+        </tr>
+      {{- end}}
+      </tbody>
+    </table>
+  </div>
+</details>
 {{- end}}
 
 {{- if .Entries}}
@@ -119,6 +152,9 @@
         <div><dt>Served from the cache</dt><dd class="mono">{{count .Hits}} time{{if ne .Hits 1}}s{{end}}</dd></div>
         <div><dt>Body</dt><dd class="mono">{{bytes (int64 .Bytes)}}{{if .Brotli}} · br {{bytes (int64 .Brotli)}}{{end}}{{if .Gzip}} · gzip {{bytes (int64 .Gzip)}}{{end}}</dd></div>
         <div><dt>Memory</dt><dd class="mono">{{bytes .Size}}</dd></div>
+        {{- with .Fragments}}
+        <div><dt>Shared fragments</dt><dd class="mono">{{range $i, $f := .}}{{if $i}}, {{end}}{{$f}}{{end}}</dd></div>
+        {{- end}}
       </dl>
       <p class="muted small">Kept {{.KeptUntil}}.</p>
     </section>

@@ -192,3 +192,41 @@ func TestBrowseNeedsTheCache(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, do(h, http.MethodGet, "/cache", "127.0.0.1:9090", nil).Code)
 	assert.Equal(t, http.StatusNotFound, do(h, http.MethodGet, "/cache/entry?key=x", "127.0.0.1:9090", nil).Code)
 }
+
+func TestFragmentsInTheCacheBrowser(t *testing.T) {
+	var purgedName string
+	updated := time.Now().Add(-90 * time.Second)
+	h := Handler(Options{
+		Started: time.Now(),
+		Entries: func() []cache.Entry {
+			e := entry("/blog/", 1, 100, time.Minute, time.Hour)
+			e.Fragments = []string{"posts-widget-recent-posts-2"}
+			return []cache.Entry{e}
+		},
+		Entry: func(key string) (cache.Entry, cache.Response, bool) {
+			e := entry("/blog/", 1, 100, time.Minute, time.Hour)
+			e.Fragments = []string{"posts-widget-recent-posts-2"}
+			return e, cachedPage{header: http.Header{}}, true
+		},
+		Fragments: func() []cache.FragmentInfo {
+			return []cache.FragmentInfo{{Host: "www.example.com", Name: "posts-widget-recent-posts-2", Bytes: 2048, Updated: updated}}
+		},
+		PurgeFragments: func(name string) (int, int, error) {
+			purgedName = name
+			return 1, 1, nil
+		},
+	})
+	body := browse(h, "")
+	assert.Contains(t, body, "1 shared fragment</summary>")
+	assert.Contains(t, body, `<th scope="row" class="mono">posts-widget-recent-posts-2</th>`)
+	assert.Contains(t, body, "1m 30s ago")
+
+	entryBody := do(h, http.MethodGet, "/cache/entry?key=x", "127.0.0.1:9090", nil).Body.String()
+	assert.Contains(t, entryBody, "Shared fragments")
+
+	resp := post(h, "/purge", url.Values{"fragment": {"posts-widget-recent-posts-2"}, "return": {"/cache"}})
+	require.Equal(t, http.StatusSeeOther, resp.Code)
+	assert.Equal(t, "posts-widget-recent-posts-2", purgedName)
+	assert.Contains(t, browse(h, strings.TrimPrefix(resp.Header.Get("Location"), "/cache")),
+		"Purged 1 shared fragment called <span class=\"mono\">posts-widget-recent-posts-2</span>: refreshing 1 page to get its new content, for every page showing it.")
+}

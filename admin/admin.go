@@ -70,6 +70,10 @@ type Options struct {
 	// Entry returns one by its key, for the cache browser, if set.
 	Entries func() []cache.Entry
 	Entry   func(key string) (cache.Entry, cache.Response, bool)
+	// Fragments lists the shared fragments, and PurgeFragments purges them
+	// by name (see fetch.FragmentPurger), if set.
+	Fragments      func() []cache.FragmentInfo
+	PurgeFragments func(name string) (fragments, pages int, err error)
 	// Settings are Honey's settings, as written in its config file, for
 	// the settings page, if set.  The page never changes them: it lets
 	// them be edited and exported as a new config file.
@@ -281,6 +285,10 @@ type purged struct {
 	Prefix bool
 	Soft   bool
 	Count  int
+	// Fragment is whether Target is a shared fragment's name, and Pages
+	// how many pages are being refreshed for it
+	Fragment bool
+	Pages    int
 }
 
 // results are the rows of the requests table, by their honey_requests_total
@@ -478,8 +486,20 @@ func (a *admin) purge(w http.ResponseWriter, r *http.Request) {
 	target := strings.TrimSpace(r.PostFormValue("url"))
 	prefix := r.PostFormValue("prefix") != ""
 	soft := r.PostFormValue("soft") != ""
+	fragment := strings.TrimSpace(r.PostFormValue("fragment"))
 	var result outcome
 	switch {
+	case fragment != "" && a.opts.PurgeFragments == nil:
+		result.Problem = "This cache doesn't keep shared fragments."
+	case fragment != "":
+		fragments, pages, err := a.opts.PurgeFragments(fragment)
+		if err != nil {
+			result.Problem = fmt.Sprintf("Couldn't purge: %v", err)
+			break
+		}
+		result.Purged = &purged{Target: fragment, Fragment: true, Count: fragments, Pages: pages}
+		a.opts.Events.Add(events.Purge, "", 0, events.Text(fmt.Sprintf("purged the shared fragment %s · refreshing %d %s · from the admin page",
+			fragment, pages, map[bool]string{true: "page", false: "pages"}[pages == 1])))
 	case a.opts.Purge == nil:
 		result.Problem = "This cache can't be purged."
 	case target == "":

@@ -58,6 +58,14 @@ type responseImpl struct {
 	removed atomic.Bool
 	// hits counts how many requests it has been served to from the cache
 	hits atomic.Int64
+	// segments are its text and shared fragments, if it has any (see
+	// fragments.go), and versions the version of each fragment in body
+	segments []segment
+	versions map[string]uint64
+	// rebuildMu guards rebuilt, the response rebuilt from this one with
+	// the fragments' current content, once there is one
+	rebuildMu sync.Mutex
+	rebuilt   *responseImpl
 	// expired is set by a soft purge: the response is treated as stale
 	// from then on, but it can still be served while it is refreshed (per
 	// stale-while-revalidate) or if the backend fails (per stale-if-error)

@@ -119,6 +119,8 @@ type defaultCacher struct {
 	loggedMu      sync.Mutex
 	loggedCookies map[string]bool
 	events        *events.Log
+	// fragments are the current content of pages' shared fragments
+	fragments *fragments
 }
 
 // NewCacher returns an in-memory cacher with no site-specific rules.
@@ -152,6 +154,7 @@ func NewCacher(opts Options) *defaultCacher {
 		bypassCookies:      append([]string(nil), opts.BypassCookies...),
 		stripCookies:       append([]string(nil), opts.StripCookies...),
 		loggedCookies:      make(map[string]bool),
+		fragments:          newFragments(),
 		events:             opts.Events,
 		browserCC:          opts.BrowserCacheControl,
 		recompressor:       &recompressor{},
@@ -378,27 +381,20 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	resp.initialAge, _ = strconv.Atoi(r.Header.Get("Age"))
 	resp.body, _ = io.ReadAll(r.Body)
 	r.Body.Close()
+	// Shared fragments (see fragments.go) are kept separately, and their
+	// markers' tokens removed
+	if r.Request != nil && isHTML(r.Header) {
+		if resp.segments = parseFragments(resp.body, r.Request.Header.Get(FragmentTokenHeader)); resp.segments != nil {
+			resp.body, resp.segments = assemble(resp.segments, func(string) []byte { return nil })
+			if r.Header.Get("Content-Length") != "" {
+				r.Header.Set("Content-Length", strconv.Itoa(len(resp.body)))
+			}
+			r.ContentLength = int64(len(resp.body))
+		}
+	}
 	r.Body = io.NopCloser(bytes.NewReader(resp.body))
-	if _, noStore := utilities.Directive(cc, "no-store"); !noStore {
-		hasher := blake2b.New256()
-		hasher.Write(resp.body)
-		r.Header.Set("Etag", `"`+base64.StdEncoding.EncodeToString(hasher.Sum(nil))+`"`)
-	}
-	if (c.brotli || c.gzip) && shouldCompress(r.StatusCode, r.Header, resp.body, c.compressMinBytes) {
-		if c.brotli {
-			if compressed := compressBrotli(resp.body, fastBrotliQuality); len(compressed) < len(resp.body) {
-				resp.brotli.Store(&compressed)
-			}
-		}
-		if c.gzip {
-			if compressed := compressGzip(resp.body); len(compressed) < len(resp.body) {
-				resp.gzip = compressed
-			}
-		}
-		if (resp.brotliBody() != nil || resp.gzip != nil) && !headerListContains(r.Header.Values("Vary"), "Accept-Encoding") {
-			r.Header.Add("Vary", "Accept-Encoding")
-		}
-	}
+	_, noStore := utilities.Directive(cc, "no-store")
+	c.encode(&resp, r.StatusCode, r.Header, !noStore)
 	resp.headers = r.Header.Clone()
 
 	// no-cache="set-cookie" and private="set-cookie" allow the response
@@ -418,6 +414,31 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	}
 
 	return &resp
+}
+
+// encode sets resp's Etag in header (if etag), and compresses its body
+// for clients which accept brotli or gzip, if it's worth it
+func (c *defaultCacher) encode(resp *responseImpl, statusCode int, header http.Header, etag bool) {
+	if etag {
+		hasher := blake2b.New256()
+		hasher.Write(resp.body)
+		header.Set("Etag", `"`+base64.StdEncoding.EncodeToString(hasher.Sum(nil))+`"`)
+	}
+	if (c.brotli || c.gzip) && shouldCompress(statusCode, header, resp.body, c.compressMinBytes) {
+		if c.brotli {
+			if compressed := compressBrotli(resp.body, fastBrotliQuality); len(compressed) < len(resp.body) {
+				resp.brotli.Store(&compressed)
+			}
+		}
+		if c.gzip {
+			if compressed := compressGzip(resp.body); len(compressed) < len(resp.body) {
+				resp.gzip = compressed
+			}
+		}
+		if (resp.brotliBody() != nil || resp.gzip != nil) && !headerListContains(header.Values("Vary"), "Accept-Encoding") {
+			header.Add("Vary", "Accept-Encoding")
+		}
+	}
 }
 
 // Cache will store the Response in the cache for later retrieval.  It is
@@ -456,6 +477,10 @@ func (c *defaultCacher) Cache(hash string, r Response) {
 	if int64(len(r.Body())) > c.maxObjectBytes {
 		c.store.delete(key)
 		return
+	}
+
+	if impl, ok := r.(*responseImpl); ok && impl.segments != nil {
+		c.recordFragments(impl)
 	}
 
 	now := time.Now()
@@ -514,6 +539,9 @@ func (c *defaultCacher) Load(hash string, request *http.Request) (Response, bool
 	r, ok := c.store.get(hash, time.Now())
 	if !ok {
 		return nil, false
+	}
+	if impl, ok := r.(*responseImpl); ok && impl.segments != nil {
+		r = c.withCurrentFragments(hash, impl)
 	}
 	// Recompress responses which are actually being served from the cache
 	if impl, ok := r.(*responseImpl); ok && impl.loads.Add(1) == 1 {

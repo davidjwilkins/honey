@@ -42,6 +42,13 @@ type browseView struct {
 	Prefix bool
 	// Return is this page, to come back to after a purge
 	Return string
+	// Fragments are the shared fragments
+	Fragments []fragmentRow
+}
+
+type fragmentRow struct {
+	cache.FragmentInfo
+	Changed string // how long ago its content last changed
 }
 
 type option struct {
@@ -154,6 +161,11 @@ func (a *admin) browse(w http.ResponseWriter, r *http.Request) {
 		v.Next = link(page + 1)
 	}
 	v.Return = link(page)
+	if a.opts.Fragments != nil {
+		for _, f := range a.opts.Fragments() {
+			v.Fragments = append(v.Fragments, fragmentRow{FragmentInfo: f, Changed: formatDuration(now.Sub(f.Updated).Round(time.Second)) + " ago"})
+		}
+	}
 	a.render(w, "cache", v)
 }
 
