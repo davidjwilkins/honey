@@ -77,15 +77,15 @@ report "$(load nginx -d "$duration" -paths "$pages" -cache-header X-Cache | row 
 if [ "${WP_SUPER_CACHE:-1}" = 1 ]; then
   compose run --rm -T cli sh /wp-super-cache.sh >&2
   load wordpress -d 3s -paths "$pages" >/dev/null
-  report "$(load wordpress -d "$duration" -paths "$pages" -cache-header X-None | row "WP Super Cache (simple mode)")"
-  # Whether its pages really were cached
-  tail="$(compose run --rm -T --entrypoint wget load -qO- --header 'Host: localhost:8080' http://wordpress/post-1/ | tail -c 200 | tr '\n' ' ')"
+  report "$(load wordpress -d "$duration" -paths "$pages" -cache-header WP-Super-Cache | row "WP Super Cache (simple mode)")"
+  # Whether its pages really were cached: its header, and its comments
+  tail="$(compose run --rm -T --entrypoint wget load -S -qO- --header 'Host: localhost:8080' --header 'Accept-Encoding: gzip' http://wordpress/post-1/ 2>&1 | grep -ai 'wp-super-cache\|content-encoding\|super cache\|cached page' | tr -s ' \n' ' ')"
 fi
 load honey:8080 -d 3s -paths "$pages" >/dev/null
 report "$(load honey:8080 -d "$duration" -paths "$pages" | row "Honey")"
 report ""
 if [ -n "${tail:-}" ]; then
-  report "WP Super Cache's pages end: \`$tail\`"
+  report "WP Super Cache's response to a request for /post-1/ (its headers and comments): \`$tail\`"
   report ""
 fi
 
@@ -97,7 +97,7 @@ report "| | Requests/s | p50 | p99 | Max | Errors | Cache |"
 report "| --- | --- | --- | --- | --- | --- | --- |"
 if [ "${WP_SUPER_CACHE:-1}" = 1 ]; then
   edits 12
-  report "$(load wordpress -d 30s -paths /,/post-1/ -cache-header X-None | row "WP Super Cache")"
+  report "$(load wordpress -d 30s -paths /,/post-1/ -cache-header WP-Super-Cache | row "WP Super Cache")"
   wait
   compose run --rm -T cli sh /wp-super-cache.sh off >&2
 fi

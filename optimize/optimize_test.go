@@ -136,8 +136,8 @@ func TestPreloadMainImage(t *testing.T) {
 	assert.Contains(t, log.Recent(1)[0].Text, "learned the main image of /post/ on desktop screens")
 
 	out = string(o.Rewrite(response("/post/", wpPage)))
-	assert.Contains(t, out, `<meta charset="UTF-8" /><link rel="preload" as="image" href="/wp-content/uploads/featured-1024.jpg" imagesrcset="/wp-content/uploads/featured-1024.jpg 1024w, /wp-content/uploads/featured-300.jpg 300w" imagesizes="(max-width: 1024px) 100vw, 1024px" fetchpriority="high" media="(min-width: 768px)" data-honey-main-image>`,
-		"on desktops, at the top of the <head>")
+	assert.Contains(t, out, `<meta charset="UTF-8" /><link rel="preload" as="image" imagesrcset="/wp-content/uploads/featured-1024.jpg 1024w, /wp-content/uploads/featured-300.jpg 300w" imagesizes="(max-width: 1024px) 100vw, 1024px" fetchpriority="high" media="(min-width: 768px)" data-honey-main-image>`,
+		"on desktops, at the top of the <head>, without an href, which browsers would fetch as well")
 	assert.Contains(t, out, `loading="lazy"`, "it may not be the main image on phones")
 	assert.Contains(t, out, `var n=["mobile"]`, "phones are still to report")
 
@@ -152,9 +152,8 @@ func TestPreloadMainImage(t *testing.T) {
 	o.Rewrite(response("/post/", wpPage))
 	report(t, h, "/post/", "mobile", "http://www.example.com/wp-content/uploads/featured-300.jpg")
 	out = string(o.Rewrite(response("/post/", wpPage)))
-	assert.Equal(t, 1, strings.Count(out, "data-honey-main-image"), "one preload, for every screen")
-	assert.NotContains(t, out, `media="`)
-	assert.Contains(t, out, `<img fetchpriority="high" src="/wp-content/uploads/featured-1024.jpg" srcset=`, "and it isn't lazy loaded")
+	assert.NotContains(t, out, "data-honey-main-image", "the browser finds it as soon as it reads it, so a preload would only compete with the stylesheets")
+	assert.Contains(t, out, `<img fetchpriority="high" src="/wp-content/uploads/featured-1024.jpg" srcset=`, "but it isn't lazy loaded")
 	assert.NotContains(t, out, `loading="lazy"`)
 	assert.Contains(t, out, `<img src="/logo.png" width="40" height="40" alt="">`)
 
@@ -169,6 +168,34 @@ func TestPreloadMainImage(t *testing.T) {
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/post/", nil))
 		return w.Body.String()
 	}(), "other requests pass through")
+}
+
+func TestPreloadingLazyLoadedImages(t *testing.T) {
+	// A lazy loading plugin's image only starts loading once its script
+	// has run, so it's preloaded, for every screen
+	page := strings.Replace(wpPage, `<img src="/wp-content/uploads/featured-1024.jpg" srcset=`, `<img src="data:image/gif;base64,R0lGOD" data-src="/wp-content/uploads/featured-1024.jpg" data-srcset=`, 1)
+	page = strings.Replace(page, ` sizes="(max-width: 1024px)`, ` data-sizes="(max-width: 1024px)`, 1)
+	o := New(Options{PreloadMainImage: true})
+	h := o.Middleware(http.NotFoundHandler())
+	o.Rewrite(response("/lazy/", page))
+	report(t, h, "/lazy/", "mobile", "http://www.example.com/wp-content/uploads/featured-300.jpg")
+	report(t, h, "/lazy/", "desktop", "http://www.example.com/wp-content/uploads/featured-1024.jpg")
+	out := string(o.Rewrite(response("/lazy/", page)))
+	assert.Contains(t, out, `<meta charset="UTF-8" /><link rel="preload" as="image" imagesrcset="/wp-content/uploads/featured-1024.jpg 1024w, /wp-content/uploads/featured-300.jpg 300w" imagesizes="(max-width: 1024px) 100vw, 1024px" fetchpriority="high" data-honey-main-image>`)
+	assert.Contains(t, out, `src="data:image/gif;base64,R0lGOD"`, "the plugin's image is left to it")
+}
+
+func TestPreloadsComeAfterTheViewport(t *testing.T) {
+	// Before it, a phone's browser would pick a desktop's size from the
+	// srcset
+	page := strings.Replace(wpPage, `<meta charset="UTF-8" />`, `<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />`, 1)
+	o := New(Options{PreloadMainImage: true})
+	h := o.Middleware(http.NotFoundHandler())
+	o.Rewrite(response("/v/", page))
+	report(t, h, "/v/", "mobile", "http://www.example.com/wp-content/uploads/hero.jpg")
+	out := string(o.Rewrite(response("/v/", page)))
+	assert.Contains(t, out, `<meta name="viewport" content="width=device-width, initial-scale=1" /><link rel="preload" as="image" href="/wp-content/uploads/hero.jpg"`)
 }
 
 func TestPagesWithoutAnImage(t *testing.T) {
