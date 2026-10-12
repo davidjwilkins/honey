@@ -68,9 +68,9 @@ func main() {
 		log.Printf("memory limit %dMB (for a %dMB cache; set GOMEMLIMIT to change it)", limit>>20, effectiveMaxBytes(cfg.Cache.MaxBytes)>>20)
 	}
 	h := build(cfg, time.Now())
-	cacher := h.cacher
+	snapshots := h.snapshots(cfg.Cache.Persist)
 	if cfg.Cache.Persist != "" {
-		loaded, err := cacher.LoadFrom(cfg.Cache.Persist)
+		loaded, err := h.cacher.LoadFrom(cfg.Cache.Persist)
 		if err != nil {
 			// Start anyway: the cache will fill up again
 			log.Printf("loading the cache: %v", err)
@@ -78,10 +78,18 @@ func main() {
 		}
 		log.Printf("loaded %d cached responses from %s", loaded, cfg.Cache.Persist)
 		h.events.Add(events.Info, "", 0, events.Text(fmt.Sprintf("started, with %d cached responses from %s", loaded, cfg.Cache.Persist)))
+		for _, s := range snapshots[1:] {
+			loaded, err := s.snapshotter.LoadFrom(s.path)
+			if err != nil {
+				log.Printf("loading %s: %v", s.what, err)
+				h.events.Add(events.Error, "", 0, events.Text(fmt.Sprintf("couldn't load %s: %v", s.what, err)))
+			}
+			log.Printf("loaded %d %s from %s", loaded, s.what, s.path)
+		}
 	} else {
 		h.events.Add(events.Info, "", 0, events.Text("started"))
 	}
-	stopPersisting := persistEvery(cacher, cfg.Cache.Persist, cfg.Cache.PersistInterval)
+	stopPersisting := persistEvery(snapshots, cfg.Cache.PersistInterval)
 	server, err := serve.New(serveOptions(cfg, withAdminHost(cfg, h)))
 	if err != nil {
 		log.Fatal(err)
@@ -154,8 +162,8 @@ func main() {
 	stopPersisting()
 	// Purges waiting to be passed on
 	h.cdn.Flush()
-	if cfg.Cache.Persist != "" {
-		saveCache(cacher, cfg.Cache.Persist)
+	for _, s := range snapshots {
+		saveSnapshot(s)
 	}
 }
 
@@ -241,20 +249,41 @@ type snapshotter interface {
 	LoadFrom(path string) (int, error)
 }
 
-func saveCache(cacher snapshotter, path string) {
-	start := time.Now()
-	saved, err := cacher.SaveTo(path)
-	if err != nil {
-		log.Printf("saving the cache: %v", err)
-		return
-	}
-	log.Printf("saved %d cached responses to %s in %s", saved, path, time.Since(start).Round(time.Millisecond))
+// snapshot is something saved to and loaded from a file: the cache, or
+// what the optimizer has learned (what is what it saves, for the log)
+type snapshot struct {
+	snapshotter
+	path, what string
 }
 
-// persistEvery saves the cache to path every interval, until the returned
-// function is called.  It does nothing if path or interval is unset.
-func persistEvery(cacher snapshotter, path string, interval time.Duration) (stop func()) {
-	if path == "" || interval <= 0 {
+// snapshots returns what's saved, with the cache saved to path: the cache,
+// then what the optimizer has learned, if it's on (next to it); or nothing
+// if path isn't set
+func (h *honey) snapshots(path string) []snapshot {
+	if path == "" {
+		return nil
+	}
+	s := []snapshot{{h.cacher, path, "cached responses"}}
+	if h.optimizer != nil {
+		s = append(s, snapshot{h.optimizer, path + ".optimize", "main images, fonts and converted images"})
+	}
+	return s
+}
+
+func saveSnapshot(s snapshot) {
+	start := time.Now()
+	saved, err := s.SaveTo(s.path)
+	if err != nil {
+		log.Printf("saving %s: %v", s.what, err)
+		return
+	}
+	log.Printf("saved %d %s to %s in %s", saved, s.what, s.path, time.Since(start).Round(time.Millisecond))
+}
+
+// persistEvery saves snapshots every interval, until the returned function
+// is called.  It does nothing if there are none, or interval is unset.
+func persistEvery(snapshots []snapshot, interval time.Duration) (stop func()) {
+	if len(snapshots) == 0 || interval <= 0 {
 		return func() {}
 	}
 	done := make(chan struct{})
@@ -266,7 +295,9 @@ func persistEvery(cacher snapshotter, path string, interval time.Duration) (stop
 		for {
 			select {
 			case <-ticker.C:
-				saveCache(cacher, path)
+				for _, s := range snapshots {
+					saveSnapshot(s)
+				}
 			case <-done:
 				return
 			}
@@ -298,6 +329,9 @@ type honey struct {
 	// admin serves the admin page, if it is on
 	admin  http.Handler
 	cacher snapshotter
+	// optimizer changes pages as they're cached, if it's on (it's nil
+	// otherwise, never a nil *Optimizer: see snapshots)
+	optimizer snapshotter
 	// warmer warms the cache from the sitemap, if it is on
 	warmer *warm.Warmer
 	// events are what the admin page shows has happened, if it is on
@@ -429,6 +463,9 @@ func build(cfg *config.Config, started time.Time) *honey {
 		transport = recorder.Transport(transport)
 	}
 	h := &honey{metrics: recorder, cacher: c, events: eventLog, cdn: purger}
+	if optimizer != nil {
+		h.optimizer = optimizer
+	}
 	// Addresses which keep failing to log in, and (if it's on) their
 	// requests to WordPress.  Requests from this host (e.g. WordPress's
 	// own) are never limited.

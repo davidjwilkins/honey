@@ -609,7 +609,7 @@ func TestCacheSurvivesRestart(t *testing.T) {
 	h := build(cfg, time.Now())
 	handler, cacher := h.handler, h.cacher
 	assert.Equal(t, "MISS", cacheResult(handler))
-	saveCache(cacher, path)
+	saveSnapshot(snapshot{cacher, path, "cached responses"})
 
 	// a new process, with an empty cache, loads the saved one
 	h = build(cfg, time.Now())
@@ -623,17 +623,22 @@ func TestCacheSurvivesRestart(t *testing.T) {
 
 func TestPersistEvery(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cache.snapshot")
-	cacher := build(&config.Config{Backend: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}}, time.Now()).cacher
-	stop := persistEvery(cacher, path, 50*time.Millisecond)
+	cfg := &config.Config{Backend: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}}
+	cfg.Optimize.PreloadMainImage = true
+	h := build(cfg, time.Now())
+	stop := persistEvery(h.snapshots(path), 50*time.Millisecond)
 	require.Eventually(t, func() bool {
 		_, err := os.Stat(path)
-		return err == nil
-	}, 2*time.Second, 10*time.Millisecond, "the cache should be saved periodically")
+		_, optimizerErr := os.Stat(path + ".optimize")
+		return err == nil && optimizerErr == nil
+	}, 2*time.Second, 10*time.Millisecond, "the cache, and what the optimizer has learned, should be saved periodically")
 	stop()
 
 	// nothing happens without a path or an interval
-	persistEvery(cacher, "", time.Millisecond)()
-	persistEvery(cacher, path, 0)()
+	persistEvery(h.snapshots(""), time.Millisecond)()
+	persistEvery(h.snapshots(path), 0)()
+	// and the optimizer's isn't saved if it's off
+	assert.Len(t, build(&config.Config{Backend: cfg.Backend}, time.Now()).snapshots(path), 1)
 }
 
 func TestBackendGetsTheVisitorsAddress(t *testing.T) {
