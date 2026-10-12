@@ -83,6 +83,12 @@ type Options struct {
 	// cookie (unless it is allowed - see AddAllowedCookie) aren't cached,
 	// and keep it.
 	StripCookies []string
+	// ESICookies are bypass cookie name prefixes (see BypassCookies) whose
+	// visitors may be served cached pages which use Edge Side Includes
+	// for the parts which differ between visitors (see esi.go) - e.g.
+	// commenters, whose comments section is an include.  Pages which don't
+	// use ESI go to the backend for them, as for any bypass cookie.
+	ESICookies []string
 	// Events, if set, is where things worth knowing about (such as
 	// responses not being cached because of their cookies) are logged,
 	// e.g. for the admin page.
@@ -110,6 +116,7 @@ type defaultCacher struct {
 	compressMinBytes   int
 	bypassCookies      []string
 	stripCookies       []string
+	esiCookies         []string
 	browserCC          string
 	recompressor       *recompressor
 	// store holds both cached responses (keyed by their hash) and the
@@ -153,6 +160,7 @@ func NewCacher(opts Options) *defaultCacher {
 		compressMinBytes:   int(opts.CompressMinBytes),
 		bypassCookies:      append([]string(nil), opts.BypassCookies...),
 		stripCookies:       append([]string(nil), opts.StripCookies...),
+		esiCookies:         append([]string(nil), opts.ESICookies...),
 		loggedCookies:      make(map[string]bool),
 		fragments:          newFragments(),
 		events:             opts.Events,
@@ -393,6 +401,13 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 		}
 	}
 	r.Body = io.NopCloser(bytes.NewReader(resp.body))
+	// Edge Side Includes, if the backend uses them (see esi.go)
+	esi := usesESI(r)
+	r.Header.Del("Surrogate-Control")
+	r.Header.Del(ESIHeader)
+	if esi {
+		r.Header.Set(ESIHeader, "1")
+	}
 	_, noStore := utilities.Directive(cc, "no-store")
 	c.encode(&resp, r.StatusCode, r.Header, !noStore)
 	resp.headers = r.Header.Clone()
@@ -423,6 +438,11 @@ func (c *defaultCacher) encode(resp *responseImpl, statusCode int, header http.H
 		hasher := blake2b.New256()
 		hasher.Write(resp.body)
 		header.Set("Etag", `"`+base64.StdEncoding.EncodeToString(hasher.Sum(nil))+`"`)
+	}
+	// Pages with Edge Side Includes are compressed once they're put
+	// together for each visitor
+	if header.Get(ESIHeader) != "" {
+		return
 	}
 	if (c.brotli || c.gzip) && shouldCompress(statusCode, header, resp.body, c.compressMinBytes) {
 		if c.brotli {

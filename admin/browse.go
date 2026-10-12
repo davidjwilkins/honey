@@ -270,7 +270,10 @@ func (a *admin) entry(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	v.Found = true
 	v.entryRow = row(e, now)
-	v.Header = headerLines(resp.Header())
+	header := resp.Header().Clone()
+	// Honey's own, which visitors don't get
+	header.Del(cache.ESIHeader)
+	v.Header = headerLines(header)
 	v.Varied = headerLines(cache.RequestHeader(resp))
 	if !e.RemoveAt.IsZero() {
 		v.KeptUntil = "until " + formatDuration(e.RemoveAt.Sub(now).Round(time.Second)) + " from now, unless it's evicted to make room first"

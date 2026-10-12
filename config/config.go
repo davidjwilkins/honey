@@ -114,6 +114,10 @@ type Cache struct {
 	// cache.Options.BypassCookies).  Defaults to
 	// cache.WordPressBypassCookies.
 	BypassCookies []string
+	// ESICookies are bypass cookies (name prefixes) whose visitors may be
+	// served cached pages which use Edge Side Includes for the parts
+	// which differ between them (see cache.Options.ESICookies)
+	ESICookies []string
 	// StripCookies are cookie name prefixes which responses may set and
 	// still be cached, without the cookie (see cache.Options.StripCookies)
 	StripCookies []string
@@ -189,6 +193,7 @@ type File struct {
 		PersistInterval string    `toml:"persistInterval,omitempty"`
 		AllowedCookies  []string  `toml:"allowedCookies,omitempty"`
 		BypassCookies   *[]string `toml:"bypassCookies,omitempty"`
+		ESICookies      []string  `toml:"esiCookies,omitempty"`
 		StripCookies    []string  `toml:"stripCookies,omitempty"`
 		BrowserCC       string    `toml:"browserCacheControl,omitempty"`
 		QueryParams     *[]string `toml:"queryParams,omitempty"`
@@ -265,6 +270,7 @@ func (f *File) Clone() *File {
 	c.Hosts = cloneList(f.Hosts)
 	c.Cache.AllowedCookies = append([]string(nil), f.Cache.AllowedCookies...)
 	c.Cache.BypassCookies = cloneList(f.Cache.BypassCookies)
+	c.Cache.ESICookies = append([]string(nil), f.Cache.ESICookies...)
 	c.Cache.StripCookies = append([]string(nil), f.Cache.StripCookies...)
 	c.Cache.QueryParams = cloneList(f.Cache.QueryParams)
 	c.Cache.StaticFiles = cloneBool(f.Cache.StaticFiles)
@@ -457,6 +463,19 @@ func FromFile(f *File) (*Config, error) {
 	for _, name := range cfg.Cache.AllowedCookies {
 		if hasAnyPrefix(name, cfg.Cache.BypassCookies) {
 			return nil, fmt.Errorf("cache.allowedCookies: %q is also a bypass cookie", name)
+		}
+	}
+	cfg.Cache.ESICookies, err = cookiePrefixes("cache.esiCookies", f.Cache.ESICookies)
+	if err != nil {
+		return nil, err
+	}
+	for _, prefix := range cfg.Cache.ESICookies {
+		overlaps := false
+		for _, bypass := range cfg.Cache.BypassCookies {
+			overlaps = overlaps || strings.HasPrefix(prefix, bypass) || strings.HasPrefix(bypass, prefix)
+		}
+		if !overlaps {
+			return nil, fmt.Errorf("cache.esiCookies: %q isn't one of the bypass cookies", prefix)
 		}
 	}
 	cfg.Cache.StripCookies, err = cookiePrefixes("cache.stripCookies", f.Cache.StripCookies)

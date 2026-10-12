@@ -45,6 +45,17 @@
  * page (e.g. marking the current post) aren't marked.  Other blocks can
  * be marked with the honey_fragment_blocks filter.
  *
+ * Commenters: WordPress fills in the comment form for visitors who have
+ * commented before (from their comment_author_ cookies), and shows them
+ * their comments awaiting moderation, so their pages usually can't be
+ * cached.  With block themes, when Honey says it supports Edge Side
+ * Includes, the Comments block is left out of the page, in favour of an
+ * <esi:include> of the same address with ?honey-esi=comments.<id>, which
+ * shows just the Comments block.  Honey caches the page, and fetches the
+ * comments for each visitor: from the cache for most, but from WordPress
+ * for commenters, if Honey's cache.esiCookies includes "comment_author_".
+ * Classic themes aren't supported yet.
+ *
  * Purges are sent when WordPress has finished handling the request, once
  * each, as PURGE requests (see Honey's README).  Most are soft: if Honey's
  * staleWhileRevalidate allows, the old page is served once more while the
@@ -502,5 +513,72 @@ final class Fragments {
 	}
 }
 
+/**
+ * Serves the Comments block as an Edge Side Include, so that pages with
+ * comments can be cached for commenters too (see above).
+ */
+final class ESI {
+	/** The query parameter naming what an include shows (see Honey's fetch.ESIParam) */
+	const PARAM = 'honey-esi';
+
+	/** @var bool whether includes are being rendered, not replaced */
+	private static $rendering = false;
+
+	public static function init() {
+		add_action( 'template_redirect', array( __CLASS__, 'serve' ), 0 );
+		// Only when Honey asks, for a page it's going to cache
+		$capability = isset( $_SERVER['HTTP_SURROGATE_CAPABILITY'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_SURROGATE_CAPABILITY'] ) ) : '';
+		if ( false !== strpos( $capability, 'ESI/1.0' ) && ! isset( $_GET[ self::PARAM ] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			add_filter( 'render_block', array( __CLASS__, 'block' ), 10, 3 );
+		}
+	}
+
+	/** Replaces the Comments block of the page's own post with an include. */
+	public static function block( $content, $block, $instance = null ) {
+		if ( self::$rendering || empty( $block['blockName'] ) || 'core/comments' !== $block['blockName'] ) {
+			return $content;
+		}
+		// The include shows the comments of the page's post: so only on the
+		// post's own page, and for the block showing its comments
+		$post_id = ( $instance instanceof \WP_Block && isset( $instance->context['postId'] ) ) ? (int) $instance->context['postId'] : get_the_ID();
+		if ( ! is_singular() || $post_id !== get_queried_object_id() || headers_sent() ) {
+			return $content;
+		}
+		// Kept to show it later: the same blocks have the same id
+		$markup = serialize_block( $block );
+		$id     = substr( md5( $markup ), 0, 16 );
+		if ( false === get_option( 'honey_esi_' . $id ) ) {
+			add_option( 'honey_esi_' . $id, $markup, '', false );
+		}
+		header( 'Surrogate-Control: content="ESI/1.0"' );
+		// The same address, so that the include has the same post and comment page
+		$uri = isset( $_SERVER['REQUEST_URI'] ) ? wp_unslash( $_SERVER['REQUEST_URI'] ) : '/'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+		$src = add_query_arg( self::PARAM, 'comments.' . $id, $uri );
+		return '<esi:include src="' . esc_attr( $src ) . '"/>';
+	}
+
+	/** Shows just the Comments block, for an include. */
+	public static function serve() {
+		$name = isset( $_GET[ self::PARAM ] ) ? sanitize_text_field( wp_unslash( $_GET[ self::PARAM ] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( '' === $name ) {
+			return;
+		}
+		$markup = preg_match( '/^comments\.([0-9a-f]{16})$/', $name, $m ) && is_singular() ? get_option( 'honey_esi_' . $m[1] ) : false;
+		if ( ! is_string( $markup ) ) {
+			status_header( 404 );
+			exit;
+		}
+		if ( have_posts() ) {
+			the_post();
+		}
+		self::$rendering = true;
+		header( 'Content-Type: text/html; charset=' . get_option( 'blog_charset' ) );
+		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- the block's own output
+		echo do_blocks( $markup );
+		exit;
+	}
+}
+
 Purge::init();
 Fragments::init();
+ESI::init();

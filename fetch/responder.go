@@ -150,6 +150,15 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 	// and not to response.Header as the headers from r will be copied to response,
 	// but if they don't get set on r then they won't appear on the initial request
 	return func(r *http.Response) error {
+		// Only the cache marks responses as using ESI (see cache.Standardize),
+		// and Surrogate-Control is for it, not clients
+		standardized := false
+		defer func() {
+			if !standardized {
+				r.Header.Del(cache.ESIHeader)
+				r.Header.Del("Surrogate-Control")
+			}
+		}()
 		if r.Request == nil {
 			return nil
 		}
@@ -217,6 +226,7 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 			return nil
 		}
 		response := c.Standardize(r)
+		standardized = true
 		cc := response.Header().Get("Cache-Control")
 		// no-store: https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9.2
 		// and don't cache server errors

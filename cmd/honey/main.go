@@ -219,6 +219,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 		DisableGzip:          !cfg.Cache.Gzip,
 		CompressMinBytes:     cfg.Cache.CompressMinBytes,
 		BypassCookies:        cfg.Cache.BypassCookies,
+		ESICookies:           cfg.Cache.ESICookies,
 		StripCookies:         cfg.Cache.StripCookies,
 		BrowserCacheControl:  cfg.Cache.BrowserCacheControl,
 		Events:               eventLog,

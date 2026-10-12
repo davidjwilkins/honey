@@ -155,6 +155,9 @@
         {{- with .Fragments}}
         <div><dt>Shared fragments</dt><dd class="mono">{{range $i, $f := .}}{{if $i}}, {{end}}{{$f}}{{end}}</dd></div>
         {{- end}}
+        {{- if .ESI}}
+        <div><dt>Edge Side Includes</dt><dd>yes: they're fetched for each visitor</dd></div>
+        {{- end}}
       </dl>
       <p class="muted small">Kept {{.KeptUntil}}.</p>
     </section>
