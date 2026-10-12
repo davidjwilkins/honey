@@ -7,7 +7,10 @@
 //   - Preloading the main image: visitors' browsers report each page's
 //     largest image (its Largest Contentful Paint), and the page is then
 //     cached with a preload for it at the top of its <head>, and without
-//     lazy loading it (see lcp.go).
+//     lazy loading it (see images.go).
+//   - Self-hosting Google Fonts (see fonts.go).
+//   - Removing unused CSS: each page has the CSS it uses in its <head>,
+//     and loads its whole stylesheets once it's shown (see usedcss.go).
 package optimize
 
 import (
@@ -40,11 +43,25 @@ type Options struct {
 	// SelfHostFonts serves Google Fonts from the site itself (see
 	// fonts.go)
 	SelfHostFonts bool
+	// RemoveUnusedCSS puts the CSS each page uses in it, in place of the
+	// site's stylesheets, which are loaded once it's shown (see
+	// usedcss.go)
+	RemoveUnusedCSS bool
+	// KeepCSSMatching are more rules to keep, as well as DefaultKeepCSS:
+	// text found in their selectors
+	KeepCSSMatching []string
+	// Fetch fetches the site's stylesheets, for RemoveUnusedCSS: a request
+	// for a path, with the Host of the page which links to it
+	Fetch func(*http.Request) (*http.Response, error)
+	// Hosts are the site's hosts (besides the one a page is on), whose
+	// stylesheets are the site's
+	Hosts []string
 	// BackendHost, if set, is the Host pages are cached under, rather than
 	// the one visitors send (see fetch.Options.BackendHost)
 	BackendHost string
 	// Refresh soft purges a page (by host and path), once its main image
-	// has been learned, so that it's cached again with it preloaded
+	// has been learned or its stylesheets fetched, so that it's cached
+	// again with them
 	Refresh func(host, path string)
 	// Events, if set, is where learned main images are logged
 	Events *events.Log
@@ -64,11 +81,12 @@ type Optimizer struct {
 	keep   []string
 	images *imageStore
 	fonts  *fontStore
+	css    *cssStore
 }
 
 // New returns an Optimizer, or nil if opts turn nothing on
 func New(opts Options) *Optimizer {
-	if !opts.DelayScripts && !opts.PreloadMainImage && !opts.SelfHostFonts {
+	if !opts.DelayScripts && !opts.PreloadMainImage && !opts.SelfHostFonts && !opts.RemoveUnusedCSS {
 		return nil
 	}
 	if opts.now == nil {
@@ -90,6 +108,9 @@ func New(opts Options) *Optimizer {
 	}
 	if opts.SelfHostFonts {
 		o.fonts = newFontStore(&o.opts)
+	}
+	if opts.RemoveUnusedCSS {
+		o.css = newCSSStore(&o.opts)
 	}
 	return o
 }
@@ -122,6 +143,9 @@ func (o *Optimizer) Rewrite(r *http.Response, body []byte) []byte {
 	}
 	if o.fonts != nil {
 		edits = append(edits, o.selfHostFonts(page)...)
+	}
+	if o.css != nil {
+		edits = append(edits, o.usedCSS(r.Request, page)...)
 	}
 	var head, tail []byte
 	if o.images != nil {

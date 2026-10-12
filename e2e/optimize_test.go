@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"fmt"
+	"html"
 	"net/http"
 	"regexp"
 	"strings"
@@ -92,4 +93,23 @@ func TestMainImagesArePreloaded(t *testing.T) {
 	// It's in the admin page's events
 	events := get(t, c, adminPage+"/")
 	assert.Contains(t, events.Body, "learned the main image")
+}
+
+func TestUnusedCSSIsRemoved(t *testing.T) {
+	path := newPostWith(t, "Styled post", "<!-- wp:paragraph --><p>Plain words.</p><!-- /wp:paragraph -->")
+	c := client(nil)
+	// The theme's stylesheet is fetched as the first page linking to it is
+	// cached, which is then cached again with the CSS it uses
+	eventually(t, c, path, "data-honey-used-css")
+	page := cached(t, c, path)
+	theme := regexp.MustCompile(`<style data-honey-used-css="([^"]*/themes/twentytwentyfive/style\.css[^"]*)">(.*?)</style>`).FindStringSubmatch(page.Body)
+	require.NotNil(t, theme, "the theme's stylesheet: %s", page.Body)
+	href, used := html.UnescapeString(theme[1]), theme[2]
+	assert.Contains(t, page.Body, `<link rel='stylesheet' id='twentytwentyfive-style-css' href='`+theme[1]+`' media="print" onload="this.onload=null;this.media='all'">`,
+		"it's loaded once the page is shown")
+	assert.Contains(t, page.Body, `<noscript><link rel='stylesheet' id='twentytwentyfive-style-css' href='`+theme[1]+`'`)
+	whole := get(t, c, href)
+	require.Equal(t, http.StatusOK, whole.StatusCode)
+	assert.Less(t, len(used), len(whole.Body), "the page has less than the whole stylesheet")
+	t.Logf("%s: %d of %d bytes used", href, len(used), len(whole.Body))
 }
