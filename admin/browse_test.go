@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/optimize"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -229,4 +230,55 @@ func TestFragmentsInTheCacheBrowser(t *testing.T) {
 	assert.Equal(t, "posts-widget-recent-posts-2", purgedName)
 	assert.Contains(t, browse(h, strings.TrimPrefix(resp.Header.Get("Location"), "/cache")),
 		"Purged 1 shared fragment called <span class=\"mono\">posts-widget-recent-posts-2</span>: refreshing 1 page to get its new content, for every page showing it.")
+}
+
+func TestEntryPageShowsOptimizations(t *testing.T) {
+	page := entry("/post/", 1, 4000, time.Minute, time.Hour)
+	var asked []string
+	h := Handler(Options{
+		Started: time.Now(),
+		Entries: func() []cache.Entry { return []cache.Entry{page} },
+		Entry: func(key string) (cache.Entry, cache.Response, bool) {
+			return page, cachedPage{body: "<html>the page</html>", header: http.Header{"Content-Type": {"text/html"}}}, key == page.Key
+		},
+		Optimizations: func(host, path string, body []byte) *optimize.Report {
+			asked = append(asked, host+path+" "+string(body))
+			return &optimize.Report{
+				MainImages: []optimize.MainImageReport{
+					{Screens: "phones", State: "learned", URL: "/wp-content/uploads/hero-768x432.jpg"},
+					{Screens: "desktops", State: "asked"},
+				},
+				DelayedScripts: []string{"https://www.googletagmanager.com/gtag/js?id=G-1", "inline (#fb-pixel)"},
+				UsedCSS:        []optimize.UsedCSSReport{{Href: "/wp-content/themes/t/style.css?ver=1", Used: 17000, Whole: 281000}},
+				Images: []optimize.ImageReport{
+					{URL: "/wp-content/uploads/hero.jpg", Original: 24587, State: "converted", Converted: []optimize.ConvertedReport{{Format: "avif", Bytes: 5736}}},
+					{URL: "/wp-content/uploads/p3.jpg", Original: 9000, State: "not converted", Why: "its colour profile isn't sRGB (P3)"},
+					{URL: "/wp-content/uploads/new.jpg", State: "not seen"},
+				},
+			}
+		},
+	})
+	w := do(h, http.MethodGet, "/cache/entry?"+url.Values{"key": {page.Key}}.Encode(), "127.0.0.1:9090", nil)
+	require.Equal(t, http.StatusOK, w.Code)
+	body := w.Body.String()
+	assert.Equal(t, []string{"www.example.com/post/ <html>the page</html>"}, asked)
+	for _, want := range []string{
+		"<h2>Optimizations</h2>",
+		`<dt>Main image on phones</dt><dd><span class="mono">/wp-content/uploads/hero-768x432.jpg</span>`,
+		"<dt>Main image on desktops</dt><dd>not known yet: the page asks visitors' browsers",
+		"https://www.googletagmanager.com/gtag/js?id=G-1\ninline (#fb-pixel)",
+		"/wp-content/themes/t/style.css?ver=1", "94% smaller",
+		"avif <span class=\"mono\">5.6 KB</span> <span class=\"muted\">77% smaller</span>",
+		"not converted: its colour profile isn&#39;t sRGB (P3)",
+		"not asked for by a browser which takes AVIF or WebP yet",
+	} {
+		assert.Contains(t, body, want)
+	}
+
+	// Not for responses other than pages
+	page.ContentType = "image/png"
+	asked = nil
+	w = do(h, http.MethodGet, "/cache/entry?"+url.Values{"key": {page.Key}}.Encode(), "127.0.0.1:9090", nil)
+	assert.NotContains(t, w.Body.String(), "Optimizations")
+	assert.Empty(t, asked)
 }

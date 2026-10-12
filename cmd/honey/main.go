@@ -579,6 +579,9 @@ func build(cfg *config.Config, started time.Time) *honey {
 			Origin:  siteOrigin(cfg),
 			Entries: c.Entries,
 			Entry:   c.Entry,
+			Optimizations: func(host, path string, body []byte) *optimize.Report {
+				return optimizer.Report(host, path, body)
+			},
 			// Pages are refreshed for fragments by the cache itself
 			Fragments:      c.Fragments,
 			PurgeFragments: fetch.FragmentPurger(c, proxy),

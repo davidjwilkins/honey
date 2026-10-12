@@ -102,8 +102,10 @@ type imageConverter struct {
 // imageEntry is what's known of an image: the copies converted, and those
 // which couldn't be
 type imageEntry struct {
-	// validator identifies the original (a hash of it)
+	// validator identifies the original (a hash of it), and original is
+	// its size
 	validator uint64
+	original  int
 	// checked is when the original was last seen, and checking whether
 	// a request is fetching it to check it again
 	checked  time.Time
@@ -324,6 +326,7 @@ func (c *imageConverter) captured(key, kind, format string, body []byte, ok bool
 		c.bytes -= e.size()
 		e.validator, e.formats, e.pending, e.none = validator, map[string]*convertedImage{}, map[string]bool{}, map[string]string{}
 	}
+	e.original = len(body)
 	e.checked = now
 	e.header = imageHeader(header)
 	if format == "" || e.formats[format] != nil || e.pending[format] || e.none[format] != "" {

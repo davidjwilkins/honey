@@ -193,6 +193,49 @@
   </section>
 </div>
 
+{{- with .Optimized}}
+<section class="panel optimized">
+  <h2>Optimizations</h2>
+  <dl class="facts">
+    {{- range .MainImages}}
+    <div><dt>Main image on {{.Screens}}</dt><dd>{{if eq .State "learned"}}<span class="mono">{{.URL}}</span>{{else if eq .State "asked"}}not known yet: the page asks visitors' browsers{{else if eq .State "not an image"}}not an image (e.g. a heading){{else}}not known{{end}}</dd></div>
+    {{- end}}
+    <div><dt>Scripts delayed until the visitor interacts</dt><dd>{{with .DelayedScripts}}{{len .}}{{else}}none{{end}}</dd></div>
+    {{- with .SelfHostedFonts}}
+    <div><dt>Google Fonts served from the site</dt><dd>{{len .}}</dd></div>
+    {{- end}}
+  </dl>
+  {{- with .DelayedScripts}}
+  <pre class="key">{{range .}}{{.}}
+{{end}}</pre>
+  {{- end}}
+  {{- with .UsedCSS}}
+  <h3>Stylesheets: the CSS this page uses</h3>
+  <table class="list">
+    <thead><tr><th>Stylesheet</th><th class="num">Used</th><th class="num">Whole</th><th></th></tr></thead>
+    <tbody>
+    {{- range .}}
+      <tr><td class="mono">{{.Href}}</td><td class="num mono">{{bytes (int64 .Used)}}</td><td class="num mono">{{if .Whole}}{{bytes (int64 .Whole)}}{{else}}?{{end}}</td><td class="muted">{{if .Whole}}{{saving .Whole .Used}}{{end}}</td></tr>
+    {{- end}}
+    </tbody>
+  </table>
+  <p class="muted small">Put in the page, in place of each stylesheet, which is loaded whole once the page is shown.</p>
+  {{- end}}
+  {{- with .Images}}
+  <h3>Images</h3>
+  <table class="list">
+    <thead><tr><th>Image</th><th class="num">Original</th><th>Converted</th></tr></thead>
+    <tbody>
+    {{- range .}}
+      <tr><td class="mono">{{.URL}}</td><td class="num mono">{{if .Original}}{{bytes (int64 .Original)}}{{end}}</td>
+        <td>{{if .Converted}}{{$original := .Original}}{{range $i, $c := .Converted}}{{if $i}} · {{end}}{{$c.Format}} <span class="mono">{{bytes (int64 $c.Bytes)}}</span> <span class="muted">{{saving $original $c.Bytes}}</span>{{end}}{{else if eq .State "converting"}}being converted{{else if eq .State "not seen"}}<span class="muted">not asked for by a browser which takes AVIF or WebP yet</span>{{else}}<span class="muted">not converted: {{.Why}}</span>{{end}}</td></tr>
+    {{- end}}
+    </tbody>
+  </table>
+  {{- end}}
+</section>
+{{- end}}
+
 {{- if .Body}}
 <details class="panel body">
   <summary>Body{{if .Truncated}} (the first 8 KB){{end}}</summary>

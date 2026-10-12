@@ -54,6 +54,7 @@ type fontSnapshot struct {
 
 type imageSnapshot struct {
 	Validator uint64
+	Original  int
 	Checked   time.Time
 	Header    http.Header
 	Formats   map[string]convertedSnapshot
@@ -129,7 +130,7 @@ func (o *Optimizer) records() []snapshotRecord {
 				// Not fetched yet
 				continue
 			}
-			i := &imageSnapshot{Validator: e.validator, Checked: e.checked, Header: e.header,
+			i := &imageSnapshot{Validator: e.validator, Original: e.original, Checked: e.checked, Header: e.header,
 				Formats: map[string]convertedSnapshot{}, None: map[string]string{}}
 			for f, img := range e.formats {
 				i.Formats[f] = convertedSnapshot{Body: img.body, ContentType: img.contentType, ETag: img.etag, Modified: img.modified}
@@ -224,7 +225,7 @@ func (o *Optimizer) restore(r snapshotRecord) bool {
 		return true
 	case r.Image != nil && o.convert != nil:
 		c := o.convert
-		e := &imageEntry{validator: r.Image.Validator, checked: r.Image.Checked, header: r.Image.Header,
+		e := &imageEntry{validator: r.Image.Validator, original: r.Image.Original, checked: r.Image.Checked, header: r.Image.Header,
 			formats: map[string]*convertedImage{}, pending: map[string]bool{}, none: map[string]string{}}
 		if e.header == nil {
 			e.header = http.Header{}

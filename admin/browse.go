@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/optimize"
 	"github.com/davidjwilkins/honey/utilities"
 )
 
@@ -245,6 +246,8 @@ type entryView struct {
 	Test, Return string
 	// Hints are its Early Hints
 	Hints []string
+	// Optimized is what the optimizer did to it, if it's a page it changes
+	Optimized *optimize.Report
 }
 
 type headerLine struct {
@@ -282,6 +285,9 @@ func (a *admin) entry(w http.ResponseWriter, r *http.Request) {
 		v.KeptUntil = "until " + formatDuration(e.RemoveAt.Sub(now).Round(time.Second)) + " from now, unless it's evicted to make room first"
 	} else {
 		v.KeptUntil = "until it's evicted to make room"
+	}
+	if a.opts.Optimizations != nil && strings.HasPrefix(strings.ToLower(e.ContentType), "text/html") && e.StatusCode == http.StatusOK {
+		v.Optimized = a.opts.Optimizations(e.Host, e.Path, resp.Body())
 	}
 	if isText(e.ContentType) {
 		body := resp.Body()
