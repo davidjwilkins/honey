@@ -16,6 +16,7 @@
   --miss: #5b8def;
   --bypass: #4a566b;
   --none: #2c3442;
+  --blocked: #a3413a;
   --good: #4cc38a;
   --bad: #ff9b91;
   --bad-line: #a3413a;
@@ -114,6 +115,7 @@ tbody th { font-weight: 500; }
 .r-stale { color: #c9a25a; fill: var(--stale); }
 .r-miss { color: #8fb2f5; fill: var(--miss); }
 .r-bypass { color: var(--muted); fill: var(--bypass); }
+.r-blocked { color: var(--bad); fill: var(--blocked); }
 .r-none { color: var(--muted); fill: var(--none); }
 .events ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font: 13px/1.45 var(--mono); }
 .events li { display: flex; gap: 10px; }

@@ -125,6 +125,13 @@ All the available settings:
 	secret = "a long random string"   # or send this in the secretHeader header
 	secretHeader = "X-Honey-Secret"
 
+	# Protecting WordPress (see below)
+	[security]
+	blockPaths = true            # wp-config.php and backups, .env/.git, logs, dumps, PHP in uploads, the installer
+	xmlrpc = "safe"              # safe: block system.multicall and pingbacks | off: block XML-RPC | on
+	headers = true               # nosniff, referrer policy, no framing of the dashboard, hide software versions
+	hsts = "max-age=31536000"    # for HTTPS responses (default: this, if Honey redirects to HTTPS; "off")
+
 	# Serve HTTPS (HTTP/1.1 and HTTP/2) and HTTP/3 too (off unless auto or
 	# certFile is set; see below)
 	[tls]
@@ -285,6 +292,18 @@ Setting `queryParams` lists the parameters which matter.  Any others are removed
 
 For WordPress, core uses `p`, `page_id`, `s`, `paged`, `cat`, `tag`, `author`, `m`, `year`, `monthnum`, `day`, `post_type`, `cpage`, `replytocom`, `attachment_id` and `ver` (on css and js, so that an upgrade isn't served old cached files) - but check which ones your plugins use, as their parameters will stop working if they aren't listed.
 
+## Protecting WordPress
+
+Honey sees every request before WordPress does, so it turns away the ones which attack almost every WordPress site, before they cost WordPress anything.  These are on by default, with a `403` (and `X-Honey-Cache: BLOCKED`), and the admin page's dashboard lists what was blocked, and who by:
+
+- **Sensitive files** (`blockPaths`): `wp-config.php` and copies of it (`wp-config.php.bak`, `.old`, `~`...), hidden files and directories (`.env`, `.git/`, `.htaccess`; not `.well-known`), logs, editor and database backups (`debug.log`, `.sql`, `.bak`, `.swp`...), the installer (`wp-admin/install.php` and `setup-config.php`: set `blockPaths = false` while installing WordPress through Honey) and `readme.html` (which says WordPress's version).
+- **PHP in uploads** (also `blockPaths`): media uploads should only ever be served as they are, so PHP under `wp-content/uploads` - such as a backdoor uploaded through a vulnerable plugin, or `shell.php.jpg`, which some servers run - never runs.
+- **XML-RPC** (`xmlrpc`): `system.multicall` lets an attacker try hundreds of passwords in one request, and pingbacks can be used to attack other sites, so `"safe"` blocks both, by reading each XML-RPC request (up to 16MB) as WordPress's parser would.  The rest of XML-RPC (e.g. for Jetpack, or the mobile apps) still works.  `"off"` blocks XML-RPC entirely, if nothing uses it.
+- **Security headers** (`headers`): responses get `X-Content-Type-Options: nosniff` and a `Referrer-Policy`, the dashboard and login page can't be framed by other sites (against clickjacking), and the headers which say what the site runs (`Server`, `X-Powered-By`, and `X-Pingback` unless `xmlrpc = "on"`) are removed.  Headers WordPress sets itself are kept.
+- **HSTS** (`hsts`): when Honey serves [HTTPS](#https-and-http3) and redirects plain HTTP to it, HTTPS responses get `Strict-Transport-Security: max-age=31536000`, so browsers only ever use HTTPS for the site.  Behind a proxy which handles HTTPS, set `hsts` to send it there too.
+
+Purges, and the cache warmer's requests, aren't checked.  This is no substitute for keeping WordPress and its plugins up to date: Honey can't see what PHP does with the requests it lets through.
+
 ## Security
 
 A cache serves one visitor's response to everyone, so anything in a request which changes the backend's response, but which isn't part of the cache key, could let one visitor change a page for everyone else (cache poisoning).  Honey's cache key is the method, protocol, host, path and query, the allowed cookies, and the headers the response `Vary`s on.  For requests which may be cached, it also:
@@ -426,6 +445,7 @@ Things which might be worth doing next:
 
 - **Revalidating with the backend:** refresh expired responses with a conditional request (`If-None-Match` / `If-Modified-Since`), so that an unchanged page costs the backend a `304` rather than a full render.
 - **A shared cache** (e.g. Redis), so that several Honey instances behind a load balancer share one cache, and purges reach all of them.
+- **More protection for WordPress:** locking out addresses which keep failing to log in, rate-limiting each visitor's requests which reach WordPress (but not those served from the cache), only allowing the dashboard from some addresses, and blocking addresses which probe for known exploits.
 - **DNS challenges**, so that Honey can get wildcard certificates (`*.example.com`) automatically.
 - **A login for the admin page**, so that it can be served somewhere other than a private address.
 - **Per-route compression settings** (brotli and gzip are site-wide for now).

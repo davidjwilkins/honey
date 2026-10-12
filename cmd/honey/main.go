@@ -27,6 +27,7 @@ import (
 	"github.com/davidjwilkins/honey/config"
 	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/fetch"
+	"github.com/davidjwilkins/honey/guard"
 	"github.com/davidjwilkins/honey/metrics"
 	"github.com/davidjwilkins/honey/serve"
 	"github.com/davidjwilkins/honey/warm"
@@ -316,6 +317,14 @@ func build(cfg *config.Config, started time.Time) *honey {
 			Events:   eventLog,
 		})
 	}
+	// Visitors' requests are guarded; the warmer's and purges' aren't
+	h.handler = guard.Middleware(guard.Options{
+		BlockPaths: cfg.Security.BlockPaths,
+		XMLRPC:     cfg.Security.XMLRPC,
+		Headers:    cfg.Security.Headers,
+		HSTS:       cfg.Security.HSTS,
+		Events:     eventLog,
+	}, h.handler)
 	if recorder != nil {
 		h.handler = recorder.Middleware(h.handler)
 	}

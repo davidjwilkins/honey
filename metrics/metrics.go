@@ -23,6 +23,7 @@ var cacheResults = map[string]string{
 	"MISS (MULTIPLEXED)": "multiplexed",
 	"STALE":              "stale",
 	"NO-CACHE":           "bypass",
+	"BLOCKED":            "blocked",
 }
 
 // backendBuckets are the upper bounds, in seconds, of the backend latency
@@ -267,7 +268,7 @@ func (m *Recorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder
 	m.mu.Lock()
 	counter(&b, "honey_requests_total", "Requests served, by how the cache handled them.", "cache", m.requests,
-		"hit", "miss", "multiplexed", "stale", "bypass", "none")
+		"hit", "miss", "multiplexed", "stale", "bypass", "blocked", "none")
 	counter(&b, "honey_responses_total", "Responses sent, by status code class.", "code", m.responses,
 		"1xx", "2xx", "3xx", "4xx", "5xx")
 	counter(&b, "honey_backend_requests_total", "Requests sent to the backend, by status code class, or error if it didn't respond.", "code", m.backend,
