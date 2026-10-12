@@ -236,6 +236,44 @@ optimized devtools-off "" "Honey, throttled by Chrome"
 optimized devtools-on "$all" "Honey, with all of [optimize], throttled by Chrome"
 LIGHTHOUSE_FLAGS=
 report ""
+
+# The same page with a classic theme, whose stylesheets are linked (block
+# themes like Twenty Twenty-Five put most of their CSS in the page itself,
+# where removeUnusedCSS leaves it), to show what removing unused CSS does
+theme="${CLASSIC_THEME:-oceanwp}"
+for attempt in 1 2 3 4; do
+  if compose run --rm -T cli wp theme install "$theme" --activate >/dev/null 2>&1; then break; fi
+  if [ "$attempt" = 4 ]; then echo "couldn't install $theme" >&2; exit 1; fi
+  sleep $((attempt * 5))
+done
+report "### With a classic theme ($theme $(compose run --rm -T cli wp theme get "$theme" --field=version 2>/dev/null))"
+report ""
+report "| | Performance | First Contentful Paint | Largest Contentful Paint | Total Blocking Time | Speed Index | Layout Shift |"
+report "| --- | --- | --- | --- | --- | --- | --- |"
+optimized classic-off "" "Honey"
+# Each optimization on its own, to show what each does to the page
+for option in delayScripts preloadMainImage selfHostFonts removeUnusedCSS convertImages; do
+  optimized "classic-$option" "$option = true" "Honey, with only $option"
+done
+optimized classic-on "$all" "Honey, with all of [optimize]"
+LIGHTHOUSE_FLAGS=--throttling-method=devtools
+optimized classic-devtools-off "" "Honey, throttled by Chrome"
+optimized classic-devtools-on "$all" "Honey, with all of [optimize], throttled by Chrome"
+LIGHTHOUSE_FLAGS=
+report ""
+report "The CSS the page uses, of each stylesheet it links:"
+report ""
+report "$(python3 - "$page" <<'PY'
+import html, re, sys, urllib.parse, urllib.request
+page = sys.argv[1]
+body = urllib.request.urlopen(page).read().decode()
+for href, used in re.findall(r'<style data-honey-used-css="([^"]*)">(.*?)</style>', body, re.S):
+    href = html.unescape(href)
+    whole = len(urllib.request.urlopen(urllib.request.Request(urllib.parse.urljoin(page, href))).read())
+    print(f"- `{href.split('?')[0].split('/')[-1]}`: {len(used.encode()):,} of {whole:,} bytes ({100 * (1 - len(used.encode()) / whole):.0f}% left out)")
+PY
+)"
+report ""
 report "<details><summary>What made up each Largest Contentful Paint (the median run's), and the fonts, images and stylesheets fetched</summary>"
 report ""
 report "$(cat work/lcp.md)"
