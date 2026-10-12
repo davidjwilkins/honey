@@ -19,13 +19,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/config"
 	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/fetch"
 	"github.com/davidjwilkins/honey/metrics"
 )
 
-//go:embed page.html settings.html admin.css admin.js
+//go:embed page.html settings.html browse.html admin.css admin.js
 var files embed.FS
 
 var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
@@ -36,7 +37,7 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"svg":      svgPercent,
 	"freshFor": freshFor,
 	"int64":    func(n int) int64 { return int64(n) },
-}).ParseFS(files, "page.html", "settings.html"))
+}).ParseFS(files, "page.html", "settings.html", "browse.html"))
 
 // Options configures the admin page.
 type Options struct {
@@ -65,6 +66,10 @@ type Options struct {
 	// Origin is the scheme and host (e.g. https://www.example.com) of
 	// paths tested without them.
 	Origin string
+	// Entries lists the cached responses, most recently used first, and
+	// Entry returns one by its key, for the cache browser, if set.
+	Entries func() []cache.Entry
+	Entry   func(key string) (cache.Entry, cache.Response, bool)
 	// Settings are Honey's settings, as written in its config file, for
 	// the settings page, if set.  The page never changes them: it lets
 	// them be edited and exported as a new config file.
@@ -81,6 +86,8 @@ func Handler(opts Options) http.Handler {
 	mux.HandleFunc("/purge", a.purge)
 	mux.HandleFunc("/count", a.count)
 	mux.HandleFunc("/test", a.test)
+	mux.HandleFunc("/cache", a.browse)
+	mux.HandleFunc("/cache/entry", a.entry)
 	mux.HandleFunc("/settings", a.settings)
 	mux.HandleFunc("/settings/preview", a.settingsPreview)
 	mux.HandleFunc("/settings/export", a.settingsExport)
@@ -182,7 +189,7 @@ type chrome struct {
 	Backend string
 	Hosts   string
 	Uptime  time.Duration
-	// Section is the page's: dashboard, test or settings
+	// Section is the page's: dashboard, cache, test or settings
 	Section string
 }
 
@@ -445,12 +452,7 @@ func (a *admin) page(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v := a.view()
-	if id := r.URL.Query().Get("result"); id != "" {
-		a.mu.Lock()
-		v.outcome = a.results[id]
-		delete(a.results, id)
-		a.mu.Unlock()
-	}
+	v.outcome = a.result(r)
 	a.render(w, "page", v)
 }
 
@@ -503,8 +505,40 @@ func (a *admin) purge(w http.ResponseWriter, r *http.Request) {
 	}
 	a.results[key] = result
 	a.mu.Unlock()
-	// Redirect, so that reloading the page doesn't purge again
-	http.Redirect(w, r, "/?"+url.Values{"result": {key}}.Encode(), http.StatusSeeOther)
+	// Redirect, so that reloading the page doesn't purge again: back to
+	// the page the purge came from, if it says
+	back := returnTo(r.PostFormValue("return"))
+	query := back.Query()
+	query.Set("result", key)
+	back.RawQuery = query.Encode()
+	http.Redirect(w, r, back.String(), http.StatusSeeOther)
+}
+
+// returnTo returns the admin page to go back to after a purge: the one
+// named (one of the pages which can show its result, never another site),
+// or else the dashboard.
+func returnTo(page string) *url.URL {
+	u, err := url.Parse(page)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" ||
+		(u.Path != "/cache" && u.Path != "/cache/entry") {
+		return &url.URL{Path: "/"}
+	}
+	u.Fragment = ""
+	return u
+}
+
+// result returns (once) the outcome of the purge named in r's result
+// parameter, if there is one
+func (a *admin) result(r *http.Request) outcome {
+	id := r.URL.Query().Get("result")
+	if id == "" {
+		return outcome{}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	result := a.results[id]
+	delete(a.results, id)
+	return result
 }
 
 // logPurge logs a purge from the page

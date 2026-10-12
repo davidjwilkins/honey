@@ -58,6 +58,9 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 		responded = true
 	}
 	if responded {
+		if h, ok := resp.(hitCounter); ok {
+			h.CountHit()
+		}
 		header, body := cache.Negotiate(resp, r)
 		for key, values := range header {
 			w.Header()[key] = append([]string(nil), values...)
@@ -108,6 +111,12 @@ func canServeStaleOnError(prev cache.Response, errorCacheControl string) bool {
 		return false
 	}
 	return age-freshnessLifetime(prev) < staleIfError
+}
+
+// hitCounter is implemented by Responses which count how often they're
+// served from the cache
+type hitCounter interface {
+	CountHit()
 }
 
 // expirer is implemented by Responses which can be soft purged

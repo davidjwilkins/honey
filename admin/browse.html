@@ -1,0 +1,163 @@
+{{define "outcome" -}}
+{{with .Purged -}}
+<p class="notice ok" role="status">{{if .Soft}}Expired{{else}}Purged{{end}} {{.Count}} cached response{{if ne .Count 1}}s{{end}} for <span class="mono">{{.Target}}</span>{{if .Prefix}} and everything under it{{end}}{{if .Soft}}: they'll be refreshed the next time they're requested{{end}}.</p>
+{{- end}}
+{{with .Problem -}}
+<p class="notice problem" role="alert">{{.}}</p>
+{{- end}}
+{{- end}}
+
+{{define "cache" -}}
+{{template "head" "Cache"}}
+<main>
+{{template "top" .}}
+<div class="intro">
+  <h1>Cache</h1>
+  <p class="muted">{{count .Total}} cached response{{if ne .Total 1}}s{{end}}{{if ne .Matches .Total}} · {{count .Matches}} match{{if ne .Matches 1}}es{{end}}{{end}} · {{bytes .Bytes}}</p>
+</div>
+{{template "outcome" .}}
+
+<form method="get" action="/cache" class="panel filters">
+  <div class="fieldrow">
+    <div class="field wide">
+      <label for="path">Path</label>
+      <input id="path" name="path" type="search" value="{{.Path}}" placeholder="/blog/ (starts with), or any text" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field narrow-ish">
+      <label for="kind">Kind</label>
+      <select id="kind" name="kind">{{range .Kinds}}<option value="{{.Value}}"{{if eq .Value $.Kind}} selected{{end}}>{{.Label}}</option>{{end}}</select>
+    </div>
+    <div class="field narrow-ish">
+      <label for="state">State</label>
+      <select id="state" name="state">{{range .States}}<option value="{{.Value}}"{{if eq .Value $.State}} selected{{end}}>{{.Label}}</option>{{end}}</select>
+    </div>
+    <div class="field narrow-ish">
+      <label for="sort">Order</label>
+      <select id="sort" name="sort">{{range .Sorts}}<option value="{{.Value}}"{{if eq .Value $.Sort}} selected{{end}}>{{.Label}}</option>{{end}}</select>
+    </div>
+    <button type="submit">Filter</button>
+  </div>
+</form>
+
+{{- if and .Prefix .Matches}}
+<form method="post" action="/purge" class="bulk">
+  <input type="hidden" name="url" value="{{.Path}}">
+  <input type="hidden" name="prefix" value="1">
+  <input type="hidden" name="return" value="{{.Return}}">
+  <span class="muted">Everything under <span class="mono">{{.Path}}</span>, for every host and variant:</span>
+  <button type="submit" name="soft" value="1" class="secondary">Expire (soft)</button>
+  <button type="submit" class="danger">Purge</button>
+</form>
+{{- end}}
+
+{{- if .Entries}}
+<div class="panel table-panel">
+  <div class="scroll">
+    <table class="entries">
+      <thead>
+        <tr>
+          <th scope="col">Path</th>
+          <th scope="col" class="num">Status</th>
+          <th scope="col">State</th>
+          <th scope="col" class="num">Served</th>
+          <th scope="col" class="num">Size</th>
+          <th scope="col" class="num">Fetched</th>
+        </tr>
+      </thead>
+      <tbody>
+      {{- range .Entries}}
+        <tr>
+          <th scope="row"><a href="{{.Link}}" class="mono path">{{.Path}}</a>{{if $.ManyHosts}}<span class="muted host">{{.Host}}</span>{{end}}{{if or (ne .Method "GET") .Variant}}<span class="muted host">{{if ne .Method "GET"}}{{.Method}} {{end}}{{.Variant}}</span>{{end}}</th>
+          <td class="num mono">{{.StatusCode}}</td>
+          <td><span class="state state-{{.State}}">{{.When}}</span></td>
+          <td class="num mono">{{count .Hits}}</td>
+          <td class="num mono">{{bytes (int64 .Bytes)}}</td>
+          <td class="num mono">{{duration .Age}} ago</td>
+        </tr>
+      {{- end}}
+      </tbody>
+    </table>
+  </div>
+  <nav class="pager" aria-label="Pages">
+    <span class="muted">{{count .From}}–{{count .To}} of {{count .Matches}}</span>
+    {{- with .Prev}}<a href="{{.}}">Previous</a>{{end}}
+    {{- with .Next}}<a href="{{.}}">Next</a>{{end}}
+  </nav>
+</div>
+{{- else}}
+<p class="panel muted">{{if .Total}}Nothing cached matches.{{else}}Nothing is cached yet.{{end}}</p>
+{{- end}}
+<footer class="muted">"Served" counts requests answered from the cache since this response was cached. Purges apply to every host and variant of a path.</footer>
+</main>
+</body>
+</html>
+{{- end}}
+
+{{define "entry" -}}
+{{template "head" "Cached response"}}
+<main>
+{{template "top" .}}
+<p><a href="/cache">← Cache</a></p>
+{{template "outcome" .}}
+{{- if .Found}}
+<div class="intro">
+  <h1 class="mono path-title">{{.Path}}</h1>
+  <p class="muted">{{.Method}} {{.URL}}{{with .Variant}} · variant {{.}}{{end}}</p>
+</div>
+
+<div class="split">
+  <div class="side wide-side">
+    <section class="panel">
+      <div class="heading">
+        <h2>{{.StatusCode}}{{with .ContentType}} · {{.}}{{end}}</h2>
+        <span class="state state-{{.State}}">{{.When}}</span>
+      </div>
+      <dl class="facts">
+        <div><dt>Fetched</dt><dd class="mono">{{duration .Age}} ago</dd></div>
+        <div><dt>Fresh for</dt><dd class="mono">{{if .Expired}}0 (soft purged){{else}}{{duration .Lifetime}}{{end}}</dd></div>
+        <div><dt>Then served while refreshing</dt><dd class="mono">{{if .Stale}}{{duration .Stale}}{{else}}no{{end}}</dd></div>
+        <div><dt>Served from the cache</dt><dd class="mono">{{count .Hits}} time{{if ne .Hits 1}}s{{end}}</dd></div>
+        <div><dt>Body</dt><dd class="mono">{{bytes (int64 .Bytes)}}{{if .Brotli}} · br {{bytes (int64 .Brotli)}}{{end}}{{if .Gzip}} · gzip {{bytes (int64 .Gzip)}}{{end}}</dd></div>
+        <div><dt>Memory</dt><dd class="mono">{{bytes .Size}}</dd></div>
+      </dl>
+      <p class="muted small">Kept {{.KeptUntil}}.</p>
+    </section>
+    <section class="panel">
+      <h2>Headers sent to visitors</h2>
+      <pre class="key">{{range .Header}}{{.Name}}: {{.Value}}
+{{end}}</pre>
+      {{- if .Varied}}
+      <h2>Fetched for a request with</h2>
+      <pre class="key">{{range .Varied}}{{.Name}}: {{.Value}}
+{{end}}</pre>
+      <p class="muted small">The headers it Varies on: requests with others get another copy.</p>
+      {{- end}}
+    </section>
+  </div>
+  <section class="panel actions-panel">
+    <h2>Actions</h2>
+    <form method="post" action="/purge" class="actions">
+      <input type="hidden" name="url" value="{{.URL}}">
+      <input type="hidden" name="return" value="{{.Return}}">
+      <button type="submit" name="soft" value="1">Expire (soft)</button>
+      <button type="submit" class="secondary">Purge now</button>
+    </form>
+    <p class="muted small">For every host and variant of this path. Soft keeps serving it while it's refreshed.</p>
+    <p><a href="{{.Test}}">Test this URL</a></p>
+    <p><a href="{{.URL}}" target="_blank" rel="noopener noreferrer">Open the page</a></p>
+  </section>
+</div>
+
+{{- if .Body}}
+<details class="panel body">
+  <summary>Body{{if .Truncated}} (the first 8 KB){{end}}</summary>
+  <pre class="key">{{.Body}}</pre>
+</details>
+{{- end}}
+{{- else}}
+<p class="panel muted">That response isn't in the cache any more: it may have been purged, or evicted to make room.</p>
+{{- end}}
+</main>
+</body>
+</html>
+{{- end}}

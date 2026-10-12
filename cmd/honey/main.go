@@ -309,6 +309,8 @@ func build(cfg *config.Config, started time.Time) *honey {
 				return fetch.Explain(c, cfg.Backend, fetchOpts, r)
 			},
 			Origin:   siteOrigin(cfg),
+			Entries:  c.Entries,
+			Entry:    c.Entry,
 			Settings: cfg.File,
 		})
 	}

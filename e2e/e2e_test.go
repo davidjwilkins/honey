@@ -8,6 +8,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -516,4 +517,28 @@ func TestAdminTestAndSettings(t *testing.T) {
 	contains(t, export.Body, `defaultTTL = "10m"`)
 	contains(t, export.Body, `secret = "e2e-secret-0123456789"`, "the export keeps the secret")
 	contains(t, export.Body, `sitemap = "http://localhost:8080/wp-sitemap.xml"`, "and the settings which weren't changed")
+}
+
+func TestAdminCacheBrowser(t *testing.T) {
+	c := client(nil)
+	_, path := newPost(t, "Browsed on the admin page")
+	cached(t, c, path)
+	get(t, c, path)
+
+	list := get(t, c, adminPage+"/cache?"+url.Values{"path": {path}}.Encode())
+	require.Equal(t, http.StatusOK, list.StatusCode)
+	contains(t, list.Body, `class="mono path">`+path+`<`)
+	link := regexp.MustCompile(`href="(/cache/entry\?key=[^"]+)"`).FindStringSubmatch(list.Body)
+	require.Len(t, link, 2, "the post links to its details")
+
+	entry := get(t, c, adminPage+html.UnescapeString(link[1]))
+	require.Equal(t, http.StatusOK, entry.StatusCode)
+	contains(t, entry.Body, "Browsed on the admin page", "its body is shown")
+	contains(t, entry.Body, "Content-Type: text/html")
+
+	resp := do(t, c, http.MethodPost, adminPage+"/purge",
+		url.Values{"url": {site + path}, "return": {"/cache?path=" + url.QueryEscape(path)}}, "Origin", adminPage)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+	assert.True(t, strings.HasPrefix(resp.Header.Get("Location"), "/cache?"), "the purge returns to the cache browser")
+	contains(t, get(t, c, adminPage+resp.Header.Get("Location")).Body, "Nothing cached matches.")
 }

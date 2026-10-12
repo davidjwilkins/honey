@@ -56,10 +56,17 @@ type responseImpl struct {
 	// cache, and removed is set once it is no longer in the cache
 	loads   atomic.Int64
 	removed atomic.Bool
+	// hits counts how many requests it has been served to from the cache
+	hits atomic.Int64
 	// expired is set by a soft purge: the response is treated as stale
 	// from then on, but it can still be served while it is refreshed (per
 	// stale-while-revalidate) or if the backend fails (per stale-if-error)
 	expired atomic.Bool
+}
+
+// CountHit records that the response was served from the cache.
+func (r *responseImpl) CountHit() {
+	r.hits.Add(1)
 }
 
 // Expired returns whether the response has been soft purged (see

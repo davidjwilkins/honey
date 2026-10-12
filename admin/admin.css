@@ -151,7 +151,7 @@ footer .live { display: inline-flex; align-items: center; gap: 6px; margin-right
 .intro h1 { margin: 0; font-size: 24px; font-weight: 600; }
 .small { font-size: 13px; }
 label { font-size: 13px; color: var(--muted); }
-input[type=text], input[type=password], select, textarea {
+input[type=text], input[type=search], input[type=password], select, textarea {
   box-sizing: border-box; width: 100%; min-height: 44px; padding: 0 12px;
   background: var(--bg); color: var(--text); border: 1px solid var(--control); border-radius: 6px;
   font: 14px var(--mono);
@@ -209,3 +209,27 @@ button.secondary:hover { background: var(--line); }
 @media (max-width: 900px) {
   .changes { position: static; max-height: none; }
 }
+
+/* The cache browser */
+.field.narrow-ish { flex: 1 1 150px; }
+.bulk { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 14px; }
+.bulk button { height: 40px; }
+.table-panel { padding: 0; gap: 0; }
+.entries { min-width: 720px; }
+.entries th, .entries td { padding: 10px 14px; }
+.entries th:first-child, .entries td:first-child { padding-left: 18px; }
+.entries th:last-child, .entries td:last-child { padding-right: 18px; }
+.entries tbody th { max-width: 420px; }
+.path { overflow-wrap: anywhere; }
+.host { display: block; font-size: 12px; font-weight: 400; }
+.state { font-size: 13px; }
+.state-fresh { color: #8fe0b0; }
+.state-stale, .state-expired { color: var(--accent-hover); }
+.state-old { color: var(--muted); }
+.pager { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; padding: 12px 18px; border-top: 1px solid var(--line); font-size: 14px; }
+.path-title { font-size: 20px; overflow-wrap: anywhere; }
+.wide-side { flex: 3 1 520px; }
+.actions-panel { flex: 1 1 260px; }
+.actions-panel p { font-size: 14px; }
+.body summary { cursor: pointer; font-weight: 600; }
+.body pre { max-height: 480px; overflow: auto; }
