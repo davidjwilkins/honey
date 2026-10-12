@@ -342,5 +342,6 @@ Things which might be worth doing next:
 - **TLS termination** with automatic certificates (e.g. Let's Encrypt), so that Honey can face the internet without another proxy in front.
 - **A login for the admin page**, so that it can be served somewhere other than a private address.
 - **Per-route compression settings** (brotli and gzip are site-wide for now).
+- **Edge Side Includes (ESI):** cache pages with `<esi:include src="...">` tags in place of the parts which differ between visitors (e.g. a cart summary, or "Howdy, admin"), and fetch and cache each of those parts separately, so that pages for logged in users and shoppers can mostly be served from the cache too.  WordPress would have to output the tags, which few plugins do.
 
 Dropped from the original list: HTTP/2 server push (browsers have removed it), rewriting popular JavaScript libraries to public CDNs (no faster since browsers stopped sharing caches between sites, and it leaks visitors to the CDN), minifying HTML, CSS and JS (risky, and brotli gets most of the benefit), and other page rewriting (fixing mixed content, combining Google Fonts requests, a cookieless asset domain, hotlink protection, an offline cache), which is better done in WordPress or a CDN.
