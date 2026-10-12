@@ -7,8 +7,10 @@ import (
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/metrics"
 )
 
@@ -28,21 +31,30 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"duration": formatDuration,
 	"percent":  formatPercent,
 	"count":    formatCount,
+	"svg":      svgPercent,
 }).ParseFS(files, "page.html"))
 
 // Options configures the admin page.
 type Options struct {
-	// Version and Backend are shown at the top of the page
+	// Version, Backend and Hosts (the hosts served, if not every host) are
+	// shown at the top of the page
 	Version string
 	Backend string
+	Hosts   []string
 	// Started is when Honey started
 	Started time.Time
 	// Metrics are the counts shown, and served at /metrics
 	Metrics *metrics.Recorder
+	// Events are the recent events shown, if set.  Purges from the page
+	// are logged to it.
+	Events *events.Log
 	// Purge removes the cached responses for a URL or path - or, if prefix
 	// is set, every URL starting with it - and returns how many it removed.
 	// With soft, it expires them instead (see fetch.Purger).
 	Purge func(rawURL string, prefix, soft bool) (int, error)
+	// Count returns how many cached responses Purge would remove, if set
+	// (see fetch.Counter), so that the page can say before purging.
+	Count func(rawURL string, prefix bool) (int, error)
 }
 
 // Handler returns the admin page's handler.  As well as the page, it
@@ -53,6 +65,7 @@ func Handler(opts Options) http.Handler {
 	mux.HandleFunc("/", a.page)
 	mux.HandleFunc("/stats", a.stats)
 	mux.HandleFunc("/purge", a.purge)
+	mux.HandleFunc("/count", a.count)
 	mux.Handle("/admin.css", static("admin.css", "text/css; charset=utf-8"))
 	mux.Handle("/admin.js", static("admin.js", "text/javascript; charset=utf-8"))
 	pages := browserOnly(mux)
@@ -149,6 +162,7 @@ func static(name, contentType string) http.Handler {
 type view struct {
 	Version string
 	Backend string
+	Hosts   string
 	Uptime  time.Duration
 
 	Entries  int
@@ -156,22 +170,68 @@ type view struct {
 	MaxBytes int64
 	Full     float64 // how full the cache is, from 0 to 1
 
-	Requests    uint64
-	HitRatio    float64 // of all requests, served from the cache
-	Results     []result
-	Backend5xx  uint64 // backend requests which failed, or errored
-	BackendReqs uint64
-	AvgBackend  time.Duration
-	InFlight    int64
+	Requests uint64
+	HitRatio float64 // of all requests, served from the cache
+	Trend    trend   // of the hit ratio over the last hour
+	Results  []result
+
+	BackendReqs   uint64
+	P50, P95, P99 string // how long the backend takes to respond
+	Histogram     []bar
+	// HistogramWidth is the width of the histogram's box: barWidth for
+	// each bar
+	HistogramWidth int
+	InFlight       int64
+	Backend5xx     uint64 // backend requests which failed, or errored
+	LastError      string // the last of them, and when
+	RecentError    bool   // whether it was in the last hour
+
+	Events []event
 
 	// The result of a purge, if there was one
 	outcome
 }
 
 type result struct {
-	Name, Help string
-	Count      uint64
-	Share      float64
+	Name, Class, Help string
+	Count             uint64
+	Share             float64
+	Offset            float64 // the shares of the results before it
+}
+
+// trend is a sparkline of the hit ratio, drawn in a trendWidth x
+// trendHeight box: one polyline per run of minutes with requests
+type trend struct {
+	Lines    []string
+	Min, Max float64
+	Enough   bool // whether there are at least two minutes to draw
+	Hour     bool // whether it covers the whole hour, not just since Honey started
+}
+
+const (
+	trendWidth  = 240
+	trendHeight = 48
+)
+
+// bar is a bucket of the backend latency histogram
+type bar struct {
+	Label  string // under the bar
+	Range  string // what the bar counts, e.g. "up to 25ms"
+	Count  uint64
+	Height float64 // as a share of the tallest bar, from 0 to 1
+	Top    float64 // 1 - Height
+	X      int     // where it starts, in a box barWidth wide for each bar
+	Slow   bool
+}
+
+// barWidth is the width of a histogram bar, and the gap after it
+const barWidth = 10
+
+type event struct {
+	Time  string
+	Kind  string
+	Text  string
+	Count int
 }
 
 type purged struct {
@@ -181,36 +241,53 @@ type purged struct {
 	Count  int
 }
 
+// results are the rows of the requests table, by their honey_requests_total
+// label, named after their X-Honey-Cache header
+var results = []result{
+	{Name: "HIT", Class: "hit", Help: "from the cache"},
+	{Name: "MULTIPLEXED", Class: "multiplexed", Help: "waited for another visitor's fetch"},
+	{Name: "STALE", Class: "stale", Help: "old copy, while it's refreshed or the backend fails"},
+	{Name: "MISS", Class: "miss", Help: "fetched from the backend, and cached"},
+	{Name: "NO-CACHE", Class: "bypass", Help: "logged in, admin, personal or uncacheable"},
+	{Name: "OTHER", Class: "none", Help: "purges, other hosts and errors"},
+}
+
 func (a *admin) view() view {
-	v := view{Version: a.opts.Version, Backend: a.opts.Backend, Uptime: time.Since(a.opts.Started)}
+	v := view{
+		Version: a.opts.Version,
+		Backend: a.opts.Backend,
+		Hosts:   strings.Join(a.opts.Hosts, ", "),
+		Uptime:  time.Since(a.opts.Started),
+	}
+	for _, e := range a.opts.Events.Recent(12) {
+		v.Events = append(v.Events, event{Time: formatTime(e.Time), Kind: string(e.Kind), Text: e.Text, Count: e.Count})
+	}
 	if a.opts.Metrics == nil {
 		return v
 	}
 	s := a.opts.Metrics.Snapshot()
 	v.Entries, v.Bytes, v.MaxBytes = s.Entries, s.Bytes, s.MaxBytes
 	if v.MaxBytes > 0 {
-		v.Full = float64(v.Bytes) / float64(v.MaxBytes)
+		v.Full = math.Min(float64(v.Bytes)/float64(v.MaxBytes), 1)
 	}
 	for _, count := range s.Requests {
 		v.Requests += count
 	}
-	for _, r := range []result{
-		{Name: "hit", Help: "Served from the cache"},
-		{Name: "multiplexed", Help: "Waited for another request's backend response"},
-		{Name: "stale", Help: "Served stale while refreshing, or because the backend failed"},
-		{Name: "miss", Help: "Fetched from the backend, and cached"},
-		{Name: "bypass", Help: "Not cacheable (e.g. logged in, or a route with cache = false)"},
-		{Name: "none", Help: "Purges and errors"},
-	} {
-		r.Count = s.Requests[r.Name]
+	var offset float64
+	for _, r := range results {
+		r.Count = s.Requests[r.Class]
 		if v.Requests > 0 {
 			r.Share = float64(r.Count) / float64(v.Requests)
 		}
+		r.Offset = offset
+		offset += r.Share
 		v.Results = append(v.Results, r)
 	}
 	if v.Requests > 0 {
 		v.HitRatio = float64(s.Requests["hit"]+s.Requests["multiplexed"]+s.Requests["stale"]) / float64(v.Requests)
 	}
+	v.Trend = hitTrend(sinceStart(s.History, a.opts.Started))
+
 	for class, count := range s.Backend {
 		v.BackendReqs += count
 		if class == "5xx" || class == "error" {
@@ -218,10 +295,113 @@ func (a *admin) view() view {
 		}
 	}
 	if v.BackendReqs > 0 {
-		v.AvgBackend = s.BackendLatency / time.Duration(v.BackendReqs)
+		v.P50, v.P95, v.P99 = quantile(s, 0.5), quantile(s, 0.95), quantile(s, 0.99)
 	}
+	v.Histogram = histogram(s.BackendBuckets)
+	v.HistogramWidth = len(v.Histogram) * barWidth
 	v.InFlight = s.BackendInFlight
+	if e := s.LastBackendError; e != nil {
+		what := e.Err
+		if e.Status != 0 {
+			what = fmt.Sprintf("%d", e.Status)
+		}
+		v.LastError = fmt.Sprintf("latest: %s for %s, %s ago", what, e.Path, formatDuration(time.Since(e.Time).Round(time.Second)))
+		v.RecentError = time.Since(e.Time) < time.Hour
+	}
 	return v
+}
+
+// sinceStart returns the minutes of history from the one Honey started in
+func sinceStart(history []metrics.Minute, started time.Time) []metrics.Minute {
+	first := started.Truncate(time.Minute)
+	for i, m := range history {
+		if !m.Start.Before(first) {
+			return history[i:]
+		}
+	}
+	return nil
+}
+
+// hitTrend draws the share of each minute's requests served from the
+// cache.  The scale starts a little below the lowest share, as it is
+// usually high, and the changes are what matter.
+func hitTrend(history []metrics.Minute) trend {
+	t := trend{Min: 1, Max: 1}
+	points := 0
+	for _, m := range history {
+		if m.Requests > 0 {
+			t.Min = math.Min(t.Min, float64(m.FromCache)/float64(m.Requests))
+			points++
+		}
+	}
+	t.Enough = points >= 2
+	t.Hour = len(history) >= 60
+	if !t.Enough {
+		return t
+	}
+	low := math.Max(0, math.Min(t.Min-0.02, t.Max-0.05))
+	step := float64(trendWidth) / float64(len(history)-1)
+	var line []string
+	for i, m := range history {
+		if m.Requests == 0 {
+			if len(line) > 0 {
+				t.Lines = append(t.Lines, strings.Join(line, " "))
+				line = nil
+			}
+			continue
+		}
+		share := float64(m.FromCache) / float64(m.Requests)
+		y := 4 + (t.Max-share)/(t.Max-low)*float64(trendHeight-8)
+		line = append(line, fmt.Sprintf("%.1f,%.1f", float64(i)*step, y))
+	}
+	if len(line) > 0 {
+		t.Lines = append(t.Lines, strings.Join(line, " "))
+	}
+	return t
+}
+
+// quantile formats the q quantile of the backend's response times
+func quantile(s metrics.Snapshot, q float64) string {
+	d, over := s.BackendQuantile(q)
+	if over {
+		return "over " + formatDuration(d)
+	}
+	return formatDuration(d)
+}
+
+// histogram returns a bar for each of the backend latency buckets
+func histogram(buckets []uint64) []bar {
+	bounds := metrics.BackendBuckets()
+	var tallest uint64
+	for _, count := range buckets {
+		if count > tallest {
+			tallest = count
+		}
+	}
+	bars := make([]bar, len(buckets))
+	for i, count := range buckets {
+		b := bar{Count: count}
+		if i < len(bounds) {
+			b.Label = shortDuration(bounds[i])
+			b.Range = "up to " + b.Label
+			b.Slow = bounds[i] > time.Second
+		} else {
+			b.Label = shortDuration(bounds[len(bounds)-1]) + "+"
+			b.Range = "over " + shortDuration(bounds[len(bounds)-1])
+			b.Slow = true
+		}
+		if tallest > 0 {
+			b.Height = float64(count) / float64(tallest)
+			if count > 0 {
+				// so that a few slow requests still show
+				b.Height = math.Max(b.Height, 0.02)
+			}
+		}
+		b.Top = 1 - b.Height
+		b.X = i*barWidth + 1
+		bars[i] = b
+	}
+	return bars
 }
 
 func (a *admin) page(w http.ResponseWriter, r *http.Request) {
@@ -279,6 +459,7 @@ func (a *admin) purge(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		result.Purged = &purged{Target: target, Prefix: prefix, Soft: soft, Count: count}
+		a.logPurge(*result.Purged)
 	}
 	id := make([]byte, 16)
 	rand.Read(id)
@@ -294,6 +475,72 @@ func (a *admin) purge(w http.ResponseWriter, r *http.Request) {
 	a.mu.Unlock()
 	// Redirect, so that reloading the page doesn't purge again
 	http.Redirect(w, r, "/?"+url.Values{"result": {key}}.Encode(), http.StatusSeeOther)
+}
+
+// logPurge logs a purge from the page
+func (a *admin) logPurge(p purged) {
+	mode := "purged"
+	if p.Soft {
+		mode = "soft purged"
+	}
+	target := p.Target
+	if p.Prefix {
+		target += " and everything under it"
+	}
+	responses := "responses"
+	if p.Count == 1 {
+		responses = "response"
+	}
+	a.opts.Events.Add(events.Purge, "", 0, events.Text(fmt.Sprintf("%s %s · %d %s · from the admin page", mode, target, p.Count, responses)))
+}
+
+// count says how many cached responses a purge would remove, as JSON:
+// {"count": 38}, or {"error": "..."}
+func (a *admin) count(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var body struct {
+		Count *int   `json:"count,omitempty"`
+		Error string `json:"error,omitempty"`
+	}
+	target := strings.TrimSpace(r.URL.Query().Get("url"))
+	switch {
+	case a.opts.Count == nil:
+		body.Error = "this cache can't count its responses"
+	case target == "":
+		body.Error = "enter a URL or path"
+	default:
+		count, err := a.opts.Count(target, r.URL.Query().Get("prefix") != "")
+		if err != nil {
+			body.Error = err.Error()
+		} else {
+			body.Count = &count
+		}
+	}
+	json.NewEncoder(w).Encode(body)
+}
+
+// formatTime formats when an event happened: the time of day if it was
+// today, or the date too if it wasn't
+func formatTime(t time.Time) string {
+	now := time.Now()
+	if y, m, d := t.Date(); y == now.Year() && m == now.Month() && d == now.Day() {
+		return t.Format("15:04:05")
+	}
+	return t.Format("2 Jan 15:04")
+}
+
+// shortDuration formats a round duration, e.g. 25ms or 2.5s
+func shortDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	return strconv.FormatFloat(d.Seconds(), 'f', -1, 64) + "s"
+}
+
+// svgPercent formats a share (from 0 to 1) as a percentage, for SVG
+// lengths
+func svgPercent(share float64) string {
+	return strconv.FormatFloat(math.Max(0, math.Min(share, 1))*100, 'f', 2, 64) + "%"
 }
 
 func formatBytes(n int64) string {

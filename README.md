@@ -247,7 +247,14 @@ Some things are up to you:
 
 ## Admin page
 
-With `[admin] listen` set, that address serves a page showing how the cache is doing - its hit ratio, how full it is, how each request was handled, and how quickly the backend responds - with a form to purge a URL, everything under a path, or the whole cache.  It refreshes itself every few seconds.  `/metrics` is served there too.
+With `[admin] listen` set, that address serves a page showing how the cache is doing, which refreshes itself every few seconds:
+
+- how many requests are served from the cache, and how that has gone each minute over the last hour
+- how quickly the backend responds (median, 95th and 99th percentiles, and a histogram), and its errors
+- how full the cache is, and how each request was handled
+- recent events: purges (with where they came from, a burst of them from WordPress shown as one), warming the cache, backend errors, requests for other hosts turned away, and pages which aren't cached because they set a cookie
+
+and a bar to purge a URL or everything under a path - softly or not - which says how many cached responses it will remove as you type, or to purge the whole cache.  `/metrics` is served there too.
 
 It has no login, so only listen on a private address, e.g. `127.0.0.1:9090`, and reach it with an SSH tunnel (`ssh -L 9090:127.0.0.1:9090 your-server`, then open http://localhost:9090/).  To protect it from other websites you visit, it is only served for an IP address or `localhost` (not a hostname, so that a site can't point its own hostname at it), its forms only accept posts from the page itself, and it can't be framed.  With Docker, listen on `":9090"` inside the container and publish it to the host's loopback only: `-p 127.0.0.1:9090:9090`.
 

@@ -24,6 +24,7 @@ import (
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/clientip"
 	"github.com/davidjwilkins/honey/config"
+	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/fetch"
 	"github.com/davidjwilkins/honey/metrics"
 	"github.com/davidjwilkins/honey/warm"
@@ -54,8 +55,12 @@ func main() {
 		if err != nil {
 			// Start anyway: the cache will fill up again
 			log.Printf("loading the cache: %v", err)
+			h.events.Add(events.Error, "", 0, events.Text(fmt.Sprintf("couldn't load the cache: %v", err)))
 		}
 		log.Printf("loaded %d cached responses from %s", loaded, cfg.Cache.Persist)
+		h.events.Add(events.Info, "", 0, events.Text(fmt.Sprintf("started, with %d cached responses from %s", loaded, cfg.Cache.Persist)))
+	} else {
+		h.events.Add(events.Info, "", 0, events.Text("started"))
 	}
 	stopPersisting := persistEvery(cacher, cfg.Cache.Persist, cfg.Cache.PersistInterval)
 	server := &http.Server{
@@ -185,6 +190,8 @@ type honey struct {
 	cacher snapshotter
 	// warmer warms the cache from the sitemap, if it is on
 	warmer *warm.Warmer
+	// events are what the admin page shows has happened, if it is on
+	events *events.Log
 }
 
 // newHandler builds the caching proxy described by cfg.
@@ -195,6 +202,11 @@ func newHandler(cfg *config.Config) http.Handler {
 // build builds the caching proxy described by cfg, which started at
 // started.
 func build(cfg *config.Config, started time.Time) *honey {
+	// What's worth knowing about, for the admin page
+	var eventLog *events.Log
+	if cfg.AdminListen != "" {
+		eventLog = events.New(events.DefaultMax)
+	}
 	c := cache.NewCacher(cache.Options{
 		MaxBytes:             cfg.Cache.MaxBytes,
 		MaxObjectBytes:       cfg.Cache.MaxObjectBytes,
@@ -208,6 +220,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 		BypassCookies:        cfg.Cache.BypassCookies,
 		StripCookies:         cfg.Cache.StripCookies,
 		BrowserCacheControl:  cfg.Cache.BrowserCacheControl,
+		Events:               eventLog,
 	})
 	for _, name := range cfg.Cache.AllowedCookies {
 		c.AddAllowedCookie(name)
@@ -243,14 +256,16 @@ func build(cfg *config.Config, started time.Time) *honey {
 			maxBytes = cache.DefaultMaxBytes
 		}
 		recorder = metrics.New(c.Stats, maxBytes)
+		recorder.LogTo(eventLog)
 		transport = recorder.Transport(transport)
 	}
-	h := &honey{metrics: recorder, cacher: c}
+	h := &honey{metrics: recorder, cacher: c, events: eventLog}
 	fetchOpts := fetch.Options{
 		Control:     control,
 		QueryParams: cfg.Cache.QueryParams,
 		BackendHost: cfg.BackendHost,
 		Hosts:       cfg.Hosts,
+		Events:      eventLog,
 		OnPurge: func(path string, prefix, soft bool) {
 			// Everything has been purged: fill the cache again
 			if h.warmer != nil && prefix && path == "/" {
@@ -267,6 +282,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 			Rate:     cfg.Warm.Rate,
 			MaxPages: cfg.Warm.MaxPages,
 			Interval: cfg.Warm.Interval,
+			Events:   eventLog,
 		})
 	}
 	if recorder != nil {
@@ -282,9 +298,12 @@ func build(cfg *config.Config, started time.Time) *honey {
 		h.admin = admin.Handler(admin.Options{
 			Version: version,
 			Backend: cfg.Backend.String(),
+			Hosts:   cfg.Hosts,
 			Started: started,
 			Metrics: recorder,
+			Events:  eventLog,
 			Purge:   fetch.Purger(c, cfg.Backend, fetchOpts),
+			Count:   fetch.Counter(c, cfg.Backend, fetchOpts),
 		})
 	}
 	return h

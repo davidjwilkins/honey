@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/davidjwilkins/honey/events"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -164,4 +166,28 @@ func TestSnapshotSkipsResponsesWhichShouldntBeStored(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, loaded)
 	assert.Equal(t, "Hello", string(load(t, c, public).Body()))
+}
+
+func TestUnknownCookiesAreLoggedOnce(t *testing.T) {
+	log := events.New(10)
+	c := NewCacher(Options{Events: log})
+	r := newValidRequest("https://www.example.com/contact/")
+	for i := 0; i < 3; i++ {
+		c.StartsSession(response(r, http.Header{"Set-Cookie": {"PHPSESSID=abc; Path=/"}}))
+	}
+	recent := log.Recent(10)
+	require.Len(t, recent, 1)
+	assert.Equal(t, events.Notice, recent[0].Kind)
+	assert.Equal(t, "not caching pages which set the cookie PHPSESSID, e.g. /contact/: if it isn't personal, add it to cache.stripCookies", recent[0].Text)
+}
+
+func TestCount(t *testing.T) {
+	c := NewCacher(Options{})
+	for _, page := range []string{"https://www.example.com/blog/a", "https://www.example.com/blog/b", "https://www.example.com/about"} {
+		cachePage(t, c, page, "x", http.Header{})
+	}
+	u, _ := url.Parse("/blog/")
+	assert.Equal(t, 2, c.Count(u, true))
+	assert.Equal(t, 0, c.Count(u, false))
+	assert.Equal(t, 2, c.Purge(u, true), "it counts what Purge removes")
 }

@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/davidjwilkins/honey/events"
 )
 
 // Defaults for Options
@@ -41,6 +43,9 @@ type Options struct {
 	Interval time.Duration
 	// Logger logs what is warmed.  Defaults to the standard logger.
 	Logger *log.Logger
+	// Events, if set, is where each warming is logged, e.g. for the admin
+	// page.
+	Events *events.Log
 }
 
 // Warmer requests the pages in a sitemap from a handler (the cache), so
@@ -115,6 +120,7 @@ func (w *Warmer) Warm(ctx context.Context) Result {
 		w.opts.Logger.Printf("warming the cache: %v", err)
 		result.Errors++
 		if len(pages) == 0 {
+			w.opts.Events.Add(events.Error, "", 0, events.Text(fmt.Sprintf("couldn't warm the cache: %v", err)))
 			return result
 		}
 	}
@@ -139,8 +145,15 @@ func (w *Warmer) Warm(ctx context.Context) Result {
 			result.Cached++
 		}
 	}
+	took := time.Since(start).Round(time.Millisecond)
 	w.opts.Logger.Printf("warmed the cache in %s: %d pages, %d of them already cached, %d errors",
-		time.Since(start).Round(time.Millisecond), result.Pages, result.Cached, result.Errors)
+		took, result.Pages, result.Cached, result.Errors)
+	kind := events.Warm
+	if result.Errors > 0 {
+		kind = events.Error
+	}
+	w.opts.Events.Add(kind, "", 0, events.Text(fmt.Sprintf("warmed %d pages from the sitemap in %s · %d already cached · %d errors",
+		result.Pages, took, result.Cached, result.Errors)))
 	return result
 }
 
