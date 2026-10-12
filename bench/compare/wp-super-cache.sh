@@ -4,6 +4,23 @@
 # would (run in the cli container; it's downloaded from wordpress.org)
 set -eu
 cd /var/www/html
+config=wp-content/wp-cache-config.php
+# Sets a variable in its config, adding it after "<?php" if it isn't there
+set_var() {
+  if grep -q "^\$$1 *=" "$config"; then
+    sed -i "s|^\$$1 *=.*;|\$$1 = $2;|" "$config"
+  else
+    sed -i "1a \$$1 = $2;" "$config"
+  fi
+}
+if [ "${1:-on}" = debug ]; then
+  # Its debug log, so that the comparison can show what it does (after
+  # it's been timed, as logging slows it down)
+  set_var wp_super_cache_debug 1
+  set_var wp_cache_debug_log "'wpsc-debug.php'"
+  set_var wp_cache_debug_ip "''"
+  exit 0
+fi
 if [ "${1:-on}" = off ]; then
   wp plugin deactivate wp-super-cache >/dev/null
   wp config set WP_CACHE false --raw >/dev/null
@@ -28,7 +45,6 @@ if ( defined( 'WPCACHEHOME' ) ) {
 	include_once WPCACHEHOME . 'wp-cache-phase1.php';
 }
 PHP
-config=wp-content/wp-cache-config.php
 if [ ! -f "$config" ]; then
   if [ -f "$home/wp-cache-config-sample.php" ]; then
     cp "$home/wp-cache-config-sample.php" "$config"
@@ -36,14 +52,6 @@ if [ ! -f "$config" ]; then
     echo '<?php' > "$config"
   fi
 fi
-# Sets a variable in its config, adding it after "<?php" if it isn't there
-set_var() {
-  if grep -q "^\$$1 *=" "$config"; then
-    sed -i "s|^\$$1 *=.*;|\$$1 = $2;|" "$config"
-  else
-    sed -i "1a \$$1 = $2;" "$config"
-  fi
-}
 set_var cache_enabled true
 set_var super_cache_enabled true
 set_var wp_cache_mod_rewrite 0

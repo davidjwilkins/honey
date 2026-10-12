@@ -78,14 +78,23 @@ if [ "${WP_SUPER_CACHE:-1}" = 1 ]; then
   compose run --rm -T cli sh /wp-super-cache.sh >&2
   load wordpress -d 3s -paths "$pages" >/dev/null
   report "$(load wordpress -d "$duration" -paths "$pages" -cache-header WP-Super-Cache | row "WP Super Cache (simple mode)")"
-  # Whether its pages really were cached: its header, and its comments
-  tail="$(compose run --rm -T --entrypoint wget load -S -qO- --header 'Host: localhost:8080' --header 'Accept-Encoding: gzip' http://wordpress/post-1/ 2>&1 | grep -ai 'wp-super-cache\|content-encoding\|super cache\|cached page' | tr -s ' \n' ' ')"
+  # Whether its pages really were cached: its headers and comments, its
+  # cache files and its debug log
+  compose run --rm -T cli sh /wp-super-cache.sh debug >&2
+  compose run --rm -T --entrypoint sh load -c "wget -S -O /tmp/page --header 'Host: localhost:8080' http://wordpress/post-1/ 2>&1 | grep -i 'HTTP/\|cache\|encoding'; tail -c 300 /tmp/page" > work/wpsc-check.txt 2>&1 || true
+  compose run --rm -T cli sh -c "ls -R wp-content/cache | head -30; grep -E '^\\\$(cache_enabled|super_cache_enabled|wp_cache_mod_rewrite|cache_compression|wp_super_cache_late_init|wp_cache_not_logged_in|wp_super_cache_debug)' wp-content/wp-cache-config.php; tail -40 wp-content/cache/wpsc-debug.php 2>/dev/null" >> work/wpsc-check.txt 2>&1 || true
+  tail="see the details below"
 fi
 load honey:8080 -d 3s -paths "$pages" >/dev/null
 report "$(load honey:8080 -d "$duration" -paths "$pages" | row "Honey")"
 report ""
 if [ -n "${tail:-}" ]; then
-  report "WP Super Cache's response to a request for /post-1/ (its headers and comments): \`$tail\`"
+  report "<details><summary>WP Super Cache's response to /post-1/, cache files, settings and debug log</summary>"
+  report ""
+  report '```'
+  report "$(cat work/wpsc-check.txt)"
+  report '```'
+  report "</details>"
   report ""
 fi
 
