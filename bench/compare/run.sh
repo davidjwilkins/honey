@@ -256,6 +256,10 @@ for option in delayScripts preloadMainImage selfHostFonts removeUnusedCSS conver
   optimized "classic-$option" "$option = true" "Honey, with only $option"
 done
 optimized classic-on "$all" "Honey, with all of [optimize]"
+LIGHTHOUSE_FLAGS=--throttling-method=devtools
+optimized classic-devtools-off "" "Honey, throttled by Chrome"
+optimized classic-devtools-on "$all" "Honey, with all of [optimize], throttled by Chrome"
+LIGHTHOUSE_FLAGS=
 report ""
 report "The CSS the page uses, of each stylesheet it links:"
 report ""
