@@ -541,7 +541,7 @@ Against other caches, on the same WordPress (a GitHub Actions runner, with compr
 | WP Super Cache | 1,287 | 36ms | 108ms |
 | Honey | 19,858 | 1.9ms | 11ms |
 
-While a post is being edited, WP Super Cache's slowest requests take seconds (they wait for WordPress), and Honey's 141ms.  With [`[optimize]`](#optimizing-pages), Lighthouse scores a post with Google Analytics, the Meta pixel and Hotjar 99-100, with no Total Blocking Time, and (with Chrome throttled like a phone on 4G) its main image shown 360ms sooner; removing unused CSS shows the page first 300ms sooner.  See [`bench`](bench#against-other-caches) for how they're measured, and the caveats.
+While a post is being edited, WP Super Cache's slowest requests take seconds (they wait for WordPress), and Honey's 141ms.  With all of [`[optimize]`](#optimizing-pages), Lighthouse scores a post with a featured image, Google Analytics, the Meta pixel and Hotjar 100, with no Total Blocking Time, and (with Chrome throttled like a phone on 4G) shows it first in half the time, and its featured image (converted to AVIF, a quarter of the size) 210ms sooner.  See [`bench`](bench#against-other-caches) for how they're measured, and the caveats.
 
 ### Memory
 

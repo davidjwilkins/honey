@@ -117,24 +117,32 @@ is closer to what a phone sees:
 
 | | Performance | First Contentful Paint | Largest Contentful Paint | Total Blocking Time |
 | --- | --- | --- | --- | --- |
-| Honey (simulated) | 94-98 | 1.35s | 1.80s | 113-275ms |
-| Honey, with `delayScripts`, `preloadMainImage` and `selfHostFonts` (simulated) | 99 | 1.35s | 1.95s | 0ms |
-| ... and `removeUnusedCSS` (simulated) | 99 | 1.05s | 1.95s | 0ms |
-| Honey (throttled by Chrome) | 92 | 1.22s | 2.03s | 318ms |
-| Honey, with `delayScripts`, `preloadMainImage` and `selfHostFonts` (throttled by Chrome) | 100 | 1.22s | 1.67s | 0ms |
+| Honey (simulated) | 94 | 1.36s | 1.95s | 276ms |
+| Honey, with `delayScripts`, `preloadMainImage` and `selfHostFonts` (simulated) | 99 | 1.35-1.65s | 1.95s | 0ms |
+| ... and `removeUnusedCSS` (simulated) | 100 | 1.05s | 1.80s | 0ms |
+| ... and `convertImages` (simulated) | 100 | 1.05s | 1.65s | 0ms |
+| Honey (throttled by Chrome) | 95 | 1.22s | 1.57s | 260ms |
+| Honey, with all of `[optimize]` (throttled by Chrome) | 100 | 0.65s | 1.36s | 0ms |
 
-Delaying the third-party scripts takes Total Blocking Time to nothing,
-and removing unused CSS shows the page 300ms sooner.
+Delaying the third-party scripts takes Total Blocking Time to nothing;
+removing unused CSS shows the page 300ms sooner; and converting images
+makes the featured image a quarter of the size (the 768 pixel wide copy
+phones load is 24.6KB as a JPEG, and 5.7KB as AVIF; the full size one,
+165KB and 67KB), showing it 150ms sooner.  With Chrome throttled, all of
+`[optimize]` shows the page first in half the time, and its main image
+210ms sooner.
 
-With Chrome throttled, `[optimize]` shows the page's main image 360ms
-sooner, as it isn't waiting on connections to Google or on the
-third-party scripts.  Simulated, it's 150ms later: Lighthouse's
-simulation counts what started before the main image was shown in the
-fast load as holding it up, and with `selfHostFonts` the font starts
-sooner (from the site itself, rather than after connecting to two of
-Google's), so it's counted.  The image itself loads no slower: what grows
-is the delay between it loading and being shown, and only with
-`selfHostFonts` (with each setting on its own, `delayScripts` and
-`preloadMainImage` leave it at 1.80s).  The comparison reports what makes
-up each Largest Contentful Paint, and the fonts, images and stylesheets
-fetched.
+Simulated, `selfHostFonts` can make the Largest Contentful Paint look
+later than it is: in earlier runs it was 150ms later with it, though
+with Chrome throttled it was 360ms sooner.  Lighthouse's simulation
+counts what started before the main image was shown in the fast load as
+holding it up, and the self-hosted font starts sooner (from the site
+itself, rather than after connecting to two of Google's), so it's
+counted; the image itself loads no slower.  The comparison reports what
+makes up each Largest Contentful Paint, and the fonts, images and
+stylesheets fetched.
+
+(The featured image is generated: soft light, hills and fine grain, so
+that it compresses as a photo does.  Before October 2026's image
+conversion, it was random noise, which no format compresses, so the
+numbers in earlier runs aren't comparable.)
