@@ -25,6 +25,7 @@ import (
 	"github.com/davidjwilkins/honey/fetch"
 	"github.com/davidjwilkins/honey/guard"
 	"github.com/davidjwilkins/honey/metrics"
+	"github.com/davidjwilkins/honey/optimize"
 )
 
 //go:embed page.html settings.html browse.html login.html admin.css admin.js
@@ -38,6 +39,7 @@ var page = template.Must(template.New("page.html").Funcs(template.FuncMap{
 	"svg":      svgPercent,
 	"freshFor": freshFor,
 	"int64":    func(n int) int64 { return int64(n) },
+	"saving":   formatSaving,
 }).ParseFS(files, "page.html", "settings.html", "browse.html", "login.html"))
 
 // Options configures the admin page.
@@ -71,6 +73,9 @@ type Options struct {
 	// Entry returns one by its key, for the cache browser, if set.
 	Entries func() []cache.Entry
 	Entry   func(key string) (cache.Entry, cache.Response, bool)
+	// Optimizations describes what the optimizer did to the cached page at
+	// path on host, with body, for the cache browser, if set
+	Optimizations func(host, path string, body []byte) *optimize.Report
 	// Fragments lists the shared fragments, and PurgeFragments purges them
 	// by name (see fetch.FragmentPurger), if set.
 	Fragments      func() []cache.FragmentInfo
@@ -731,6 +736,19 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%.1fs", d.Seconds())
 	}
 	return fmt.Sprintf("%dms", d.Milliseconds())
+}
+
+// formatSaving formats how much smaller after is than before, e.g. "77%
+// smaller"
+func formatSaving(before, after int) string {
+	if before <= 0 {
+		return ""
+	}
+	saved := 100 * (1 - float64(after)/float64(before))
+	if saved < 0 {
+		return strconv.FormatFloat(-saved, 'f', 0, 64) + "% bigger"
+	}
+	return strconv.FormatFloat(saved, 'f', 0, 64) + "% smaller"
 }
 
 func formatPercent(f float64) string {

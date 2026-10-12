@@ -97,6 +97,8 @@ type stylesheet struct {
 	rules []usedRule
 	why   string
 	size  int
+	// length is the stylesheet's size, for the admin page
+	length int
 }
 
 // waitingPage is a page waiting for stylesheets to be fetched, to be
@@ -352,7 +354,8 @@ func (s *cssStore) start(sheet *stylesheet, host string, l sheetLink) {
 func (s *cssStore) fetch(host, uri, key string, done chan struct{}) {
 	defer close(done)
 	s.sem <- struct{}{}
-	rules, why, size := s.load(host, uri)
+	rules, why, length := s.load(host, uri)
+	size := 3 * length
 	<-s.sem
 
 	s.mu.Lock()
@@ -366,7 +369,7 @@ func (s *cssStore) fetch(host, uri, key string, done chan struct{}) {
 	if rules != nil || sheet.rules == nil {
 		// (An old stylesheet is better than none)
 		s.bytes += size - sheet.size
-		sheet.rules, sheet.why, sheet.size = rules, why, size
+		sheet.rules, sheet.why, sheet.size, sheet.length = rules, why, size, length
 		if s.bytes > maxStylesheetBytes {
 			s.evict(maxStylesheetBytes)
 		}
@@ -412,8 +415,8 @@ func (s *cssStore) evict(size int) {
 	}
 }
 
-// load fetches the stylesheet at uri on host, and returns its rules (and
-// roughly how much memory they take), or nil and why it can't be used
+// load fetches the stylesheet at uri on host, and returns its rules and
+// its size, or nil and why it can't be used
 func (s *cssStore) load(host, uri string) ([]usedRule, string, int) {
 	if s.opts.Fetch == nil {
 		return nil, "there's no backend to fetch it from", 0
@@ -458,8 +461,8 @@ func (s *cssStore) load(host, uri string) ([]usedRule, string, int) {
 			rules = append(rules, r)
 		}
 	}
-	// Its text, twice over, and its selectors
-	return rules, "", 3 * len(body)
+	// (Its rules take its text, twice over, and its selectors)
+	return rules, "", len(body)
 }
 
 // rule prepares a stylesheet's rule to be checked against pages, unless
