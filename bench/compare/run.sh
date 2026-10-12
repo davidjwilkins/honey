@@ -148,22 +148,41 @@ report "| | Performance | First Contentful Paint | Largest Contentful Paint | To
 report "| --- | --- | --- | --- | --- | --- | --- |"
 scores off "Honey"
 
-# Again with [optimize] on
-{ cat honey.toml; printf '\n[optimize]\ndelayScripts = true\npreloadMainImage = true\nselfHostFonts = true\n'; } > work/honey-optimize.toml
-HONEY_CONFIG=./work/honey-optimize.toml compose up -d --force-recreate honey >/dev/null 2>&1
-for i in $(seq 1 30); do
-  if curl -fsS -o /dev/null "$page" 2>/dev/null; then break; fi
-  sleep 1
-done
-# A phone and a desktop report the page's main image
-for size in 412,915 1350,940; do
-  timeout 60 "$chrome" --headless=new --no-sandbox --window-size="$size" --virtual-time-budget=10000 --dump-dom "$page" >/dev/null 2>&1 || true
-done
-learned=no
-for i in $(seq 1 30); do
-  if curl -fsS "$page" | grep -q data-honey-main-image; then learned=yes; break; fi
-  sleep 1
-done
-scores on "Honey, with [optimize]: delayScripts, preloadMainImage, selfHostFonts"
+# optimized reports the scores with [optimize] settings $2 (TOML lines), as
+# $1, once Honey has learned the page's main image (and fetched its
+# stylesheets)
+optimized() {
+  { cat honey.toml; printf '\n[optimize]\n%s\n' "$2"; } > work/honey-optimize.toml
+  HONEY_CONFIG=./work/honey-optimize.toml compose up -d --force-recreate honey >/dev/null 2>&1
+  for i in $(seq 1 30); do
+    if curl -fsS -o /dev/null "$page" 2>/dev/null; then break; fi
+    sleep 1
+  done
+  # A phone and a desktop report the page's main image
+  for size in 412,915 1350,940; do
+    timeout 60 "$chrome" --headless=new --no-sandbox --window-size="$size" --virtual-time-budget=10000 --dump-dom "$page" >/dev/null 2>&1 || true
+  done
+  learned=no
+  for i in $(seq 1 20); do
+    # (The script which reports it goes, once it's learned)
+    if ! curl -fsS "$page" | grep -q 'id="honey-main-image"'; then learned=yes; break; fi
+    sleep 1
+  done
+  case "$2" in *removeUnusedCSS*)
+    for i in $(seq 1 20); do
+      if curl -fsS "$page" | grep -q data-honey-used-css; then break; fi
+      sleep 1
+    done
+  esac
+  scores "$1" "$3"
+}
+optimized on "delayScripts = true
+preloadMainImage = true
+selfHostFonts = true" "Honey, with [optimize]: delayScripts, preloadMainImage, selfHostFonts"
+learned_on=$learned
+optimized css "delayScripts = true
+preloadMainImage = true
+selfHostFonts = true
+removeUnusedCSS = true" "... and removeUnusedCSS"
 report ""
-report "The main image was learned before Lighthouse ran: $learned."
+report "The main image was learned before Lighthouse ran: $learned_on, then $learned."
