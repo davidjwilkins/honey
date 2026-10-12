@@ -406,10 +406,15 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	r.Body = io.NopCloser(bytes.NewReader(resp.body))
 	// Edge Side Includes, if the backend uses them (see esi.go)
 	esi := usesESI(r)
+	mark := ""
+	if esi {
+		mark = esiMark(r.Header, resp.body)
+	}
 	r.Header.Del("Surrogate-Control")
+	r.Header.Del(ESICookiesHeader)
 	r.Header.Del(ESIHeader)
 	if esi {
-		r.Header.Set(ESIHeader, "1")
+		r.Header.Set(ESIHeader, mark)
 	}
 	_, noStore := utilities.Directive(cc, "no-store")
 	c.encode(&resp, r.StatusCode, r.Header, !noStore)
@@ -443,8 +448,9 @@ func (c *defaultCacher) encode(resp *responseImpl, statusCode int, header http.H
 		header.Set("Etag", `"`+base64.StdEncoding.EncodeToString(hasher.Sum(nil))+`"`)
 	}
 	// Pages with Edge Side Includes are compressed once they're put
-	// together for each visitor
-	if header.Get(ESIHeader) != "" {
+	// together for each visitor - unless they're only put together for
+	// some, and served to everyone else as they are
+	if mode, _, _ := strings.Cut(header.Get(ESIHeader), " "); mode != "" && mode != "personal" {
 		return
 	}
 	if (c.brotli || c.gzip) && shouldCompress(statusCode, header, resp.body, c.compressMinBytes) {

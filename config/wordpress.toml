@@ -44,10 +44,10 @@ compressMinSize = "1KB"     # smaller responses aren't compressed
 # the default; add any cookies your plugins use for logged in visitors, or
 # to remember anything about a visitor (a cart, say).
 bypassCookies = ["wordpress_logged_in_", "wp-postpass_", "comment_author_", "woocommerce_items_in_cart", "wp_woocommerce_session_"]
-# Commenters get cached pages anyway, with their comments section fetched
-# for them, if the pages use Edge Side Includes for it - as the WordPress
-# plugin's do, with block themes
-esiCookies = ["comment_author_"]
+# Commenters and WooCommerce's shoppers get cached pages anyway, with their
+# comments section, cart and notices fetched for them, if the pages use Edge
+# Side Includes for them - as the WordPress plugin's do, with block themes
+esiCookies = ["comment_author_", "woocommerce_items_in_cart", "wp_woocommerce_session_"]
 # Other cookies are removed from requests which may be cached, so that one
 # visitor's cookies can't change the page cached for everyone - except
 # these, which are passed to WordPress, and which pages are cached

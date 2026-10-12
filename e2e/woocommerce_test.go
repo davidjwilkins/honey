@@ -75,9 +75,11 @@ func TestAddingToCartStartsASession(t *testing.T) {
 			}
 		}
 
-		// The shopper's pages are their own
+		// The shopper's pages are the cached ones, with their own cart
+		// (see TestShoppersGetCachedPages)
 		page := get(t, shopper, "/product/honey-jar/")
-		assert.Equal(t, "NO-CACHE", page.Cache)
+		assert.Equal(t, "HIT", page.Cache)
+		assert.Contains(t, page.Body, `"items_count":1`)
 		// The cart page is filled in by JavaScript, from the Store API
 		cart, _ := getStoreCart(t, shopper, "")
 		assert.Equal(t, 1, cart.ItemsCount, "the shopper's cart has their jar")
@@ -89,6 +91,62 @@ func TestAddingToCartStartsASession(t *testing.T) {
 	page := get(t, anonymous, "/product/honey-jar/")
 	assert.Equal(t, "HIT", page.Cache)
 	notContains(t, page.Body, "has been added to your cart")
+	notContains(t, page.Body, `"items_count":1`)
+}
+
+// shopperInclude is how the plugin ends a page which shows the shopper's
+// cart and store notices
+const shopperInclude = `<!--esi <esi:include src="/?honey-esi=woocommerce.cart.notices"/> -->`
+
+func TestShoppersGetCachedPages(t *testing.T) {
+	id := woocommerce(t)
+	anonymous := client(nil)
+	for _, path := range []string{"/shop/", "/hello-world/", "/cart/"} {
+		get(t, anonymous, path)
+	}
+	shop := cached(t, anonymous, "/shop/")
+	assert.Contains(t, shop.Body, shopperInclude, "the shop shows the cart and notices")
+	assert.Contains(t, shop.Body, `"items_count":0`, "everyone else gets it as it is")
+	assert.NotEmpty(t, shop.Header.Get("Etag"), "like any other page")
+
+	jar := newJar(t)
+	shopper := client(jar)
+	// Adding to the cart without JavaScript leaves a notice for the next
+	// page which shows them
+	get(t, shopper, "/hello-world/?add-to-cart="+id)
+	require.True(t, hasCookie(jar, "wp_woocommerce_session_"), "%v", cookieNames(jar))
+
+	page := get(t, shopper, "/shop/")
+	assert.Equal(t, "HIT", page.Cache, "the shopper gets the cached shop")
+	assert.Equal(t, "private, no-cache", page.Header.Get("Cache-Control"))
+	notContains(t, page.Body, "<esi:")
+	assert.Contains(t, page.Body, `"items_count":1`, "with their cart")
+	assert.Contains(t, page.Body, "has been added to your cart", "and their notice")
+	page = get(t, shopper, "/shop/")
+	assert.Equal(t, "HIT", page.Cache)
+	assert.Contains(t, page.Body, `"items_count":1`)
+	notContains(t, page.Body, "has been added to your cart", "which they only see once")
+
+	page = get(t, shopper, "/hello-world/")
+	assert.Equal(t, "HIT", page.Cache, "pages which don't show the cart are the same for shoppers")
+	notContains(t, page.Body, "honey-esi=woocommerce")
+
+	assert.NotEqual(t, "HIT", get(t, shopper, "/cart/").Cache, "the cart is the shopper's own")
+
+	shop = get(t, anonymous, "/shop/")
+	assert.Equal(t, "HIT", shop.Cache)
+	notContains(t, shop.Body, `"items_count":1`, "and nobody else gets their cart")
+
+	// The include is only for shoppers
+	resp := get(t, anonymous, "/?honey-esi=woocommerce.cart.notices")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Empty(t, resp.Body)
+	assert.Equal(t, http.StatusNotFound, get(t, anonymous, "/?honey-esi=woocommerce.other").StatusCode)
+
+	// Commenters' cookies aren't the shop's
+	u, _ := url.Parse(site)
+	jar.SetCookies(u, []*http.Cookie{{Name: "comment_author_e2e", Value: "Jane", Path: "/"}})
+	assert.Equal(t, "NO-CACHE", get(t, shopper, "/shop/").Cache)
 }
 
 // The cart page isn't here: WooCommerce's cart block fills it in with

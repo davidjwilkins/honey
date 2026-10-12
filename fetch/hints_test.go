@@ -111,7 +111,7 @@ func TestEarlyHintsForESIPages(t *testing.T) {
 		}
 		inner(w, r, hit)
 	}
-	proxy := esiProxy(t, o, cache.Options{DefaultTTL: time.Hour, ESICookies: []string{"comment_author_"}}, Options{EarlyHints: true})
+	proxy := esiProxy(t, o.origin, cache.Options{DefaultTTL: time.Hour, ESICookies: []string{"comment_author_"}}, Options{EarlyHints: true})
 	hintedGet(t, proxy+"/post/")
 	resp, hints := hintedGet(t, proxy+"/post/", "Cookie", "comment_author_abc=Jane")
 	assert.Equal(t, "HIT", resp.Header.Get("X-Honey-Cache"))

@@ -62,3 +62,38 @@ func TestESIEligible(t *testing.T) {
 	off := NewCacher(Options{BypassCookies: WordPressBypassCookies})
 	assert.False(t, off.ESIEligible(request(http.MethodGet, "https://www.example.com/post/", "comment_author_abc=Jane")), "off unless esiCookies are set")
 }
+
+func TestESIMark(t *testing.T) {
+	for _, test := range []struct {
+		cookies []string
+		body    string
+		want    string
+	}{
+		{nil, `<esi:include src="/a"/>`, "all"},
+		{nil, `<!--esi <esi:include src="/a"/> -->`, "all"},
+		{[]string{"woocommerce_items_in_cart, wp_woocommerce_session_"}, `<p><!--esi <esi:include src="/a"/> --></p>`, "personal woocommerce_items_in_cart wp_woocommerce_session_"},
+		{[]string{"comment_author_", "woocommerce_items_in_cart"}, `<p><!--esi <esi:include src="/a"/> --><esi:include src="/b"/></p>`, "all comment_author_ woocommerce_items_in_cart"},
+		{[]string{"comment_author_"}, `<esi:remove>visitor</esi:remove><!--esi <esi:include src="/a"/> -->`, "all comment_author_"},
+		{[]string{"woocommerce_items_in_cart"}, `<p>nothing personal</p>`, "personal woocommerce_items_in_cart"},
+	} {
+		assert.Equal(t, test.want, esiMark(http.Header{ESICookiesHeader: test.cookies}, []byte(test.body)), "%v %s", test.cookies, test.body)
+	}
+}
+
+func TestESIServes(t *testing.T) {
+	c := NewCacher(Options{BypassCookies: WordPressBypassCookies, ESICookies: []string{"comment_author_", "woocommerce_items_in_cart", "wp_woocommerce_session_"}})
+	page := func(cookies ...string) Response {
+		return esiResponse(c, SurrogateCapability, "text/html", http.Header{"Surrogate-Control": {`content="ESI/1.0"`}, ESICookiesHeader: cookies})
+	}
+	visitor := func(cookies string) *http.Request {
+		r := validRequest()
+		r.Header.Set("Cookie", cookies)
+		return r
+	}
+	shop := page("woocommerce_items_in_cart, wp_woocommerce_session_")
+	assert.Empty(t, shop.Header().Get(ESICookiesHeader), "it's for Honey, not clients")
+	assert.True(t, c.ESIServes(shop, visitor("woocommerce_items_in_cart=1; wp_woocommerce_session_abc=x; _ga=1")))
+	assert.False(t, c.ESIServes(shop, visitor("woocommerce_items_in_cart=1; comment_author_abc=Jane")))
+	assert.True(t, c.ESIServes(page(), visitor("woocommerce_items_in_cart=1; comment_author_abc=Jane")), "a page which doesn't say is for all esiCookies")
+	assert.False(t, c.ESIServes(esiResponse(c, SurrogateCapability, "text/html", nil), visitor("comment_author_abc=Jane")), "it doesn't use ESI")
+}

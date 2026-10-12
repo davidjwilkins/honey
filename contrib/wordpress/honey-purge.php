@@ -56,6 +56,22 @@
  * for commenters, if Honey's cache.esiCookies includes "comment_author_".
  * Classic themes aren't supported yet.
  *
+ * Shoppers: WooCommerce's pages show shoppers their cart (in the "1 in
+ * cart" buttons and the mini cart, from the cart in the page's
+ * Interactivity API state), and messages such as "added to your cart"
+ * (store notices), so their pages usually can't be cached either.  When
+ * Honey says it supports Edge Side Includes, pages other than the cart,
+ * checkout and account pages say they're for shoppers too, and if they
+ * show the cart or notices, end with an include of
+ * ?honey-esi=woocommerce.cart (and/or .notices) in an ESI comment.  Only
+ * shoppers get it, if Honey's cache.esiCookies includes
+ * "woocommerce_items_in_cart" and "wp_woocommerce_session_": it puts their
+ * cart into the page's state before the page starts, and their notices
+ * into its notices area.  Everyone else gets the page as it is.  The
+ * include is from WordPress for each page a shopper sees, but WordPress
+ * only loads their cart for it, rather than rendering the whole page.
+ * Block themes only, for now.
+ *
  * Hiding users: with Honey's security.hideUsers, Honey asks (with its
  * X-Honey-Hide-Users header) for the site's users to be hidden from
  * visitors who aren't logged in, so that their usernames can't be listed
@@ -533,11 +549,23 @@ final class ESI {
 
 	public static function init() {
 		add_action( 'template_redirect', array( __CLASS__, 'serve' ), 0 );
-		// Only when Honey asks, for a page it's going to cache
-		$capability = isset( $_SERVER['HTTP_SURROGATE_CAPABILITY'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_SURROGATE_CAPABILITY'] ) ) : '';
-		if ( false !== strpos( $capability, 'ESI/1.0' ) && ! isset( $_GET[ self::PARAM ] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( self::capable() ) {
 			add_filter( 'render_block', array( __CLASS__, 'block' ), 10, 3 );
 		}
+	}
+
+	/**
+	 * Whether Honey has asked for a page which uses ESI: only for a page
+	 * it's going to cache, rather than an include.
+	 */
+	public static function capable() {
+		$capability = isset( $_SERVER['HTTP_SURROGATE_CAPABILITY'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_SURROGATE_CAPABILITY'] ) ) : '';
+		return false !== strpos( $capability, 'ESI/1.0' ) && '' === self::name();
+	}
+
+	/** The name of the include being requested, if one is. */
+	public static function name() {
+		return isset( $_GET[ self::PARAM ] ) ? sanitize_text_field( wp_unslash( $_GET[ self::PARAM ] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 	}
 
 	/** Replaces the Comments block of the page's own post with an include. */
@@ -558,6 +586,8 @@ final class ESI {
 			add_option( 'honey_esi_' . $id, $markup, '', false );
 		}
 		header( 'Surrogate-Control: content="ESI/1.0"' );
+		// For commenters (see Honey's X-Honey-Esi-Cookies)
+		header( 'X-Honey-Esi-Cookies: comment_author_', false );
 		// The same address, so that the include has the same post and comment page
 		$uri = isset( $_SERVER['REQUEST_URI'] ) ? wp_unslash( $_SERVER['REQUEST_URI'] ) : '/'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
 		$src = add_query_arg( self::PARAM, 'comments.' . $id, $uri );
@@ -566,7 +596,7 @@ final class ESI {
 
 	/** Shows just the Comments block, for an include. */
 	public static function serve() {
-		$name = isset( $_GET[ self::PARAM ] ) ? sanitize_text_field( wp_unslash( $_GET[ self::PARAM ] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$name = self::name();
 		if ( '' === $name ) {
 			return;
 		}
@@ -583,6 +613,117 @@ final class ESI {
 		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- the block's own output
 		echo do_blocks( $markup );
 		exit;
+	}
+}
+
+/**
+ * Lets WooCommerce's shoppers be served cached pages, with their cart and
+ * notices added (see above).
+ */
+final class Shoppers {
+	/** Shoppers' bypass cookies (see Honey's cache.bypassCookies) */
+	const COOKIES = 'woocommerce_items_in_cart, wp_woocommerce_session_';
+
+	/** Puts the shopper's cart into the page's state, and their notices into its notices area. */
+	const SCRIPT = '(function(c,n){var d=document.getElementById("wp-script-module-data-@wordpress/interactivity");if(c&&d){try{var j=JSON.parse(d.textContent),s=j.state&&j.state.woocommerce;if(s&&s.cart){s.cart=c;d.textContent=JSON.stringify(j)}}catch(e){}}var w=n&&document.querySelector(".woocommerce-notices-wrapper");if(w){w.innerHTML=n}})';
+
+	/** @var bool whether the page shows store notices */
+	private static $notices = false;
+
+	public static function init() {
+		if ( 0 === strpos( ESI::name(), 'woocommerce.' ) ) {
+			// Once WooCommerce has loaded the shopper's cart, without
+			// rendering a page
+			add_action( 'wp_loaded', array( __CLASS__, 'serve' ), PHP_INT_MAX );
+		} elseif ( ESI::capable() ) {
+			add_action( 'template_redirect', array( __CLASS__, 'page' ), PHP_INT_MAX );
+		}
+	}
+
+	/** Says the page is for shoppers too, and looks out for what's theirs on it. */
+	public static function page() {
+		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : 'GET';
+		// Classic themes show the cart in their own ways
+		if ( ! function_exists( 'WC' ) || ! wp_is_block_theme() || ! in_array( $method, array( 'GET', 'HEAD' ), true ) || headers_sent() || is_user_logged_in() ) {
+			return;
+		}
+		// Pages which are all about the shopper's cart
+		if ( is_cart() || is_checkout() || is_account_page() ) {
+			return;
+		}
+		// Honey doesn't cache pages for shoppers, but in case
+		if ( WC()->session && WC()->session->has_session() ) {
+			return;
+		}
+		header( 'Surrogate-Control: content="ESI/1.0"' );
+		header( 'X-Honey-Esi-Cookies: ' . self::COOKIES, false );
+		// Only wc_print_notices() uses it
+		add_filter( 'woocommerce_notice_types', array( __CLASS__, 'shows_notices' ) );
+		// After the Interactivity API's state
+		add_action( 'wp_footer', array( __CLASS__, 'footer' ), PHP_INT_MAX );
+	}
+
+	public static function shows_notices( $types ) {
+		self::$notices = true;
+		return $types;
+	}
+
+	/** Ends the page with an include of the shopper's cart and notices, if it shows them. */
+	public static function footer() {
+		$parts = array();
+		$state = function_exists( 'wp_interactivity_state' ) ? wp_interactivity_state( 'woocommerce' ) : array();
+		if ( isset( $state['cart'] ) ) {
+			$parts[] = 'cart';
+		}
+		if ( self::$notices ) {
+			$parts[] = 'notices';
+		}
+		if ( ! $parts ) {
+			return;
+		}
+		$src = add_query_arg( ESI::PARAM, 'woocommerce.' . implode( '.', $parts ), wp_make_link_relative( home_url( '/' ) ) );
+		// In a comment, so that visitors who aren't shoppers get the page as it is
+		echo '<!--esi <esi:include src="' . esc_attr( $src ) . '"/> -->';
+	}
+
+	/** Shows the shopper's cart and notices, for an include. */
+	public static function serve() {
+		if ( ! preg_match( '/^woocommerce((\.cart|\.notices)+)$/', ESI::name(), $m ) ) {
+			status_header( 404 );
+			exit;
+		}
+		$parts = explode( '.', ltrim( $m[1], '.' ) );
+		header( 'Content-Type: text/html; charset=' . get_option( 'blog_charset' ) );
+		if ( ! function_exists( 'WC' ) || ! WC()->session || ! WC()->session->has_session() ) {
+			// Not a shopper: nothing to add, for anyone
+			exit;
+		}
+		nocache_headers();
+		$cart    = in_array( 'cart', $parts, true ) ? self::cart() : null;
+		$notices = in_array( 'notices', $parts, true ) && function_exists( 'wc_print_notices' ) ? (string) wc_print_notices( true ) : '';
+		if ( null === $cart && '' === $notices ) {
+			exit;
+		}
+		$flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES;
+		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON, safe in a script
+		echo '<script>' . self::SCRIPT . '(' . wp_json_encode( $cart, $flags ) . ',' . wp_json_encode( $notices, $flags ) . ')</script>';
+		exit;
+	}
+
+	/** The shopper's cart, as WooCommerce puts it in a page's state. */
+	private static function cart() {
+		// Without a leading backslash, as WooCommerce's container names them
+		$package   = 'Automattic\WooCommerce\Blocks\Package';
+		$hydration = 'Automattic\WooCommerce\Blocks\Domain\Services\Hydration';
+		if ( ! class_exists( $package ) || ! class_exists( $hydration ) ) {
+			return null;
+		}
+		try {
+			$data = $package::container()->get( $hydration )->get_rest_api_response_data( '/wc/store/v1/cart' );
+		} catch ( \Throwable $e ) {
+			return null;
+		}
+		return isset( $data['body'] ) ? $data['body'] : null;
 	}
 }
 
@@ -639,4 +780,5 @@ final class Users {
 Purge::init();
 Fragments::init();
 ESI::init();
+Shoppers::init();
 Users::init();

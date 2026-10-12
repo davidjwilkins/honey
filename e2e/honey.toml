@@ -10,8 +10,9 @@ uri = "http://wordpress"
 defaultTTL = "5m"
 staleIfError = "1h"
 staleWhileRevalidate = "1d"
-# Commenters get cached pages, with their comments section fetched for them
-esiCookies = ["comment_author_"]
+# Commenters and shoppers get cached pages, with their comments section, cart
+# and notices fetched for them
+esiCookies = ["comment_author_", "woocommerce_items_in_cart", "wp_woocommerce_session_"]
 # Browsers waiting for WordPress get the page's stylesheets and scripts first
 earlyHints = true
 

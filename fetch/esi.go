@@ -71,6 +71,9 @@ type esiWriter struct {
 	// cached is the cached page being written, if the cache says (see
 	// noteCached), whose parsed form is kept with it
 	cached cache.Response
+	// personal is whether the page is being served to a visitor with
+	// bypass cookies (see serveESIPage), rather than one without
+	personal bool
 	// handler fetches includes: the caching proxy
 	handler      http.Handler
 	secretHeader string
@@ -92,11 +95,14 @@ func (e *esiWriter) WriteHeader(status int) {
 	}
 	e.wroteHead = true
 	h := e.Header()
-	if h.Get(cache.ESIHeader) == "" {
+	mark := h.Get(cache.ESIHeader)
+	h.Del(cache.ESIHeader)
+	// Pages which only use ESI for visitors with bypass cookies are
+	// served to everyone else as they are
+	if mode, _, _ := strings.Cut(mark, " "); mode == "" || (mode == "personal" && !e.personal) {
 		e.ResponseWriter.WriteHeader(status)
 		return
 	}
-	h.Del(cache.ESIHeader)
 	// The page differs between visitors: its validators are the cached
 	// page's, and browsers mustn't share or keep it
 	for _, name := range []string{"Etag", "Last-Modified", "Content-Length", "Content-Encoding", "Content-Range"} {
@@ -134,6 +140,19 @@ func (e *esiWriter) Write(p []byte) (int, error) {
 // noteCached tells e the cached response which is about to be written
 func (e *esiWriter) noteCached(resp cache.Response) {
 	e.cached = resp
+}
+
+// notePersonal tells e that the page is being served to a visitor with
+// bypass cookies
+func (e *esiWriter) notePersonal() {
+	e.personal = true
+}
+
+// personalNoter is implemented by ResponseWriters which want to know
+// whether a page is being served to a visitor with bypass cookies (see
+// esiWriter)
+type personalNoter interface {
+	notePersonal()
 }
 
 // cachedResponseNoter is implemented by ResponseWriters which want to know
@@ -269,6 +288,7 @@ func withESI(w http.ResponseWriter, r *http.Request, handler http.Handler, secre
 // use ESI to visitors with some bypass cookies
 type esiEligible interface {
 	ESIEligible(r *http.Request) bool
+	ESIServes(resp cache.Response, r *http.Request) bool
 }
 
 // serveESIPage serves r - which can't be cached, because of its bypass
@@ -283,7 +303,7 @@ func serveESIPage(c cache.Cacher, w http.ResponseWriter, r *http.Request, filter
 		return false
 	}
 	resp, found := c.Load(c.Hash(anonymous), anonymous)
-	if !found || !cache.UsesESI(resp) {
+	if !found || !c.(esiEligible).ESIServes(resp, r) {
 		return false
 	}
 	if age, err := strconv.Atoi(resp.Age()); err != nil || age >= freshnessLifetime(resp) {
@@ -293,20 +313,29 @@ func serveESIPage(c cache.Cacher, w http.ResponseWriter, r *http.Request, filter
 	if earlyHints && wantsEarlyHints(r) {
 		sendEarlyHints(w, cache.EarlyHints(resp))
 	}
+	if p, ok := w.(personalNoter); ok {
+		p.notePersonal()
+	}
 	_, responded, _ := RespondFromCache(c, w, anonymous)
 	return responded
 }
 
 // forESIPage returns the request for the page r may be served instead (see
 // serveESIPage): r as a visitor without its cookies would send it.  It
-// returns nil if r may not be served one.
+// returns nil if r may not be served one - including if it has query
+// parameters which the cache ignores, as they may matter to a visitor with
+// bypass cookies (e.g. WooCommerce's ?add-to-cart=).
 func forESIPage(c cache.Cacher, r *http.Request, filterQuery func(*http.Request)) *http.Request {
 	if e, ok := c.(esiEligible); !ok || !e.ESIEligible(r) {
 		return nil
 	}
 	anonymous := r.Clone(r.Context())
 	removeUnkeyed(c, anonymous)
+	params := len(anonymous.URL.Query())
 	filterQuery(anonymous)
+	if len(anonymous.URL.Query()) != params {
+		return nil
+	}
 	for _, name := range conditionalHeaders {
 		anonymous.Header.Del(name)
 	}

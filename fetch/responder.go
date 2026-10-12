@@ -165,6 +165,7 @@ func FlushSingleflight(c cache.Cacher, done chan bool) func(*http.Response) erro
 		defer func() {
 			if !standardized {
 				r.Header.Del(cache.ESIHeader)
+				r.Header.Del(cache.ESICookiesHeader)
 				r.Header.Del("Surrogate-Control")
 			}
 		}()
