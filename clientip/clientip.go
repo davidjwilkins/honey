@@ -50,8 +50,8 @@ type key struct{}
 // Their forwarding headers (e.g. X-Forwarded-Proto) are kept.  Requests
 // from anywhere else are from their own address, and any forwarding
 // headers they send are removed, so that they can't claim to be from
-// elsewhere, or to have been sent with https.  Either way, X-Real-IP is
-// set to the address, for the backend.
+// elsewhere, or to have been sent with https.  (SetRealIP tells the backend
+// the address, as requests are forwarded to it.)
 func Middleware(trusted []*net.IPNet, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		remote := remoteIP(r)
@@ -63,11 +63,20 @@ func Middleware(trusted []*net.IPNet, next http.Handler) http.Handler {
 				r.Header.Del(name)
 			}
 		}
-		if client != nil {
-			r.Header.Set("X-Real-Ip", client.String())
-		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), key{}, client)))
 	})
+}
+
+// SetRealIP sets r's X-Real-IP header to the address it is from (see
+// From), for the backend.  It's done as requests are forwarded to the
+// backend, rather than for every request, as adding a header to a request
+// costs the cache time on every hit.
+func SetRealIP(r *http.Request) {
+	if ip := From(r); ip != nil {
+		r.Header.Set("X-Real-Ip", ip.String())
+	} else {
+		r.Header.Del("X-Real-Ip")
+	}
 }
 
 // From returns the address of the visitor r is from (see Middleware), or,

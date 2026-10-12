@@ -70,6 +70,12 @@ type responseImpl struct {
 	// from then on, but it can still be served while it is refreshed (per
 	// stale-while-revalidate) or if the backend fails (per stale-if-error)
 	expired atomic.Bool
+	// brotliHeader and gzipHeader are its header for each encoding (see
+	// encodedHeader)
+	brotliHeader, gzipHeader atomic.Pointer[encodedHeaders]
+	// derived is what Derived made of it, once
+	derivedOnce sync.Once
+	derived     any
 	// hints are its Early Hints, worked out once (see EarlyHints)
 	hintsOnce sync.Once
 	hints     []string

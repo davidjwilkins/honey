@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -51,6 +52,10 @@ func main() {
 		log.Fatal(err)
 	}
 
+	if limit, set := memoryLimit(cfg.Cache.MaxBytes, os.Getenv("GOMEMLIMIT")); set {
+		debug.SetMemoryLimit(limit)
+		log.Printf("memory limit %dMB (for a %dMB cache; set GOMEMLIMIT to change it)", limit>>20, effectiveMaxBytes(cfg.Cache.MaxBytes)>>20)
+	}
 	h := build(cfg, time.Now())
 	cacher := h.cacher
 	if cfg.Cache.Persist != "" {
@@ -151,6 +156,27 @@ func serveOptions(cfg *config.Config, handler http.Handler) serve.Options {
 		}
 	}
 	return opts
+}
+
+// memoryLimit returns the soft memory limit for Go's garbage collector, for
+// a cache of maxBytes, unless GOMEMLIMIT (gomemlimit) sets one.  By default,
+// Go lets its memory grow to twice what's in use before collecting the
+// garbage, which for a full cache is several times maxSize.  With the
+// limit, it collects more often as memory nears the cache's size, plus
+// room for the requests in progress and the compressors.
+func memoryLimit(maxBytes int64, gomemlimit string) (int64, bool) {
+	if gomemlimit != "" {
+		return 0, false
+	}
+	maxBytes = effectiveMaxBytes(maxBytes)
+	return maxBytes + maxBytes/4 + 128<<20, true
+}
+
+func effectiveMaxBytes(maxBytes int64) int64 {
+	if maxBytes <= 0 {
+		return cache.DefaultMaxBytes
+	}
+	return maxBytes
 }
 
 // snapshotter is a cache which can be saved to and loaded from a file

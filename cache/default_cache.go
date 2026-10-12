@@ -390,6 +390,7 @@ func (c *defaultCacher) Standardize(r *http.Response) Response {
 	}
 	resp.initialAge, _ = strconv.Atoi(r.Header.Get("Age"))
 	resp.body, _ = io.ReadAll(r.Body)
+	resp.body = exactly(resp.body)
 	r.Body.Close()
 	// Shared fragments (see fragments.go) are kept separately, and their
 	// markers' tokens removed

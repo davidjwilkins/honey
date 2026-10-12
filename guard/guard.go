@@ -88,14 +88,32 @@ var (
 	exploits = regexp.MustCompile(`(?i)(/eval-stdin\.php$|^/cgi-bin/|^/(actuator|boaform|hnap1|solr|owa|remote/fgt_lang)(/|$)|^/(shell|wso|alfa|c99|r57|b374k|webshell|cmd|up|uploader)\.php$)`)
 )
 
-// blockedPath returns why requests for p are blocked, or "" if they aren't
+// blockedPath returns why requests for p are blocked, or "" if they aren't.
+// It's checked for every request, so it avoids the regular expressions for
+// the usual pages: WordPress's addresses (e.g. /hello-world/) have no file
+// names, so they can't be hidden files, backups or PHP.
 func blockedPath(p string) string {
 	p = path.Clean("/" + p)
-	for _, segment := range strings.Split(p, "/") {
-		// .git, .env, .htaccess, .DS_Store... but not .well-known
-		if strings.HasPrefix(segment, ".") && segment != ".well-known" {
+	if !strings.ContainsAny(p, ".~") {
+		if exploitDir(p) && exploits.MatchString(p) {
+			return "known exploits"
+		}
+		return ""
+	}
+	// .git, .env, .htaccess, .DS_Store... but not .well-known
+	for rest := p; ; {
+		i := strings.Index(rest, "/.")
+		if i < 0 {
+			break
+		}
+		segment := rest[i+1:]
+		if j := strings.IndexByte(segment, '/'); j >= 0 {
+			segment = segment[:j]
+		}
+		if segment != ".well-known" {
 			return "hidden files"
 		}
+		rest = rest[i+2:]
 	}
 	switch {
 	case wpConfig.MatchString(p):
@@ -110,6 +128,21 @@ func blockedPath(p string) string {
 		return "known exploits"
 	}
 	return ""
+}
+
+// exploitDir returns whether p, which has no file name, might be one of the
+// exploits (whose directories are checked here, rather than with a regular
+// expression for every page)
+func exploitDir(p string) bool {
+	first := strings.TrimPrefix(p, "/")
+	if i := strings.IndexByte(first, '/'); i >= 0 {
+		first = first[:i]
+	}
+	switch strings.ToLower(first) {
+	case "cgi-bin", "actuator", "boaform", "hnap1", "solr", "owa", "remote":
+		return true
+	}
+	return false
 }
 
 // Middleware returns next, guarded as opts say
@@ -185,6 +218,10 @@ func Middleware(opts Options, next http.Handler) http.Handler {
 var xmlrpcPath = regexp.MustCompile(`(?i)/xmlrpc\.php(/|$)`)
 
 func isXMLRPC(p string) bool {
+	// Most requests aren't (checked without the regular expression)
+	if !strings.Contains(p, "xmlrpc") && !strings.Contains(strings.ToLower(p), "xmlrpc") {
+		return false
+	}
 	return xmlrpcPath.MatchString(path.Clean("/" + p))
 }
 

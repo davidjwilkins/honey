@@ -62,9 +62,8 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 			h.CountHit()
 		}
 		header, body := cache.Negotiate(resp, r)
-		for key, values := range header {
-			w.Header()[key] = append([]string(nil), values...)
-		}
+		noteCached(w, resp)
+		copyHeader(w.Header(), header)
 		w.Header().Set("Age", strconv.Itoa(age))
 		if revalidate {
 			w.Header().Set("X-Honey-Cache", "STALE")
@@ -86,6 +85,16 @@ func RespondFromCache(c cache.Cacher, w http.ResponseWriter, r *http.Request) (h
 		w.Write(body)
 	}
 	return
+}
+
+// copyHeader copies a cached response's header to dst, without copying
+// its values: each list is capped, so that adding to it (e.g. Header.Add)
+// makes a new one rather than writing into the cache's.  (Nothing changes
+// a header's values in place.)
+func copyHeader(dst, cached http.Header) {
+	for key, values := range cached {
+		dst[key] = values[:len(values):len(values)]
+	}
 }
 
 // canServeStaleOnError returns whether the cached response prev may be served
