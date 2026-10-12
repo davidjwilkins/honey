@@ -268,6 +268,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 		BackendHost: cfg.BackendHost,
 		Hosts:       cfg.Hosts,
 		Events:      eventLog,
+		EarlyHints:  cfg.Cache.EarlyHints,
 		OnPurge: func(path string, prefix, soft bool) {
 			// Everything has been purged: fill the cache again
 			if h.warmer != nil && prefix && path == "/" {

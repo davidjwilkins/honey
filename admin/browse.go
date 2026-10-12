@@ -243,6 +243,8 @@ type entryView struct {
 	KeptUntil string
 	// Test is a link to test its URL, and Return this page
 	Test, Return string
+	// Hints are its Early Hints
+	Hints []string
 }
 
 type headerLine struct {
@@ -275,6 +277,7 @@ func (a *admin) entry(w http.ResponseWriter, r *http.Request) {
 	header.Del(cache.ESIHeader)
 	v.Header = headerLines(header)
 	v.Varied = headerLines(cache.RequestHeader(resp))
+	v.Hints = cache.EarlyHints(resp)
 	if !e.RemoveAt.IsZero() {
 		v.KeptUntil = "until " + formatDuration(e.RemoveAt.Sub(now).Round(time.Second)) + " from now, unless it's evicted to make room first"
 	} else {

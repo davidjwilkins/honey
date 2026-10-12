@@ -67,6 +67,8 @@ All the available settings:
 	persist = "/var/lib/honey/cache.snapshot"  # save the cache here, and load it at startup (off unless set)
 	persistInterval = "5m"       # how often to save it ("0": only on shutdown)
 	staticFiles = true           # cache images, css, js, fonts, media and documents
+	earlyHints = true            # send browsers waiting for WordPress the page's stylesheets and scripts
+	                             # first, as 103 Early Hints (off by default; see below)
 	brotli = true                # brotli compress html, css, js, json, svg... for clients that accept it
 	gzip = true                  # gzip them for clients that accept gzip but not brotli
 	compressMinSize = "1KB"      # smaller responses aren't compressed
@@ -213,6 +215,21 @@ With `no-cache`, browsers still keep the page, but ask Honey whether it has chan
 Only successful (`200`), fresh responses which are served from the cache, or cached as they're fetched, get it: not errors or redirects, not stale responses, and not responses Honey doesn't cache (e.g. `private` ones, or for logged in users).  `Age` and `Expires` are left off, as the new header says how long browsers may keep the response from now.
 
 Be careful with `immutable` and long `max-age`s: browsers won't ask for the file again, even after a purge.  Only use them where the URL changes whenever the file does.  WordPress's `ver` is the plugin's or theme's version (or WordPress's, if none was given), so a file edited without a version bump will be stale in browsers until the `max-age` runs out.
+
+## Early Hints
+
+A browser can't start fetching a page's stylesheets, fonts and scripts until the page starts to arrive.  A page from the cache arrives straight away, but one which has to wait for WordPress - for a logged in user, a shopper, a page which isn't cached yet, or one with [Edge Side Includes](#edge-side-includes) - can take a second.  With `earlyHints = true`, Honey sends the browser a `103 Early Hints` response first, listing what the page needs, so that it can fetch them in the meantime:
+
+	HTTP/1.1 103 Early Hints
+	Link: </wp-includes/css/dist/block-library/style.min.css?ver=7.0>; rel=preload; as=style
+	Link: </wp-content/themes/twentytwentyfive/style.css?ver=1.3>; rel=preload; as=style
+
+	HTTP/1.1 200 OK
+	...the page, when WordPress has rendered it...
+
+Honey learns them from the `<head>` of the pages it caches: its stylesheets (not those for print), the scripts which hold it up (not `async` or `defer` ones), and its preloads (e.g. fonts), preconnects and module preloads - up to 10.  A request gets those of the page cached for its URL (for visitors without its cookies), or, for a page which isn't cached (e.g. a cart or checkout), those which every one of its host's recently cached pages have, which are usually the theme's.  Requests served from the cache, and those which don't accept HTML, don't get them.  The admin page's cache browser shows each page's.
+
+They're off by default, as browsers only use them over HTTP/2 or HTTP/3, so the proxy in front of Honey has to pass them on: Caddy does, and nginx does from 1.29, with its `early_hints` directive.  Check that yours does before turning them on, as older proxies may not expect them.
 
 ## Routes
 

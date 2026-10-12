@@ -12,6 +12,8 @@ staleIfError = "1h"
 staleWhileRevalidate = "1d"
 # Commenters get cached pages, with their comments section fetched for them
 esiCookies = ["comment_author_"]
+# Browsers waiting for WordPress get the page's stylesheets and scripts first
+earlyHints = true
 
 [[route]]
 match = "(?:[?&]preview=true(?:&|$)|/(?:feed|wp-admin|wp-login))"

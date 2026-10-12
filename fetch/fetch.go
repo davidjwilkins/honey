@@ -67,12 +67,16 @@ type Options struct {
 	// Events, if set, is where PURGE requests and requests for other
 	// hosts are logged, e.g. for the admin page.
 	Events *events.Log
+	// EarlyHints is whether browsers are sent a 103 Early Hints response,
+	// with the stylesheets and scripts their page needs, while a request
+	// waits for the backend (see cache/hints.go)
+	EarlyHints bool
 }
 
 // FetchWithOptions is like Fetch, configured by opts.
 func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, opts Options) http.HandlerFunc {
 	filterQuery := queryFilter(c, opts.QueryParams)
-	serve := serveFromCache(c, handler, filterQuery)
+	serve := serveFromCache(c, handler, filterQuery, opts.EarlyHints)
 	var self http.HandlerFunc
 	purgeFragments := FragmentPurger(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { self(w, r) }))
 	self = func(w http.ResponseWriter, r *http.Request) {
@@ -172,7 +176,13 @@ func queryFilter(c cache.Cacher, keep []string) func(*http.Request) {
 
 // serveFromCache returns a handler for requests which have already been
 // switched to the backend.
-func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http.Request)) http.HandlerFunc {
+func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http.Request), earlyHints bool) http.HandlerFunc {
+	// hint sends Early Hints for r, which is going to wait for the backend
+	hint := func(w http.ResponseWriter, r *http.Request) {
+		if earlyHints && wantsEarlyHints(r) {
+			sendEarlyHints(w, hintsFor(c, r, filterQuery))
+		}
+	}
 	var serve http.HandlerFunc
 	serve = func(w http.ResponseWriter, r *http.Request) {
 		// CanCache tells us if this *Cache* is able to cache the request.
@@ -220,6 +230,9 @@ func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http
 			}
 			// If the same resource is already being fetched, wait for it
 			f, leader := flights.Join(hash)
+			if !isRetry(r) {
+				hint(w, r)
+			}
 			if !leader {
 				awaitFlight(w, r, f, c, handler, serve)
 				return
@@ -233,9 +246,10 @@ func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http
 		}
 		// Visitors with some bypass cookies (e.g. commenters) can still be
 		// served a cached page which uses ESI for their personal parts
-		if serveESIPage(c, w, r, filterQuery) {
+		if serveESIPage(c, w, r, filterQuery, earlyHints) {
 			return
 		}
+		hint(w, r)
 		w.Header().Set("X-Honey-Cache", "NO-CACHE")
 		handler.ServeHTTP(w, r)
 	}

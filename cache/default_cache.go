@@ -128,6 +128,8 @@ type defaultCacher struct {
 	events        *events.Log
 	// fragments are the current content of pages' shared fragments
 	fragments *fragments
+	// hostHints are the Early Hints of hosts' recently cached pages
+	hostHints hostHints
 }
 
 // NewCacher returns an in-memory cacher with no site-specific rules.
@@ -499,8 +501,11 @@ func (c *defaultCacher) Cache(hash string, r Response) {
 		return
 	}
 
-	if impl, ok := r.(*responseImpl); ok && impl.segments != nil {
-		c.recordFragments(impl)
+	if impl, ok := r.(*responseImpl); ok {
+		if impl.segments != nil {
+			c.recordFragments(impl)
+		}
+		c.learnHints(impl)
 	}
 
 	now := time.Now()

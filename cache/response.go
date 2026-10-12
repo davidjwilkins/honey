@@ -70,6 +70,9 @@ type responseImpl struct {
 	// from then on, but it can still be served while it is refreshed (per
 	// stale-while-revalidate) or if the backend fails (per stale-if-error)
 	expired atomic.Bool
+	// hints are its Early Hints, worked out once (see EarlyHints)
+	hintsOnce sync.Once
+	hints     []string
 }
 
 // CountHit records that the response was served from the cache.

@@ -32,6 +32,10 @@ staleIfError = "1h"         # if WordPress errors or times out, serve expired pa
 staleWhileRevalidate = "1d" # serve expired pages straight away while they're refreshed, so nobody waits
 # persist = "/var/lib/honey/cache.snapshot"  # keep the cache across restarts
 staticFiles = true          # cache images, css, js, fonts, media and documents
+# Send browsers waiting for WordPress (e.g. logged in users) the page's
+# stylesheets and scripts first, as 103 Early Hints.  Only if the proxy in
+# front of Honey passes them on (Caddy does; nginx 1.29+ with early_hints).
+# earlyHints = true
 brotli = true               # brotli compress html, css, js, json, svg... for clients that accept it
 gzip = true                 # gzip them for clients that accept gzip but not brotli
 compressMinSize = "1KB"     # smaller responses aren't compressed
