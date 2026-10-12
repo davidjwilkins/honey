@@ -16,6 +16,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/clientip"
+	"github.com/davidjwilkins/honey/cluster"
 	"github.com/davidjwilkins/honey/fetch"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -85,6 +86,9 @@ type Config struct {
 	// CDN, if set, is a CDN in front of Honey which purges are passed on
 	// to (see the cdn package)
 	CDN *CDN
+	// Cluster, if set, is the other Honeys in front of the same WordPress,
+	// which purges are passed on to (see the cluster package)
+	Cluster *Cluster
 	// File is the settings as they were written, e.g. to export them
 	File *File
 }
@@ -119,6 +123,22 @@ type CDN struct {
 	Token string
 	// Hosts are the hosts the CDN serves (default: the hosts)
 	Hosts []string
+}
+
+// Cluster configures passing purges between Honeys (see cluster.Options)
+type Cluster struct {
+	// Listen is the address the other nodes' requests are served on
+	Listen string
+	// Name is this node's (default: the host name)
+	Name string
+	// Peers are the other nodes' Listen addresses, as URLs
+	Peers []string
+	// Secret signs what nodes send each other (or, if the file doesn't
+	// say, the HONEY_CLUSTER_SECRET environment variable)
+	Secret string
+	// Lease and PurgeWait are cluster.Options': PurgeWait is negative not
+	// to wait
+	Lease, PurgeWait time.Duration
 }
 
 // Optimize configures changing pages as they're cached, so that browsers
@@ -377,6 +397,14 @@ type File struct {
 		Token    string   `toml:"token,omitempty"`
 		Hosts    []string `toml:"hosts,omitempty"`
 	} `toml:"cdn,omitempty"`
+	Cluster struct {
+		Listen    string   `toml:"listen,omitempty"`
+		Name      string   `toml:"name,omitempty"`
+		Peers     []string `toml:"peers,omitempty"`
+		Secret    string   `toml:"secret,omitempty"`
+		Lease     string   `toml:"lease,omitempty"`
+		PurgeWait string   `toml:"purgeWait,omitempty"`
+	} `toml:"cluster,omitempty"`
 	Optimize struct {
 		DelayScripts         bool     `toml:"delayScripts,omitempty"`
 		DelayScriptsMatching []string `toml:"delayScriptsMatching,omitempty"`
@@ -479,6 +507,7 @@ func (f *File) Clone() *File {
 	c.Cache.Gzip = cloneBool(f.Cache.Gzip)
 	c.Control.AllowIPs = append([]string(nil), f.Control.AllowIPs...)
 	c.CDN.Hosts = append([]string(nil), f.CDN.Hosts...)
+	c.Cluster.Peers = append([]string(nil), f.Cluster.Peers...)
 	c.Optimize.DelayScriptsMatching = append([]string(nil), f.Optimize.DelayScriptsMatching...)
 	c.Optimize.KeepScriptsMatching = append([]string(nil), f.Optimize.KeepScriptsMatching...)
 	c.Optimize.KeepCSSMatching = append([]string(nil), f.Optimize.KeepCSSMatching...)
@@ -596,6 +625,9 @@ func FromFile(f *File) (*Config, error) {
 		return nil, err
 	}
 	if cfg.CDN, err = parseCDN(f, cfg.Hosts); err != nil {
+		return nil, err
+	}
+	if cfg.Cluster, err = parseCluster(f); err != nil {
 		return nil, err
 	}
 
@@ -900,6 +932,55 @@ func parseCDN(f *File, hosts []string) (*CDN, error) {
 		return nil, fmt.Errorf("cdn.hosts (or hosts) is needed: the hosts whose pages are purged from the CDN")
 	}
 	return cdn, nil
+}
+
+// parseCluster validates the [cluster] settings: nil if there are none
+func parseCluster(f *File) (*Cluster, error) {
+	c := f.Cluster
+	if c.Listen == "" && c.Name == "" && len(c.Peers) == 0 && c.Secret == "" && c.Lease == "" && c.PurgeWait == "" {
+		return nil, nil
+	}
+	cl := &Cluster{Listen: c.Listen, Name: c.Name, Secret: c.Secret, Lease: cluster.DefaultLease, PurgeWait: cluster.DefaultPurgeWait}
+	if cl.Listen == "" {
+		return nil, fmt.Errorf("cluster.listen is needed: the address the other nodes reach this one on, e.g. \":8081\"")
+	}
+	if _, _, err := net.SplitHostPort(cl.Listen); err != nil {
+		return nil, fmt.Errorf("cluster.listen: %w", err)
+	}
+	if strings.ContainsAny(cl.Name, "@ \t\r\n") {
+		return nil, fmt.Errorf("cluster.name: %q can't have spaces or @ in it", cl.Name)
+	}
+	if len(c.Peers) == 0 {
+		return nil, fmt.Errorf("cluster.peers is needed: the other nodes' cluster addresses, e.g. [\"http://10.0.0.2:8081\"]")
+	}
+	for _, p := range c.Peers {
+		u, err := url.Parse(p)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" {
+			return nil, fmt.Errorf("cluster.peers: %q isn't a node's cluster address, e.g. \"http://10.0.0.2:8081\"", p)
+		}
+		cl.Peers = append(cl.Peers, strings.TrimSuffix(p, "/"))
+	}
+	if cl.Secret == "" {
+		cl.Secret = os.Getenv("HONEY_CLUSTER_SECRET")
+	}
+	if len(cl.Secret) < 16 {
+		return nil, fmt.Errorf("cluster.secret (or the HONEY_CLUSTER_SECRET environment variable) is needed, at least 16 characters: the same on every node")
+	}
+	var err error
+	if c.Lease != "" {
+		if cl.Lease, err = parseDuration(c.Lease); err != nil || cl.Lease < time.Second {
+			return nil, fmt.Errorf("cluster.lease must be a duration of at least a second, e.g. \"5s\"")
+		}
+	}
+	if c.PurgeWait != "" {
+		if cl.PurgeWait, err = parseDuration(c.PurgeWait); err != nil || cl.PurgeWait < 0 {
+			return nil, fmt.Errorf("cluster.purgeWait must be a duration, e.g. \"2s\", or \"0s\" not to wait")
+		}
+		if cl.PurgeWait == 0 {
+			cl.PurgeWait = -1
+		}
+	}
+	return cl, nil
 }
 
 // parseOptimize validates the [optimize] settings

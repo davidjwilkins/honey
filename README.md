@@ -154,6 +154,16 @@ All the available settings:
 	                             # API key (or set the HONEY_CDN_TOKEN environment variable)
 	hosts = ["www.example.com"]  # the hosts the CDN serves (default: hosts)
 
+	# Other Honeys in front of the same WordPress, which purges are passed
+	# on to (see below)
+	[cluster]
+	listen = ":8081"             # where the other Honeys reach this one (keep it private)
+	name = "web1"                # this Honey's name (default: the host name)
+	peers = ["http://10.0.0.2:8081", "http://10.0.0.3:8081"]   # the other Honeys' (this one's may be in the list too)
+	secret = "..."               # the same on each Honey, at least 16 characters (or set HONEY_CLUSTER_SECRET)
+	lease = "5s"                 # how long a Honey trusts its cache without catching up with another
+	purgeWait = "2s"             # how long a purge waits for the others to apply it ("0s": not at all)
+
 	# Changing pages as they're cached, so that browsers load them faster
 	# (off by default; see below)
 	[optimize]
@@ -410,6 +420,7 @@ With `[admin] listen` set, that address serves a page showing how the cache is d
 - how quickly the backend responds (median, 95th and 99th percentiles, and a histogram), and its errors
 - how full the cache is, and how each request was handled
 - recent events: purges (with where they came from, a burst of them from WordPress shown as one), warming the cache, backend errors, requests for other hosts turned away, and pages which aren't cached because they set a cookie
+- in a [cluster](#several-honeys), the other Honeys: when each was last heard from, and why it couldn't be reached
 
 and a bar to purge a URL or everything under a path - softly or not - which says how many cached responses it will remove as you type, or to purge the whole cache.  `/metrics` is served there too.
 
@@ -477,6 +488,23 @@ A purge with Honey's soft mode leaves the old page to be served once more while 
 The CDN has to be told to cache pages (CDNs usually only cache static files by default) - and, as it can't tell visitors apart, not to for visitors with WordPress's [bypass cookies](#logged-in-users-and-sessions).  It should respect the `Cache-Control` headers Honey sends.  With Cloudflare, add a Cache Rule which makes requests eligible for cache unless their cookies contain `wordpress_logged_in_`, `wp-postpass_`, `comment_author_`, `woocommerce_items_in_cart` or `wp_woocommerce_session_` (and leaves the Edge TTL to the origin's `Cache-Control`).  With Bunny, turn on Cache HTML (or set the Smart Cache), and add an Edge Rule which bypasses the cache for those cookies.  Visitors with them then reach Honey, which serves them as usual - with [Edge Side Includes](#edge-side-includes) for commenters and shoppers.
 
 With [`convertImages`](#optimizing-pages), an image's URL serves AVIF, WebP or the original depending on the browser's `Accept` header, and the CDN has to keep them apart, or it may send AVIF to a browser which can't show it.  Most CDNs only cache one copy of a URL unless told to vary on `Accept`: Cloudflare ignores `Vary: Accept` unless "Vary for Images" is on (on the plans which have it), and Bunny's Vary Cache settings decide what it keeps apart.  If your CDN can't vary on `Accept` for images, either turn `convertImages` off, or have the CDN not cache `.jpg`, `.jpeg` and `.png` files (e.g. a Cloudflare Cache Rule which bypasses the cache for them), leaving them to Honey and browsers.  Honey logs a reminder when it starts with both.
+
+## Several Honeys
+
+Several Honeys in front of the same WordPress - behind a load balancer, say - each have their own cache, so a purge has to reach all of them.  With a `[cluster]`, a Honey passes every purge it gets - from the [WordPress plugin](#purging-from-wordpress), the admin page or any `PURGE` request, and [shared fragment](#shared-fragments) purges - on to the others, which apply it too.  WordPress only needs to reach one of them (`HONEY_URL` can be the load balancer, or a Honey's private address).  There's nothing else to run (no Redis, no coordinator): the Honeys talk to each other directly, over HTTP, each request and response signed with the shared `secret`.
+
+- **A purge waits for the others.**  A Honey sends each purge to the others, and waits for them to say they've applied it (for up to `purgeWait`, 2 seconds by default) before answering, so that when WordPress's purge request returns, every Honey which could be reached has dropped the page - before the CDN is purged, if there's one, so that it doesn't fetch the old page from another Honey.  Honeys which couldn't be reached at the last heartbeat aren't waited for, so that while one is down, purges don't each wait for it.
+- **Missed purges are caught up with.**  A few times a second, each Honey asks the others how far they've got with each Honey's purges (each is numbered by the Honey it started on).  One which is behind - it was restarting, or a request was lost - fetches the purges it missed from one which has them, and applies them.  Each Honey keeps the last hour's purges (up to 10,000) for that.  If they're no longer kept, or there are more than 100 of them, it expires its whole cache instead.
+- **A Honey which is out of touch stops trusting its cache.**  If a Honey hasn't caught up with any other for `lease` (5 seconds by default), it can't know what it has missed, so it expires its whole cache, and again every `lease` until it's back in touch.  Its health check (below) fails meanwhile, so that a load balancer can stop sending it visitors.  So a page purged on one Honey is served by another for at most about `lease` after the purge, however the network fails - or, as the cache is expired rather than emptied, once more after that while it's refreshed, if it allows `staleWhileRevalidate`.
+- **A Honey starting up** expires what it loaded from [`persist`](#keeping-the-cache-across-restarts), as it can't know what was purged while it was down: it's served while it's refreshed rather than all fetched again at once.
+
+`peers` are the other Honeys' `listen` addresses, as URLs.  A host name which resolves to several addresses is a Honey at each (looked up again every 30 seconds), e.g. a Kubernetes headless service, and a Honey finds itself in the list and leaves itself out, so every Honey can have the same `peers`.  `listen` serves only the Honeys' requests to each other, which are refused unless they're signed with the `secret` in the last minute (so the Honeys' clocks must be within a minute of each other).  Keep it on a private network anyway: the requests aren't encrypted, though nothing secret is sent.
+
+**Health checks.**  `/.well-known/honey/health` responds `200 ok` - or, in a cluster, `503` while the Honey is out of touch with the others.  (If every Honey is out of touch, every one fails its health check: with a load balancer which then stops sending visitors to any of them, rather than to all, you may prefer to check another path.)
+
+The admin page shows the other Honeys - when each was last heard from, and why it couldn't be reached - and its events show purges from the others, missed purges caught up with, and Honeys going out of touch and back.
+
+Each Honey still fetches pages from WordPress itself, so a page is rendered once for each Honey whose cache it's missing from, not once for them all.
 
 ## Shared fragments
 
@@ -577,7 +605,7 @@ While a post is being edited, WP Super Cache's slowest requests take seconds (th
 Things which might be worth doing next:
 
 - **Revalidating with the backend:** refresh expired responses with a conditional request (`If-None-Match` / `If-Modified-Since`), so that an unchanged page costs the backend a `304` rather than a full render.
-- **A shared cache** (e.g. Redis), so that several Honey instances behind a load balancer share one cache, and purges reach all of them.
+- **Sharing fills between [several Honeys](#several-honeys):** each page owned by one Honey (by consistent hashing), which the others fetch it from rather than from WordPress, so that a page is rendered once for them all.
 - **DNS challenges**, so that Honey can get wildcard certificates (`*.example.com`) automatically.
 - **Per-route compression settings** (brotli and gzip are site-wide for now).
 - **More Edge Side Includes:** commenters and shoppers on classic themes, and parts of pages for logged in users (e.g. the admin bar), so that their pages can mostly be served from the cache too.

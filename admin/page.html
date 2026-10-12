@@ -65,6 +65,32 @@
 </section>
 {{- end}}
 
+{{- with .Cluster}}
+<section class="panel cluster">
+  <div class="heading">
+    <h2>Cluster</h2>
+    <span class="muted">this is <span class="mono">{{.Name}}</span> · {{if .Healthy}}in touch: purges reach every Honey{{else}}<strong class="bad">out of touch</strong>: its cache is expired every lease, and its health check fails{{end}}</span>
+  </div>
+  {{- if .Peers}}
+  <table>
+    <thead><tr><th scope="col">Honey</th><th scope="col">Address</th><th scope="col">Last heard from</th><th scope="col">Problem</th></tr></thead>
+    <tbody>
+    {{- range .Peers}}
+      <tr>
+        <th scope="row">{{or .Name "?"}}</th>
+        <td class="mono">{{.Address}}</td>
+        <td>{{.Seen}}</td>
+        <td{{if .Error}} class="bad"{{end}}>{{or .Error "none"}}</td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+  {{- else}}
+  <p class="muted">No other Honeys found yet.</p>
+  {{- end}}
+</section>
+{{- end}}
+
 <div class="purgebar">
   <form method="post" action="/purge" id="purge">
     <label for="url" class="mono label">PURGE</label>
