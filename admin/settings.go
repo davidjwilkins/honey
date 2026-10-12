@@ -141,8 +141,34 @@ var sections = []section{
 				f.Security.RateBurst = &n
 				return nil
 			}},
+		{Key: "security.probeLimit", Kind: kindText, Help: "Probes for sensitive files or exploits an address may make before it's banned from WordPress (0: never)", Default: strconv.Itoa(config.DefaultProbeLimit),
+			get: func(f *config.File) string {
+				if f.Security.ProbeLimit == nil {
+					return ""
+				}
+				return strconv.Itoa(*f.Security.ProbeLimit)
+			},
+			set: func(f *config.File, v string) error {
+				if v == "" {
+					f.Security.ProbeLimit = nil
+					return nil
+				}
+				n, err := strconv.Atoi(v)
+				if err != nil {
+					return fmt.Errorf("a whole number")
+				}
+				f.Security.ProbeLimit = &n
+				return nil
+			}},
+		text("security.probeBan", "How long it's banned for (it's still served cached pages)", "1h",
+			func(f *config.File) *string { return &f.Security.ProbeBan }),
 		list("security.allowIPs", "Addresses (or networks) never locked out or rate-limited, as well as this host",
 			func(f *config.File) *[]string { return &f.Security.AllowIPs }),
+		list("security.adminIPs", "If set, the only addresses (or networks) the dashboard and login page are served to, as well as this host",
+			func(f *config.File) *[]string { return &f.Security.AdminIPs }),
+		{Key: "security.hideUsers", Kind: kindBool, Help: "Hide the site's users from visitors who aren't logged in (?author=N, the REST API's users, the authors' sitemap)",
+			get: func(f *config.File) string { return yesNo(f.Security.HideUsers) },
+			set: func(f *config.File, v string) error { f.Security.HideUsers = v == "yes"; return nil }},
 	}},
 	{"Backend", []*field{
 		text("backend.uri", "The web server running WordPress", "",

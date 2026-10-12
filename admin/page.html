@@ -34,7 +34,7 @@
 <p class="notice ok" role="status">{{if .Soft}}Expired{{else}}Purged{{end}} {{.Count}} cached response{{if ne .Count 1}}s{{end}} for <span class="mono">{{.Target}}</span>{{if .Prefix}} and everything under it{{end}}{{if .Soft}}: they'll be refreshed the next time they're requested{{end}}.</p>
 {{- end}}
 {{with .Unblocked -}}
-<p class="notice ok" role="status">Unblocked <span class="mono">{{.}}</span>: it can log in again.</p>
+<p class="notice ok" role="status">Unblocked <span class="mono">{{.}}</span>.</p>
 {{- end}}
 {{with .Problem -}}
 <p class="notice problem" role="alert">{{.}}</p>
@@ -43,15 +43,16 @@
 {{- if .Lockouts}}
 <section class="panel lockouts">
   <div class="heading">
-    <h2>Locked out of logging in</h2>
-    <span class="muted">after too many failed logins (security.loginAttempts)</span>
+    <h2>Blocked addresses</h2>
+    <span class="muted">after too many failed logins, or probing for weaknesses</span>
   </div>
   <table>
-    <thead><tr><th scope="col">Address</th><th scope="col" class="num">For</th><th scope="col"><span class="visually-hidden">Unblock</span></th></tr></thead>
+    <thead><tr><th scope="col">Address</th><th scope="col">Blocked from</th><th scope="col" class="num">For</th><th scope="col"><span class="visually-hidden">Unblock</span></th></tr></thead>
     <tbody>
     {{- range .Lockouts}}
       <tr>
         <th scope="row" class="mono">{{.Address}}</th>
+        <td>{{.From}}</td>
         <td class="num mono">{{.Left}}</td>
         <td class="num"><form method="post" action="/unblock"><input type="hidden" name="address" value="{{.Address}}"><button type="submit" class="secondary">Unblock</button></form></td>
       </tr>

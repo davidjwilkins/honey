@@ -79,8 +79,9 @@ type Options struct {
 	// the settings page, if set.  The page never changes them: it lets
 	// them be edited and exported as a new config file.
 	Settings *config.File
-	// Lockouts lists the addresses locked out of logging in, and Unblock
-	// ends one's lockout (see guard.Limits), if set
+	// Lockouts lists the addresses locked out of logging in or banned
+	// from WordPress, and Unblock ends one's lockout and ban (see
+	// guard.Limits), if set
 	Lockouts func() []guard.Lockout
 	Unblock  func(address string) bool
 }
@@ -241,7 +242,7 @@ type view struct {
 	RecentError    bool   // whether it was in the last hour
 
 	Events []event
-	// Lockouts are the addresses locked out of logging in
+	// Lockouts are the addresses locked out of logging in, or banned
 	Lockouts []lockoutRow
 
 	// The result of a purge, if there was one
@@ -250,6 +251,7 @@ type view struct {
 
 type lockoutRow struct {
 	Address string
+	From    string // what it's blocked from
 	Left    string // e.g. "12m 30s"
 }
 
@@ -326,7 +328,7 @@ func (a *admin) view() view {
 	if a.opts.Lockouts != nil {
 		now := time.Now()
 		for _, l := range a.opts.Lockouts() {
-			v.Lockouts = append(v.Lockouts, lockoutRow{Address: l.Address, Left: formatDuration(l.Until.Sub(now).Round(time.Second))})
+			v.Lockouts = append(v.Lockouts, lockoutRow{Address: l.Address, From: l.From, Left: formatDuration(l.Until.Sub(now).Round(time.Second))})
 		}
 	}
 	if a.opts.Metrics == nil {
@@ -549,12 +551,12 @@ func (a *admin) unblock(w http.ResponseWriter, r *http.Request) {
 	var result outcome
 	switch {
 	case a.opts.Unblock == nil:
-		result.Problem = "Addresses aren't locked out."
+		result.Problem = "Addresses aren't blocked."
 	case a.opts.Unblock(address):
 		result.Unblocked = address
 		a.opts.Events.Add(events.Info, "", 0, events.Text("unblocked "+address+" from the admin page"))
 	default:
-		result.Problem = fmt.Sprintf("%s isn't locked out.", address)
+		result.Problem = fmt.Sprintf("%s isn't blocked.", address)
 	}
 	a.redirectWith(w, r, result)
 }

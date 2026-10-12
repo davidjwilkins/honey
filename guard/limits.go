@@ -30,6 +30,12 @@ type LimitOptions struct {
 	// turns rate limiting off.
 	Rate  float64
 	Burst int
+	// ProbeLimit is how many probes (requests for sensitive files and
+	// known exploits: see isProbe) an address may make within
+	// probeWindow before it's banned from the backend for ProbeBan.  Zero
+	// turns bans off.
+	ProbeLimit int
+	ProbeBan   time.Duration
 	// Allow are addresses which are never locked out or limited
 	Allow []*net.IPNet
 	// Events, if set, is where lockouts and limiting are logged
@@ -63,7 +69,15 @@ type address struct {
 	// filled), refilled at the Rate, up to the Burst
 	tokens float64
 	filled time.Time
+	// probes counts its probes since firstProbe, and bannedUntil is when
+	// its ban from the backend ends
+	probes      int
+	firstProbe  time.Time
+	bannedUntil time.Time
 }
+
+// probeWindow is how long probes are counted over
+const probeWindow = 10 * time.Minute
 
 // NewLimits returns Limits configured by opts
 func NewLimits(opts LimitOptions) *Limits {
@@ -182,25 +196,73 @@ func (l *Limits) LoginSucceeded(r *http.Request) {
 	}
 }
 
-// AllowBackend returns whether r's address may send another request to the
-// backend, or else how long until it may (see fetch.Options.BackendGate)
-func (l *Limits) AllowBackend(r *http.Request) (time.Duration, bool) {
-	if l == nil || l.opts.Rate <= 0 {
-		return 0, true
+// Probed records a probe from r's address, banning it from the backend if
+// it has probed too often
+func (l *Limits) Probed(r *http.Request) {
+	if l == nil || l.opts.ProbeLimit <= 0 {
+		return
 	}
 	key, ip := l.addressKey(r)
 	if key == "" {
-		return 0, true
+		return
 	}
 	l.mu.Lock()
 	now := l.opts.now()
 	a := l.get(key, true)
+	if now.Sub(a.firstProbe) > probeWindow {
+		a.probes, a.firstProbe = 0, now
+	}
+	a.probes++
+	banned := a.probes >= l.opts.ProbeLimit && !a.bannedUntil.After(now)
+	probes := a.probes
+	if banned {
+		a.bannedUntil = now.Add(l.opts.ProbeBan)
+		a.probes, a.firstProbe = 0, time.Time{}
+	}
+	l.mu.Unlock()
+	if banned {
+		l.opts.Events.Add(events.Refused, "", 0, events.Text(fmt.Sprintf("banned %s from WordPress for %s, after %d probes for sensitive files or exploits (most recently %s %s); it's still served cached pages",
+			describe(key, ip), formatDuration(l.opts.ProbeBan), probes, r.Method, r.URL.Path)))
+	}
+}
+
+// AllowBackend returns "" if r's address may send another request to the
+// backend, or else why not (the setting which refuses it), and how long
+// until it may (see fetch.Options.BackendGate)
+func (l *Limits) AllowBackend(r *http.Request) (time.Duration, string) {
+	if l == nil || (l.opts.Rate <= 0 && l.opts.ProbeLimit <= 0) {
+		return 0, ""
+	}
+	key, ip := l.addressKey(r)
+	if key == "" {
+		return 0, ""
+	}
+	l.mu.Lock()
+	now := l.opts.now()
+	if l.opts.Rate <= 0 {
+		// Only bans: don't keep track of every address
+		a := l.get(key, false)
+		var left time.Duration
+		if a != nil {
+			left = a.bannedUntil.Sub(now)
+		}
+		l.mu.Unlock()
+		if left > 0 {
+			return left, "security.probeLimit"
+		}
+		return 0, ""
+	}
+	a := l.get(key, true)
+	if left := a.bannedUntil.Sub(now); left > 0 {
+		l.mu.Unlock()
+		return left, "security.probeLimit"
+	}
 	a.tokens = math.Min(float64(l.opts.Burst), a.tokens+now.Sub(a.filled).Seconds()*l.opts.Rate)
 	a.filled = now
 	if a.tokens >= 1 {
 		a.tokens--
 		l.mu.Unlock()
-		return 0, true
+		return 0, ""
 	}
 	wait := time.Duration((1 - a.tokens) / l.opts.Rate * float64(time.Second))
 	l.mu.Unlock()
@@ -208,18 +270,27 @@ func (l *Limits) AllowBackend(r *http.Request) (time.Duration, bool) {
 		e.Text = fmt.Sprintf("rate-limited %s: refused %d %s to WordPress (it may send %s a second)",
 			describe(key, ip), e.Count, plural(e.Count), formatRate(l.opts.Rate))
 	})
-	return wait, false
+	return wait, "security.rateLimit"
 }
 
-// Lockout is an address which is locked out of logging in
+// Lockout is an address which is locked out of logging in, or banned
+// from the backend
 type Lockout struct {
 	// Address is the address, or IPv6 /64 network
 	Address string
 	Until   time.Time
+	// From is what it's blocked from: LockedOutOfLogins or BannedFromBackend
+	From string
 }
 
-// Lockouts returns the addresses which are locked out now, the longest
-// locked out first
+// What addresses are blocked from (see Lockout)
+const (
+	LockedOutOfLogins = "logging in"
+	BannedFromBackend = "WordPress (for probing)"
+)
+
+// Lockouts returns the addresses which are locked out or banned now, the
+// longest first
 func (l *Limits) Lockouts() []Lockout {
 	if l == nil {
 		return nil
@@ -229,20 +300,27 @@ func (l *Limits) Lockouts() []Lockout {
 	now := l.opts.now()
 	var lockouts []Lockout
 	for key, e := range l.addresses {
-		if a := e.Value.(*address); a.lockedUntil.After(now) {
-			lockouts = append(lockouts, Lockout{Address: key, Until: a.lockedUntil})
+		a := e.Value.(*address)
+		if a.lockedUntil.After(now) {
+			lockouts = append(lockouts, Lockout{Address: key, Until: a.lockedUntil, From: LockedOutOfLogins})
+		}
+		if a.bannedUntil.After(now) {
+			lockouts = append(lockouts, Lockout{Address: key, Until: a.bannedUntil, From: BannedFromBackend})
 		}
 	}
 	sort.Slice(lockouts, func(i, j int) bool {
 		if !lockouts[i].Until.Equal(lockouts[j].Until) {
 			return lockouts[i].Until.After(lockouts[j].Until)
 		}
-		return lockouts[i].Address < lockouts[j].Address
+		if lockouts[i].Address != lockouts[j].Address {
+			return lockouts[i].Address < lockouts[j].Address
+		}
+		return lockouts[i].From < lockouts[j].From
 	})
 	return lockouts
 }
 
-// Unblock ends the lockout of the address (or IPv6 network) key (and rate limiting), and returns whether
+// Unblock ends the lockout and ban of the address (or IPv6 network) key (and rate limiting), and returns whether
 // it was locked out
 func (l *Limits) Unblock(key string) bool {
 	if l == nil {
@@ -255,7 +333,8 @@ func (l *Limits) Unblock(key string) bool {
 		return false
 	}
 	a := e.Value.(*address)
-	wasLocked := a.lockedUntil.After(l.opts.now())
+	now := l.opts.now()
+	wasLocked := a.lockedUntil.After(now) || a.bannedUntil.After(now)
 	l.lru.Remove(e)
 	delete(l.addresses, key)
 	return wasLocked

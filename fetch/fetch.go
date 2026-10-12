@@ -69,15 +69,25 @@ type Options struct {
 	// hosts are logged, e.g. for the admin page.
 	Events *events.Log
 	// BackendGate, if set, says whether a request may be sent to the
-	// backend (e.g. by its address's rate limit), or else how long until
-	// it may: requests which can't are refused with a 429.  It isn't asked
-	// about requests the cache answers, or which wait for another's fetch.
-	BackendGate func(r *http.Request) (time.Duration, bool)
+	// backend (e.g. by its address's rate limit): "" if it may, or else why
+	// not (the setting which refuses it), and how long until it may.
+	// Requests which can't are refused with a 429.  It isn't asked about
+	// requests the cache answers, or which wait for another's fetch.
+	BackendGate func(r *http.Request) (time.Duration, string)
+	// HideUsers sends the backend HideUsersHeader with every request, so
+	// that the WordPress plugin hides the site's users from visitors who
+	// aren't logged in
+	HideUsers bool
 	// EarlyHints is whether browsers are sent a 103 Early Hints response,
 	// with the stylesheets and scripts their page needs, while a request
 	// waits for the backend (see cache/hints.go)
 	EarlyHints bool
 }
+
+// HideUsersHeader tells the WordPress plugin to hide the site's users from
+// visitors who aren't logged in (see Options.HideUsers).  Only Honey sends
+// it: visitors' are removed.
+const HideUsersHeader = "X-Honey-Hide-Users"
 
 // FetchWithOptions is like Fetch, configured by opts.
 func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, opts Options) http.HandlerFunc {
@@ -89,6 +99,10 @@ func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, op
 		// Only the cache sends these to the backend (see forBackend)
 		r.Header.Del(cache.FragmentTokenHeader)
 		r.Header.Del("Surrogate-Capability")
+		r.Header.Del(HideUsersHeader)
+		if opts.HideUsers {
+			r.Header.Set(HideUsersHeader, "1")
+		}
 		if r.Method == MethodPurge && r.Header.Get(FragmentPurgeHeader) != "" {
 			handleFragmentPurge(w, r, opts, purgeFragments)
 			return
@@ -182,17 +196,17 @@ func queryFilter(c cache.Cacher, keep []string) func(*http.Request) {
 
 // serveFromCache returns a handler for requests which have already been
 // switched to the backend.
-func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http.Request), earlyHints bool, gate func(*http.Request) (time.Duration, bool)) http.HandlerFunc {
+func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http.Request), earlyHints bool, gate func(*http.Request) (time.Duration, string)) http.HandlerFunc {
 	// allowed returns whether r may go to the backend, refusing it if not
 	allowed := func(w http.ResponseWriter, r *http.Request) bool {
 		if gate == nil {
 			return true
 		}
-		wait, ok := gate(r)
-		if !ok {
-			refuseLimited(w, wait)
+		wait, why := gate(r)
+		if why != "" {
+			refuseLimited(w, wait, why)
 		}
-		return ok
+		return why == ""
 	}
 	// hint sends Early Hints for r, which is going to wait for the backend
 	hint := func(w http.ResponseWriter, r *http.Request) {
@@ -282,8 +296,9 @@ func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http
 	return serve
 }
 
-// refuseLimited refuses a request which may not go to the backend for wait
-func refuseLimited(w http.ResponseWriter, wait time.Duration) {
+// refuseLimited refuses a request which may not go to the backend for
+// wait, because of the setting why
+func refuseLimited(w http.ResponseWriter, wait time.Duration, why string) {
 	seconds := int(math.Ceil(wait.Seconds()))
 	if seconds < 1 {
 		seconds = 1
@@ -291,7 +306,7 @@ func refuseLimited(w http.ResponseWriter, wait time.Duration) {
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
 	w.Header().Set("X-Honey-Cache", "BLOCKED")
 	w.Header().Set("Cache-Control", "no-store")
-	http.Error(w, "Too Many Requests: rate-limited by Honey (security.rateLimit)", http.StatusTooManyRequests)
+	http.Error(w, "Too Many Requests: blocked by Honey ("+why+")", http.StatusTooManyRequests)
 }
 
 // overrideHeaders make some backends (e.g. WordPress's REST API, or IIS)

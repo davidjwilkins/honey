@@ -132,6 +132,10 @@ allowIPs = []
 # loginLockout = "15m"
 # rateLimit = 5               # requests a second an address may send to WordPress (cache hits
 #                             # don't count); off by default: set trustedProxies first
+# probeLimit = 5              # probes for .env, backups, exploits... before an address is banned
+# probeBan = "1h"             #   from WordPress (it's still served cached pages)
+# adminIPs = ["198.51.100.7"] # the only addresses the dashboard and login page are served to
+# hideUsers = true            # hide usernames (?author=N, the REST API's users) from visitors
 
 # Serve HTTPS and HTTP/3 without a proxy in front, with certificates from
 # Let's Encrypt for the hosts (which must be set).  Set listen = ":80" for

@@ -129,7 +129,8 @@ func TestSecurityHeaders(t *testing.T) {
 }
 
 func TestPasswordGuessersAreLockedOut(t *testing.T) {
-	const attacker = "203.0.113.66"
+	// In adminIPs, so it may log in at all
+	const attacker = "198.51.100.66"
 	jar := newJar(t)
 	c := client(jar)
 	attempt := func(password string) page {
@@ -154,4 +155,59 @@ func TestPasswordGuessersAreLockedOut(t *testing.T) {
 	unblock := do(t, c, http.MethodPost, adminPage+"/unblock", url.Values{"address": {attacker}}, "Origin", adminPage)
 	require.Equal(t, http.StatusSeeOther, unblock.StatusCode)
 	assert.Equal(t, http.StatusFound, attempt("password").StatusCode, "unblocked, it can log in")
+}
+
+func TestProbersAreBannedFromWordPress(t *testing.T) {
+	const prober = "203.0.113.88"
+	c := client(nil)
+	cached(t, c, "/hello-world/")
+	for _, p := range []string{"/.env", "/.git/config", "/wp-config.php.bak", "/backup.sql", "/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php"} {
+		assert.Equal(t, http.StatusForbidden, get(t, c, p, "X-Forwarded-For", prober).StatusCode, p)
+	}
+	resp := get(t, c, "/?s=probing", "X-Forwarded-For", prober)
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode, "banned from WordPress")
+	contains(t, resp.Body, "security.probeLimit")
+	page := get(t, c, "/hello-world/", "X-Forwarded-For", prober)
+	assert.Equal(t, "HIT", page.Cache, "but still served cached pages")
+	contains(t, page.Body, "Hello world")
+	assert.Equal(t, http.StatusOK, get(t, c, "/?s=probing").StatusCode, "others aren't banned")
+
+	contains(t, get(t, c, adminPage+"/").Body, "WordPress (for probing)", "the admin page lists the ban")
+	unblock := do(t, c, http.MethodPost, adminPage+"/unblock", url.Values{"address": {prober}}, "Origin", adminPage)
+	require.Equal(t, http.StatusSeeOther, unblock.StatusCode)
+	assert.Equal(t, http.StatusOK, get(t, c, "/?s=probing", "X-Forwarded-For", prober).StatusCode)
+}
+
+func TestTheDashboardIsOnlyForAdminIPs(t *testing.T) {
+	const outsider = "203.0.113.99"
+	c := client(newJar(t))
+	for _, p := range []string{"/wp-admin/", "/wp-login.php"} {
+		resp := get(t, c, p, "X-Forwarded-For", outsider)
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode, p)
+		contains(t, resp.Body, "security.adminIPs", p)
+	}
+	ajax := do(t, c, http.MethodPost, "/wp-admin/admin-ajax.php", url.Values{"action": {"nothing"}}, "X-Forwarded-For", outsider)
+	assert.NotEqual(t, http.StatusForbidden, ajax.StatusCode, "themes' and plugins' AJAX still reaches WordPress")
+	postpass := do(t, c, http.MethodPost, "/wp-login.php?action=postpass", url.Values{"post_password": {"open-sesame"}},
+		"X-Forwarded-For", outsider, "Referer", site+"/members-only/")
+	assert.Equal(t, http.StatusFound, postpass.StatusCode, "as do posts' passwords")
+	logIn(t, "admin") // from the Docker network
+}
+
+func TestUsersAreHidden(t *testing.T) {
+	c := client(nil)
+	for _, p := range []string{"/?author=1", "/wp-json/wp/v2/users", "/wp-json/wp/v2/users/1", "/?rest_route=/wp/v2/users", "/wp-sitemap-users-1.xml"} {
+		assert.Equal(t, http.StatusNotFound, get(t, c, p).StatusCode, p)
+		// A made-up logged in cookie gets past Honey, but not WordPress
+		resp := get(t, c, p, "Cookie", "wordpress_logged_in_abc=admin|0|forged")
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode, "%s with a forged cookie", p)
+		notContains(t, resp.Body, `"slug":"admin"`, p)
+	}
+	notContains(t, get(t, c, "/wp-sitemap.xml").Body, "wp-sitemap-users", "the authors' sitemap is left out")
+	assert.Equal(t, http.StatusOK, get(t, c, "/wp-json/wp/v2/posts").StatusCode, "the rest of the API works")
+
+	admin := client(logIn(t, "admin"))
+	resp := get(t, admin, "/?author=1")
+	assert.Equal(t, http.StatusMovedPermanently, resp.StatusCode, "logged in users still get the author's archive")
+	assert.Contains(t, resp.Header.Get("Location"), "/author/admin/")
 }

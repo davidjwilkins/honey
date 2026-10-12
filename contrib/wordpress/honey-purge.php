@@ -56,6 +56,13 @@
  * for commenters, if Honey's cache.esiCookies includes "comment_author_".
  * Classic themes aren't supported yet.
  *
+ * Hiding users: with Honey's security.hideUsers, Honey asks (with its
+ * X-Honey-Hide-Users header) for the site's users to be hidden from
+ * visitors who aren't logged in, so that their usernames can't be listed
+ * for guessing passwords: ?author=N (which redirects to the author's
+ * archive) is a 404, the REST API's users can't be listed, and the
+ * sitemap of authors is left out.
+ *
  * Purges are sent when WordPress has finished handling the request, once
  * each, as PURGE requests (see Honey's README).  Most are soft: if Honey's
  * staleWhileRevalidate allows, the old page is served once more while the
@@ -579,6 +586,57 @@ final class ESI {
 	}
 }
 
+/**
+ * Hides the site's users from visitors who aren't logged in, when Honey
+ * asks (see above).
+ */
+final class Users {
+	public static function init() {
+		if ( empty( $_SERVER['HTTP_X_HONEY_HIDE_USERS'] ) ) {
+			return;
+		}
+		// Before redirect_canonical sends ?author=N to the author's archive
+		add_action( 'template_redirect', array( __CLASS__, 'author_query' ), 0 );
+		// After the REST API has checked who the visitor is
+		add_filter( 'rest_pre_dispatch', array( __CLASS__, 'rest' ), 10, 3 );
+		add_filter( 'wp_sitemaps_add_provider', array( __CLASS__, 'sitemap' ), 10, 2 );
+	}
+
+	/**
+	 * Makes ?author=N a 404, and the authors' sitemap (which WordPress would
+	 * otherwise answer with the home page, once it's left out).
+	 */
+	public static function author_query() {
+		if ( is_user_logged_in() ) {
+			return;
+		}
+		if ( ! isset( $_GET['author'] ) && 'users' !== get_query_var( 'sitemap' ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			return;
+		}
+		global $wp_query;
+		$wp_query->set_404();
+		status_header( 404 );
+		nocache_headers();
+	}
+
+	/** Refuses to list users, or show one, through the REST API. */
+	public static function rest( $result, $server, $request ) {
+		if ( null !== $result || is_user_logged_in() ) {
+			return $result;
+		}
+		if ( preg_match( '#^/wp/v2/users(/|$)#i', $request->get_route() ) ) {
+			return new \WP_Error( 'rest_no_route', 'No route was found matching the URL and request method.', array( 'status' => 404 ) );
+		}
+		return $result;
+	}
+
+	/** Leaves the sitemap of authors out. */
+	public static function sitemap( $provider, $name ) {
+		return 'users' === $name ? false : $provider;
+	}
+}
+
 Purge::init();
 Fragments::init();
 ESI::init();
+Users::init();

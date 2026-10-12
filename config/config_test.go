@@ -649,8 +649,8 @@ func TestParseSecurity(t *testing.T) {
 	const base = "[backend]\nuri = \"https://www.example.com\"\n"
 	cfg, err := Parse(base)
 	require.NoError(t, err)
-	assert.Equal(t, Security{BlockPaths: true, XMLRPC: "safe", Headers: true, LoginAttempts: DefaultLoginAttempts, LoginLockout: DefaultLoginLockout},
-		cfg.Security, "on by default, without HSTS or rate limiting")
+	assert.Equal(t, Security{BlockPaths: true, XMLRPC: "safe", Headers: true, LoginAttempts: DefaultLoginAttempts, LoginLockout: DefaultLoginLockout,
+		ProbeLimit: DefaultProbeLimit, ProbeBan: DefaultProbeBan}, cfg.Security, "on by default, without HSTS or rate limiting")
 
 	cfg, err = Parse("hosts = [\"www.example.com\"]\n[tls]\nauto = true\n" + base)
 	require.NoError(t, err)
@@ -661,7 +661,8 @@ func TestParseSecurity(t *testing.T) {
 
 	cfg, err = Parse("[security]\nblockPaths = false\nxmlrpc = \"off\"\nheaders = false\nhsts = \"max-age=63072000; includeSubDomains; preload\"\n" + base)
 	require.NoError(t, err)
-	assert.Equal(t, Security{XMLRPC: "off", HSTS: "max-age=63072000; includeSubDomains; preload", LoginAttempts: DefaultLoginAttempts, LoginLockout: DefaultLoginLockout}, cfg.Security)
+	assert.Equal(t, Security{XMLRPC: "off", HSTS: "max-age=63072000; includeSubDomains; preload", LoginAttempts: DefaultLoginAttempts, LoginLockout: DefaultLoginLockout,
+		ProbeLimit: DefaultProbeLimit, ProbeBan: DefaultProbeBan}, cfg.Security)
 	cfg, err = Parse("hosts = [\"www.example.com\"]\n[tls]\nauto = true\n[security]\nhsts = \"off\"\n" + base)
 	require.NoError(t, err)
 	assert.Empty(t, cfg.Security.HSTS)
@@ -699,6 +700,32 @@ func TestParseLimits(t *testing.T) {
 		{"[security]\nrateLimit = -1", "security.rateLimit"},
 		{"[security]\nrateBurst = 10", "security.rateBurst is set, but security.rateLimit isn't"},
 		{"[security]\nallowIPs = [\"nowhere\"]", "security.allowIPs"},
+	} {
+		_, err := Parse(tc.config + "\n" + base)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}
+
+func TestParseProbesAdminIPsAndUsers(t *testing.T) {
+	const base = "[backend]\nuri = \"https://www.example.com\"\n"
+	cfg, err := Parse(base)
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Security.AdminIPs, "the dashboard is open by default")
+	assert.False(t, cfg.Security.HideUsers)
+
+	cfg, err = Parse("[security]\nprobeLimit = 3\nprobeBan = \"1d\"\nadminIPs = [\"198.51.100.7\", \"2001:db8::/32\"]\nhideUsers = true\n" + base)
+	require.NoError(t, err)
+	assert.Equal(t, 3, cfg.Security.ProbeLimit)
+	assert.Equal(t, 24*time.Hour, cfg.Security.ProbeBan)
+	require.Len(t, cfg.Security.AdminIPs, 2)
+	assert.True(t, cfg.Security.HideUsers)
+
+	for _, tc := range []struct{ config, err string }{
+		{"[security]\nprobeLimit = -1", "security.probeLimit"},
+		{"[security]\nprobeBan = \"5s\"", "security.probeBan"},
+		{"[security]\nadminIPs = [\"office\"]", "security.adminIPs"},
 	} {
 		_, err := Parse(tc.config + "\n" + base)
 		if assert.Error(t, err, tc.config) {

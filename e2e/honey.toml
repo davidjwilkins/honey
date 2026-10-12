@@ -15,6 +15,14 @@ esiCookies = ["comment_author_"]
 # Browsers waiting for WordPress get the page's stylesheets and scripts first
 earlyHints = true
 
+[security]
+# The tests come from Docker's network: others are made up, with
+# X-Forwarded-For (Docker's gateway is a trusted proxy)
+adminIPs = ["172.16.0.0/12", "192.168.0.0/16", "10.0.0.0/8", "198.51.100.0/24"]
+# and never banned for the probes the tests make
+allowIPs = ["172.16.0.0/12", "192.168.0.0/16", "10.0.0.0/8"]
+hideUsers = true
+
 [[route]]
 match = "(?:[?&]preview=true(?:&|$)|/(?:feed|wp-admin|wp-login))"
 regex = true

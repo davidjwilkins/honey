@@ -19,7 +19,7 @@ func TestLockouts(t *testing.T) {
 		Lockouts: func() []guard.Lockout {
 			var l []guard.Lockout
 			for address, until := range locked {
-				l = append(l, guard.Lockout{Address: address, Until: until})
+				l = append(l, guard.Lockout{Address: address, Until: until, From: guard.BannedFromBackend})
 			}
 			return l
 		},
@@ -30,7 +30,8 @@ func TestLockouts(t *testing.T) {
 		},
 	})
 	page := do(h, http.MethodGet, "/", "127.0.0.1:9090", nil).Body.String()
-	assert.Contains(t, page, "Locked out of logging in")
+	assert.Contains(t, page, "Blocked addresses")
+	assert.Contains(t, page, "<td>WordPress (for probing)</td>")
 	assert.Contains(t, page, `<th scope="row" class="mono">203.0.113.9</th>`)
 	assert.Contains(t, page, `name="address" value="203.0.113.9"`)
 
@@ -38,11 +39,11 @@ func TestLockouts(t *testing.T) {
 	require.Equal(t, http.StatusSeeOther, resp.Code)
 	page = do(h, http.MethodGet, resp.Header.Get("Location"), "127.0.0.1:9090", nil).Body.String()
 	assert.Contains(t, page, "Unblocked <span class=\"mono\">203.0.113.9</span>")
-	assert.NotContains(t, page, "Locked out of logging in", "the list is gone with the last lockout")
+	assert.NotContains(t, page, "Blocked addresses", "the list is gone with the last lockout")
 
 	resp = post(h, "/unblock", url.Values{"address": {"203.0.113.9"}})
 	page = do(h, http.MethodGet, resp.Header.Get("Location"), "127.0.0.1:9090", nil).Body.String()
-	assert.Contains(t, page, "203.0.113.9 isn&#39;t locked out.")
+	assert.Contains(t, page, "203.0.113.9 isn&#39;t blocked.")
 
 	w := do(h, http.MethodPost, "/unblock", "127.0.0.1:9090", url.Values{"address": {"203.0.113.9"}}, "Origin", "https://evil.example")
 	assert.Equal(t, http.StatusForbidden, w.Code, "other sites can't post to it")
