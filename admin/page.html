@@ -1,21 +1,33 @@
-{{define "page" -}}
+{{define "head" -}}
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>Honey admin</title>
+<title>{{.}} · Honey admin</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/admin.css">
 <script src="/admin.js" defer></script>
 </head>
 <body>
-<main>
+{{- end}}
+
+{{define "top" -}}
 <header class="top">
   <p class="brand"><span class="logo">honey</span> <span class="mono muted">{{.Version}} · caching {{.Backend}}{{with .Hosts}} · hosts {{.}}{{end}} · up {{duration .Uptime}}</span></p>
-  <p class="live muted"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="5"></circle></svg> Live · refreshes every 5s</p>
+  <nav aria-label="Admin pages" class="tabs">
+    <a href="/"{{if eq .Section "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
+    <a href="/test"{{if eq .Section "test"}} aria-current="page"{{end}}>Test a URL</a>
+    <a href="/settings"{{if eq .Section "settings"}} aria-current="page"{{end}}>Settings</a>
+  </nav>
 </header>
+{{- end}}
+
+{{define "page" -}}
+{{template "head" "Dashboard"}}
+<main>
+{{template "top" .}}
 
 {{with .Purged -}}
 <p class="notice ok" role="status">{{if .Soft}}Expired{{else}}Purged{{end}} {{.Count}} cached response{{if ne .Count 1}}s{{end}} for <span class="mono">{{.Target}}</span>{{if .Prefix}} and everything under it{{end}}{{if .Soft}}: they'll be refreshed the next time they're requested{{end}}.</p>
@@ -51,7 +63,7 @@
 {{template "stats" .}}
 </div>
 
-<footer class="muted">Counts are since Honey started. Prometheus metrics are at <a href="/metrics">/metrics</a>.</footer>
+<footer class="muted"><span class="live"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="5"></circle></svg> Live: refreshes every 5s.</span> Counts are since Honey started. Prometheus metrics are at <a href="/metrics">/metrics</a>.</footer>
 </main>
 </body>
 </html>

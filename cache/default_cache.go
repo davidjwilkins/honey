@@ -176,19 +176,27 @@ func NewDefaultCacher() *defaultCacher {
 // is set), does not have an Authorization header or any of the
 // BypassCookies, and does not match a route with NoCache set
 func (c *defaultCacher) CanCache(r *http.Request) bool {
+	return c.uncacheable(r) == ""
+}
+
+// uncacheable returns why r can't be cached (see CanCache), or "" if it can
+func (c *defaultCacher) uncacheable(r *http.Request) string {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		return false
+		return "only GET and HEAD requests are cached"
 	}
 	if c.skipStaticFiles && utilities.IsStaticFile(r.URL.Path) {
-		return false
+		return "static files aren't cached (staticFiles = false)"
 	}
 	if r.Header.Get("Authorization") != "" {
-		return false
+		return "it has an Authorization header"
 	}
-	if c.bypassCookie(r) != "" {
-		return false
+	if name := c.bypassCookie(r); name != "" {
+		return fmt.Sprintf("it has the cookie %s, which marks visitors whose pages may be personal (bypassCookies)", name)
 	}
-	return !c.routing(r).noCache
+	if c.routing(r).noCache {
+		return "a route stops it being cached"
+	}
+	return ""
 }
 
 // AddSkipPrefix prevents requests whose path starts with prefix

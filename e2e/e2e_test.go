@@ -491,3 +491,29 @@ func TestRenamingACategoryPurgesIt(t *testing.T) {
 	wp(t, "term", "update", "category", "gardening", "--by=slug", "--name=Beekeeping")
 	eventually(t, c, "/category/gardening/", "Beekeeping")
 }
+
+func TestAdminTestAndSettings(t *testing.T) {
+	c := client(nil)
+	_, path := newPost(t, "Tested on the admin page")
+	cached(t, c, path)
+
+	page := get(t, c, adminPage+"/test?"+url.Values{"url": {site + path}, "cookies": {"_ga=1"}}.Encode())
+	require.Equal(t, http.StatusOK, page.StatusCode)
+	contains(t, page.Body, "Cacheable, in the cache now")
+	contains(t, page.Body, "removed _ga before the backend sees them")
+	// queryParams isn't set, so any parameter makes it another page
+	page = get(t, c, adminPage+"/test?"+url.Values{"url": {site + path + "?utm_source=x"}}.Encode())
+	contains(t, page.Body, "Cacheable, not in the cache")
+	page = get(t, c, adminPage+"/test?"+url.Values{"url": {site + "/wp-admin/"}}.Encode())
+	contains(t, page.Body, "Not cached: every request goes to the backend")
+
+	settings := get(t, c, adminPage+"/settings")
+	require.Equal(t, http.StatusOK, settings.StatusCode)
+	notContains(t, settings.Body, "e2e-secret-0123456789", "the secret is never shown")
+	export := do(t, c, http.MethodPost, adminPage+"/settings/export",
+		url.Values{"cache.defaultTTL": {"10m"}}, "Origin", adminPage)
+	require.Equal(t, http.StatusOK, export.StatusCode, export.Body)
+	contains(t, export.Body, `defaultTTL = "10m"`)
+	contains(t, export.Body, `secret = "e2e-secret-0123456789"`, "the export keeps the secret")
+	contains(t, export.Body, `sitemap = "http://localhost:8080/wp-sitemap.xml"`, "and the settings which weren't changed")
+}

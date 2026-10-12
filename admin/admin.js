@@ -1,8 +1,28 @@
-// Refreshes the stats every few seconds while the page is visible, says
-// how many cached responses a purge would remove, and asks before purging
-// everything.
+// Previews settings as they're edited, refreshes the stats every few
+// seconds while the page is visible, says how many cached responses a
+// purge would remove, and asks before purging everything.
 (function () {
+  var settings = document.getElementById("settings");
+  if (settings) {
+    // Preview the settings as they're edited
+    var preview = document.getElementById("preview");
+    var waiting, sent = 0;
+    function update() {
+      var ask = ++sent;
+      fetch("/settings/preview", { method: "POST", body: new URLSearchParams(new FormData(settings)), cache: "no-store" })
+        .then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
+        .then(function (html) { if (ask === sent) preview.innerHTML = html; })
+        .catch(function () { /* the Preview button still works */ });
+    }
+    settings.addEventListener("input", function () {
+      clearTimeout(waiting);
+      waiting = setTimeout(update, 300);
+    });
+    settings.addEventListener("change", update);
+  }
+
   var stats = document.getElementById("stats");
+  if (!stats) return;
   function refresh() {
     if (document.hidden) return;
     fetch("/stats", { cache: "no-store" })

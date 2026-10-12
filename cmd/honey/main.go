@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -304,9 +305,29 @@ func build(cfg *config.Config, started time.Time) *honey {
 			Events:  eventLog,
 			Purge:   fetch.Purger(c, cfg.Backend, fetchOpts),
 			Count:   fetch.Counter(c, cfg.Backend, fetchOpts),
+			Explain: func(r *http.Request) fetch.Explanation {
+				return fetch.Explain(c, cfg.Backend, fetchOpts, r)
+			},
+			Origin:   siteOrigin(cfg),
+			Settings: cfg.File,
 		})
 	}
 	return h
+}
+
+// siteOrigin guesses the site's scheme and host (e.g.
+// https://www.example.com), for paths tested on the admin page: from the
+// sitemap, if the cache is warmed, or else the first of the hosts.
+func siteOrigin(cfg *config.Config) string {
+	if cfg.Warm.Sitemap != nil {
+		return cfg.Warm.Sitemap.Scheme + "://" + cfg.Warm.Sitemap.Host
+	}
+	for _, host := range cfg.Hosts {
+		if !strings.HasPrefix(host, "*.") {
+			return "https://" + host
+		}
+	}
+	return ""
 }
 
 // accessLogOutput is where the access log is written
