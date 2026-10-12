@@ -127,6 +127,8 @@ type Optimize struct {
 	// PreloadMainImage learns each page's main image from visitors'
 	// browsers, and preloads it
 	PreloadMainImage bool
+	// SelfHostFonts serves Google Fonts from the site itself
+	SelfHostFonts bool
 }
 
 // Security configures protecting WordPress (see guard.Options)
@@ -360,6 +362,7 @@ type File struct {
 		KeepScriptsMatching  []string `toml:"keepScriptsMatching,omitempty"`
 		DelayScriptsTimeout  string   `toml:"delayScriptsTimeout,omitempty"`
 		PreloadMainImage     bool     `toml:"preloadMainImage,omitempty"`
+		SelfHostFonts        bool     `toml:"selfHostFonts,omitempty"`
 	} `toml:"optimize,omitempty"`
 	TLS struct {
 		Listen   string `toml:"listen,omitempty"`
@@ -858,6 +861,7 @@ func parseOptimize(f *File) (Optimize, error) {
 	opt := Optimize{
 		DelayScripts:     o.DelayScripts,
 		PreloadMainImage: o.PreloadMainImage,
+		SelfHostFonts:    o.SelfHostFonts,
 	}
 	for _, list := range []struct {
 		name string

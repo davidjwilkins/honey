@@ -83,6 +83,8 @@ stripCookies = []
 # delayScripts = true
 # Learn each page's main image from visitors' browsers, and preload it
 # preloadMainImage = true
+# Serve Google Fonts from the site itself
+# selfHostFonts = true
 
 # Don't cache previews, the RSS feed, or the admin and login pages.
 # regex = true matches against the path and query string; otherwise

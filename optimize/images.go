@@ -374,18 +374,22 @@ func beacon(need []string) []byte {
 	return []byte(`<script id="honey-main-image">` + s + `</script>`)
 }
 
-// Middleware handles reports of pages' main images (see BeaconPath), and
-// passes everything else on to next
+// Middleware handles reports of pages' main images (see BeaconPath) and
+// requests for self-hosted fonts (see FontsPath), and passes everything else
+// on to next
 func (o *Optimizer) Middleware(next http.Handler) http.Handler {
-	if o == nil || o.images == nil {
+	if o == nil || (o.images == nil && o.fonts == nil) {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != BeaconPath {
+		switch {
+		case o.images != nil && r.URL.Path == BeaconPath:
+			o.report(w, r)
+		case o.fonts != nil && strings.HasPrefix(r.URL.Path, FontsPath):
+			o.fonts.serve(w, r)
+		default:
 			next.ServeHTTP(w, r)
-			return
 		}
-		o.report(w, r)
 	})
 }
 

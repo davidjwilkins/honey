@@ -37,6 +37,9 @@ type Options struct {
 	// PreloadMainImage learns each page's main image from visitors'
 	// browsers, and preloads it
 	PreloadMainImage bool
+	// SelfHostFonts serves Google Fonts from the site itself (see
+	// fonts.go)
+	SelfHostFonts bool
 	// BackendHost, if set, is the Host pages are cached under, rather than
 	// the one visitors send (see fetch.Options.BackendHost)
 	BackendHost string
@@ -48,6 +51,10 @@ type Options struct {
 
 	// now is the time (for tests)
 	now func() time.Time
+	// googleCSS and googleFonts are where Google Fonts' stylesheets and
+	// fonts come from (for tests), and client fetches them
+	googleCSS, googleFonts string
+	client                 *http.Client
 }
 
 // Optimizer changes pages as Options say
@@ -56,11 +63,12 @@ type Optimizer struct {
 	delay  []string
 	keep   []string
 	images *imageStore
+	fonts  *fontStore
 }
 
 // New returns an Optimizer, or nil if opts turn nothing on
 func New(opts Options) *Optimizer {
-	if !opts.DelayScripts && !opts.PreloadMainImage {
+	if !opts.DelayScripts && !opts.PreloadMainImage && !opts.SelfHostFonts {
 		return nil
 	}
 	if opts.now == nil {
@@ -80,6 +88,9 @@ func New(opts Options) *Optimizer {
 	if opts.PreloadMainImage {
 		o.images = newImageStore(maxImagePages)
 	}
+	if opts.SelfHostFonts {
+		o.fonts = newFontStore(&o.opts)
+	}
 	return o
 }
 
@@ -89,9 +100,9 @@ var (
 	headEnd     = regexp.MustCompile(`(?i)</head\s*>`)
 	bodyEnd     = regexp.MustCompile(`(?i)</body\s*>`)
 	// tokens are the parts of a page which matter: comments, and
-	// elements whose content isn't HTML (which are skipped), scripts, and
-	// images
-	tokens = regexp.MustCompile(`(?is)<!--.*?-->|<script\b([^>]*)>(.*?)</script\s*>|<(?:noscript|template|textarea|style)\b.*?</(?:noscript|template|textarea|style)\s*>|<img\b([^>]*)>`)
+	// elements whose content isn't HTML (which are skipped), scripts,
+	// styles, images and links
+	tokens = regexp.MustCompile(`(?is)<!--.*?-->|<script\b([^>]*)>(.*?)</script\s*>|<style\b([^>]*)>(.*?)</style\s*>|<(?:noscript|template|textarea)\b.*?</(?:noscript|template|textarea)\s*>|<img\b([^>]*)>|<link\b([^>]*)>`)
 )
 
 // Rewrite returns the page body - a response to r.Request - changed as o's
@@ -105,6 +116,9 @@ func (o *Optimizer) Rewrite(r *http.Response, body []byte) []byte {
 	var edits []edit
 	if o.opts.DelayScripts {
 		edits = append(edits, o.delayScripts(page)...)
+	}
+	if o.fonts != nil {
+		edits = append(edits, o.selfHostFonts(page)...)
 	}
 	var head, tail []byte
 	if o.images != nil {
@@ -166,6 +180,19 @@ type page struct {
 	body    []byte
 	scripts []script
 	images  []image
+	styles  []style
+	links   []link
+}
+
+type style struct {
+	start, end int
+	content    [2]int
+}
+
+type link struct {
+	start, end int
+	attrs      [2]int
+	attributes map[string]string
 }
 
 type script struct {
@@ -194,8 +221,13 @@ func scan(body []byte) *page {
 				attributeMap: attributes(body[m[2]:m[3]]),
 			})
 		case m[6] >= 0:
-			p.images = append(p.images, image{start: m[0], end: m[1], attrs: [2]int{m[6], m[7]},
-				attributes: attributes(body[m[6]:m[7]])})
+			p.styles = append(p.styles, style{start: m[0], end: m[1], content: [2]int{m[8], m[9]}})
+		case m[10] >= 0:
+			p.images = append(p.images, image{start: m[0], end: m[1], attrs: [2]int{m[10], m[11]},
+				attributes: attributes(body[m[10]:m[11]])})
+		case m[12] >= 0:
+			p.links = append(p.links, link{start: m[0], end: m[1], attrs: [2]int{m[12], m[13]},
+				attributes: attributes(body[m[12]:m[13]])})
 		}
 	}
 	return p

@@ -42,6 +42,19 @@ func TestThirdPartyScriptsAreDelayed(t *testing.T) {
 	notContains(t, admin.Body, "honey-delayed")
 }
 
+func TestGoogleFontsAreSelfHosted(t *testing.T) {
+	path := newPostWith(t, "Fancy post", `<!-- wp:html -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lobster&display=swap">
+<!-- /wp:html -->`)
+	page := cached(t, client(nil), path)
+	assert.Contains(t, page.Body, `<link href="/.well-known/honey/fonts/css2?family=Lobster&amp;display=swap" rel="stylesheet">`)
+	notContains(t, page.Body, "fonts.googleapis.com/css2?family=Lobster")
+	// (Fetching it from Google is left to the unit tests, so that these
+	// don't depend on Google)
+	resp := get(t, client(nil), "/.well-known/honey/fonts/s/../../wp-config.php")
+	assert.NotEqual(t, http.StatusOK, resp.StatusCode)
+}
+
 func TestMainImagesArePreloaded(t *testing.T) {
 	image := "/wp-includes/images/w-logo-blue.png"
 	path := newPostWith(t, "Pictured post", `<!-- wp:image -->
