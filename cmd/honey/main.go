@@ -288,6 +288,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 		KeepMatching:     cfg.Optimize.KeepScriptsMatching,
 		DelayTimeout:     cfg.Optimize.DelayScriptsTimeout,
 		PreloadMainImage: cfg.Optimize.PreloadMainImage,
+		SelfHostFonts:    cfg.Optimize.SelfHostFonts,
 		BackendHost:      cfg.BackendHost,
 		Events:           eventLog,
 		Refresh:          func(host, path string) { refresh(host, path) },

@@ -196,6 +196,9 @@ var sections = []section{
 		{Key: "optimize.preloadMainImage", Kind: kindBool, Help: "Learn each page's main image from visitors' browsers, and preload it",
 			get: func(f *config.File) string { return yesNo(f.Optimize.PreloadMainImage) },
 			set: func(f *config.File, v string) error { f.Optimize.PreloadMainImage = v == "yes"; return nil }},
+		{Key: "optimize.selfHostFonts", Kind: kindBool, Help: "Serve Google Fonts from the site itself, rather than having browsers fetch them from Google",
+			get: func(f *config.File) string { return yesNo(f.Optimize.SelfHostFonts) },
+			set: func(f *config.File, v string) error { f.Optimize.SelfHostFonts = v == "yes"; return nil }},
 	}},
 	{"Backend", []*field{
 		text("backend.uri", "The web server running WordPress", "",

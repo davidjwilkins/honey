@@ -746,10 +746,11 @@ delayScriptsMatching = ["widget.js"]
 keepScriptsMatching = ["gtag"]
 delayScriptsTimeout = "10s"
 preloadMainImage = true
+selfHostFonts = true
 `)
 	require.NoError(t, err)
 	assert.Equal(t, Optimize{DelayScripts: true, DelayScriptsMatching: []string{"widget.js"}, KeepScriptsMatching: []string{"gtag"},
-		DelayScriptsTimeout: 10 * time.Second, PreloadMainImage: true}, cfg.Optimize)
+		DelayScriptsTimeout: 10 * time.Second, PreloadMainImage: true, SelfHostFonts: true}, cfg.Optimize)
 	for _, bad := range []string{`delayScriptsTimeout = "soon"`, `delayScriptsMatching = [" "]`, `keepScriptsMatching = [""]`} {
 		_, err := Parse("[backend]\nuri = \"https://www.example.com\"\n[optimize]\n" + bad + "\n")
 		assert.Error(t, err, bad)

@@ -22,6 +22,8 @@ delayScripts = true
 delayScriptsMatching = ["honey-e2e-delayed"]
 # Pages' main images are learned from visitors' browsers, and preloaded
 preloadMainImage = true
+# Google Fonts are served from the site itself
+selfHostFonts = true
 
 [security]
 # The tests come from Docker's network: others are made up, with
