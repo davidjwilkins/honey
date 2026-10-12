@@ -448,11 +448,17 @@ func TestAdminPage(t *testing.T) {
 
 	page := get(t, c, adminPage+"/")
 	require.Equal(t, http.StatusOK, page.StatusCode)
-	contains(t, page.Body, "Hit ratio")
+	contains(t, page.Body, "Served from cache")
+	count := get(t, c, adminPage+"/count?"+url.Values{"url": {site + path}}.Encode())
+	assert.JSONEq(t, `{"count":1}`, count.Body, "the page says how many responses a purge would remove")
 	resp := do(t, c, http.MethodPost, adminPage+"/purge", url.Values{"url": {site + path}}, "Origin", adminPage)
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
 	contains(t, get(t, c, adminPage+resp.Header.Get("Location")).Body, "Purged 1 cached response")
 	assert.Equal(t, "MISS", get(t, c, path).Cache)
+
+	stats := get(t, c, adminPage+"/stats").Body
+	contains(t, stats, "purged "+site+path+" · 1 response · from the admin page", "the purge is in the events")
+	contains(t, stats, "warmed ", "and so is warming the cache")
 }
 
 func TestApprovingACommentPurgesThePost(t *testing.T) {

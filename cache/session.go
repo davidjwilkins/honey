@@ -1,11 +1,13 @@
 package cache
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/utilities"
 )
 
@@ -76,7 +78,11 @@ func (c *defaultCacher) StartsSession(resp *http.Response) bool {
 			return true
 		}
 		if !privateSetCookie && !c.allowedCookies[name] && !hasAnyPrefix(name, c.stripCookies) {
-			c.logUnknownCookie(name)
+			path := ""
+			if req.URL != nil {
+				path = req.URL.Path
+			}
+			c.logUnknownCookie(name, path)
 			return true
 		}
 	}
@@ -99,15 +105,17 @@ func setCookieIsPrivate(cc string) bool {
 const maxLoggedCookies = 100
 
 // logUnknownCookie logs, the first time, that responses which set the
-// cookie name aren't cached
-func (c *defaultCacher) logUnknownCookie(name string) {
+// cookie name (e.g. for path) aren't cached
+func (c *defaultCacher) logUnknownCookie(name, path string) {
 	c.loggedMu.Lock()
 	defer c.loggedMu.Unlock()
 	if c.loggedCookies[name] || len(c.loggedCookies) >= maxLoggedCookies {
 		return
 	}
 	c.loggedCookies[name] = true
-	log.Printf("not caching responses which set the cookie %q (if it isn't personal, add it to cache.stripCookies)", name)
+	log.Printf("not caching responses which set the cookie %q, e.g. %s (if it isn't personal, add it to cache.stripCookies)", name, path)
+	c.events.Add(events.Notice, "", 0, events.Text(fmt.Sprintf(
+		"not caching pages which set the cookie %s, e.g. %s: if it isn't personal, add it to cache.stripCookies", name, path)))
 }
 
 func hasAnyPrefix(name string, prefixes []string) bool {

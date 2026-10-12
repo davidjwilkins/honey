@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/utilities"
 	blake2b "github.com/minio/blake2b-simd"
 )
@@ -82,6 +83,10 @@ type Options struct {
 	// cookie (unless it is allowed - see AddAllowedCookie) aren't cached,
 	// and keep it.
 	StripCookies []string
+	// Events, if set, is where things worth knowing about (such as
+	// responses not being cached because of their cookies) are logged,
+	// e.g. for the admin page.
+	Events *events.Log
 	// BrowserCacheControl, if set, replaces the Cache-Control header sent
 	// to clients with successful responses which are served from (or
 	// stored in) the cache - e.g. "no-cache", so that browsers check back
@@ -113,6 +118,7 @@ type defaultCacher struct {
 	// loggedCookies are the cookies logUnknownCookie has logged
 	loggedMu      sync.Mutex
 	loggedCookies map[string]bool
+	events        *events.Log
 }
 
 // NewCacher returns an in-memory cacher with no site-specific rules.
@@ -146,6 +152,7 @@ func NewCacher(opts Options) *defaultCacher {
 		bypassCookies:      append([]string(nil), opts.BypassCookies...),
 		stripCookies:       append([]string(nil), opts.StripCookies...),
 		loggedCookies:      make(map[string]bool),
+		events:             opts.Events,
 		browserCC:          opts.BrowserCacheControl,
 		recompressor:       &recompressor{},
 		store:              newStore(opts.MaxBytes),
@@ -525,6 +532,18 @@ func (c *defaultCacher) Purge(u *url.URL, prefix bool) int {
 			responses++
 		}
 		return matched
+	})
+	return responses
+}
+
+// Count returns how many cached responses Purge(u, prefix) would remove.
+func (c *defaultCacher) Count(u *url.URL, prefix bool) int {
+	match := purgeMatcher(u, prefix)
+	responses := 0
+	c.store.forEach(func(key string, value interface{}) {
+		if matched, vary := match(key); matched && !vary {
+			responses++
+		}
 	})
 	return responses
 }

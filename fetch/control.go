@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/davidjwilkins/honey/clientip"
+	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/utilities"
 )
 
@@ -117,11 +119,11 @@ type expirePurger interface {
 // untrusted requests, it removes no-cache, so that they are served from the
 // cache like any other request.  It always removes the secret header, so
 // that it never reaches the backend.
-func (c Control) applyControl(cacher interface{}, w http.ResponseWriter, r *http.Request, onPurge PurgeHook) (responded bool) {
+func (c Control) applyControl(cacher interface{}, w http.ResponseWriter, r *http.Request, onPurge PurgeHook, log *events.Log) (responded bool) {
 	trusted := c.Trusted(r)
 	r.Header.Del(c.secretHeader())
 	if r.Method == MethodPurge {
-		purge(cacher, trusted, w, r, onPurge)
+		purge(cacher, trusted, w, r, onPurge, log)
 		return true
 	}
 	if !trusted {
@@ -143,7 +145,7 @@ func (c Control) applyControl(cacher interface{}, w http.ResponseWriter, r *http
 
 // purge removes the cached responses for r's URL - or, if the path ends
 // with "*", for every URL starting with what precedes it.
-func purge(cacher interface{}, trusted bool, w http.ResponseWriter, r *http.Request, onPurge PurgeHook) {
+func purge(cacher interface{}, trusted bool, w http.ResponseWriter, r *http.Request, onPurge PurgeHook, log *events.Log) {
 	if !trusted {
 		http.Error(w, "Purging the cache isn't allowed", http.StatusForbidden)
 		return
@@ -155,12 +157,72 @@ func purge(cacher interface{}, trusted bool, w http.ResponseWriter, r *http.Requ
 	}
 	soft := strings.EqualFold(r.Header.Get(PurgeModeHeader), "soft")
 	purged := purgeURL(p, *r.URL, false, soft, onPurge)
+	from := "a trusted request"
+	if ip := clientip.From(r); ip != nil {
+		from = ip.String()
+	}
+	logPurge(log, from, r.URL, soft, purged)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	if soft {
 		fmt.Fprintf(w, "Expired %d responses\n", purged)
 		return
 	}
 	fmt.Fprintf(w, "Purged %d responses\n", purged)
+}
+
+// purgeBurst is how close together purges from the same place are logged
+// as one event: e.g. WordPress purges a dozen pages when a post changes
+const purgeBurst = 5 * time.Second
+
+// maxPurgePaths is how many of the paths purged together are listed
+const maxPurgePaths = 4
+
+// purgeEvent is what is logged about purges from one place
+type purgeEvent struct {
+	paths     []string
+	more      int
+	responses int
+	soft      bool
+	hard      bool
+}
+
+// logPurge logs a PURGE request for u from the address from, which purged
+// count responses, combining it with any others from there just before.
+func logPurge(log *events.Log, from string, u *url.URL, soft bool, count int) {
+	log.Add(events.Purge, "purge from "+from, purgeBurst, func(e *events.Event) {
+		p, _ := e.Data().(*purgeEvent)
+		if p == nil {
+			p = &purgeEvent{}
+			e.SetData(p)
+		}
+		if len(p.paths) < maxPurgePaths {
+			p.paths = append(p.paths, u.RequestURI())
+		} else {
+			p.more++
+		}
+		p.responses += count
+		p.soft = p.soft || soft
+		p.hard = p.hard || !soft
+		mode := "purged"
+		switch {
+		case p.soft && p.hard:
+			mode = "purged (soft and hard)"
+		case p.soft:
+			mode = "soft purged"
+		}
+		paths := strings.Join(p.paths, ", ")
+		if p.more > 0 {
+			paths += fmt.Sprintf(" and %d more", p.more)
+		}
+		e.Text = fmt.Sprintf("%s %s · %d %s · from %s", mode, paths, p.responses, plural(p.responses, "response", "responses"), from)
+	})
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // PurgeHook is called after a purge (see Options.OnPurge), with the path
@@ -173,15 +235,7 @@ type PurgeHook func(path string, prefix, soft bool)
 // and any query string).  With soft, it expires them instead, if the
 // cache can.  It then calls onPurge, if it isn't nil.
 func purgeURL(p purger, u url.URL, prefix, soft bool, onPurge PurgeHook) int {
-	if strings.HasSuffix(u.Path, "*") {
-		prefix = true
-		u.Path = strings.TrimSuffix(u.Path, "*")
-		u.RawPath = ""
-	}
-	if prefix {
-		u.RawQuery = ""
-		u.ForceQuery = false
-	}
+	u, prefix = purgeTarget(u, prefix)
 	var purged int
 	if e, ok := p.(expirePurger); ok && soft {
 		purged = e.Expire(&u, prefix)
@@ -194,6 +248,70 @@ func purgeURL(p purger, u url.URL, prefix, soft bool, onPurge PurgeHook) int {
 	return purged
 }
 
+// purgeTarget returns what a purge of u purges: if its path ends with "*",
+// everything starting with what precedes it, and if it purges everything
+// starting with a path, it ignores the query string.
+func purgeTarget(u url.URL, prefix bool) (url.URL, bool) {
+	if strings.HasSuffix(u.Path, "*") {
+		prefix = true
+		u.Path = strings.TrimSuffix(u.Path, "*")
+		u.RawPath = ""
+	}
+	if prefix {
+		u.RawQuery = ""
+		u.ForceQuery = false
+	}
+	return u, prefix
+}
+
+// counter is implemented by Cachers which can count the responses a purge
+// would remove
+type counter interface {
+	Count(u *url.URL, prefix bool) int
+}
+
+// Counter returns a function which counts the cached responses Purger(c,
+// backend, opts) would purge for the same arguments.
+func Counter(c cache.Cacher, backend *url.URL, opts Options) func(rawURL string, prefix bool) (int, error) {
+	target := parsePurge(c, backend, opts)
+	return func(rawURL string, prefix bool) (int, error) {
+		cnt, ok := c.(counter)
+		if !ok {
+			return 0, fmt.Errorf("this cache can't count its responses")
+		}
+		r, err := target(rawURL)
+		if err != nil {
+			return 0, err
+		}
+		u, prefix := purgeTarget(*r.URL, prefix)
+		return cnt.Count(&u, prefix), nil
+	}
+}
+
+// parsePurge returns a function which parses a URL or path to purge (or
+// count), into the trusted PURGE request for it which FetchWithOptions(c,
+// ..., backend, opts) would handle.
+func parsePurge(c cache.Cacher, backend *url.URL, opts Options) func(rawURL string) (*http.Request, error) {
+	filterQuery := queryFilter(c, opts.QueryParams)
+	return func(rawURL string) (*http.Request, error) {
+		u, err := url.Parse(strings.TrimSpace(rawURL))
+		if err != nil || (u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https") || u.Opaque != "" {
+			return nil, fmt.Errorf("%q isn't a URL or path", rawURL)
+		}
+		if u.Path == "" {
+			u.Path = "/"
+		} else if !strings.HasPrefix(u.Path, "/") {
+			return nil, fmt.Errorf("%q isn't a URL or path: paths start with /", rawURL)
+		}
+		u.Fragment, u.RawFragment = "", ""
+		r := &http.Request{Method: MethodPurge, URL: u, Header: http.Header{}}
+		SwitchBackend(r, backend)
+		r = withRoute(c, r)
+		filterQuery(r)
+		return r, nil
+	}
+}
+
 // Purger returns a function which removes the cached responses for a URL -
 // or, if prefix is set, for every URL starting with it - as a trusted
 // PURGE request for it to FetchWithOptions(c, ..., backend, opts) would,
@@ -201,26 +319,16 @@ func purgeURL(p purger, u url.URL, prefix, soft bool, onPurge PurgeHook) int {
 // (see PurgeModeHeader).  The URL may be a full URL or a path, e.g.
 // "/blog/": either way, every host's responses for the path are purged.
 func Purger(c cache.Cacher, backend *url.URL, opts Options) func(rawURL string, prefix, soft bool) (int, error) {
-	filterQuery := queryFilter(c, opts.QueryParams)
+	target := parsePurge(c, backend, opts)
 	return func(rawURL string, prefix, soft bool) (int, error) {
 		p, ok := c.(purger)
 		if !ok {
 			return 0, fmt.Errorf("this cache can't be purged")
 		}
-		u, err := url.Parse(strings.TrimSpace(rawURL))
-		if err != nil || (u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https") || u.Opaque != "" {
-			return 0, fmt.Errorf("%q isn't a URL or path", rawURL)
+		r, err := target(rawURL)
+		if err != nil {
+			return 0, err
 		}
-		if u.Path == "" {
-			u.Path = "/"
-		} else if !strings.HasPrefix(u.Path, "/") {
-			return 0, fmt.Errorf("%q isn't a URL or path: paths start with /", rawURL)
-		}
-		u.Fragment, u.RawFragment = "", ""
-		r := &http.Request{Method: MethodPurge, URL: u, Header: http.Header{}}
-		SwitchBackend(r, backend)
-		r = withRoute(c, r)
-		filterQuery(r)
 		return purgeURL(p, *r.URL, prefix, soft, opts.OnPurge), nil
 	}
 }

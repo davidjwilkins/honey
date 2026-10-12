@@ -4,15 +4,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>Honey admin</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="/admin.css">
 <script src="/admin.js" defer></script>
 </head>
 <body>
 <main>
-<header>
-  <h1>Honey</h1>
-  <p class="muted">{{.Version}} · caching <span class="mono">{{.Backend}}</span></p>
+<header class="top">
+  <p class="brand"><span class="logo">honey</span> <span class="mono muted">{{.Version}} · caching {{.Backend}}{{with .Hosts}} · hosts {{.}}{{end}} · up {{duration .Uptime}}</span></p>
+  <p class="live muted"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="5"></circle></svg> Live · refreshes every 5s</p>
 </header>
 
 {{with .Purged -}}
@@ -22,67 +24,125 @@
 <p class="notice problem" role="alert">{{.}}</p>
 {{- end}}
 
-<section id="stats" aria-live="polite">
-{{template "stats" .}}
-</section>
-
-<section class="card">
-  <h2>Purge</h2>
-  <p class="muted">Removes pages from Honey's cache, so that the next request for them goes to the backend.  Browsers which have a page may keep it until it expires for them.</p>
-  <form method="post" action="/purge" class="purge">
-    <label for="url">URL or path</label>
-    <div class="row">
-      <input id="url" name="url" type="text" placeholder="/hello-world/" required autocomplete="off" spellcheck="false">
-      <button type="submit">Purge</button>
-    </div>
-    <label class="check"><input type="checkbox" name="prefix" value="1"> And everything under it (e.g. <span class="mono">/blog/</span> for every post)</label>
-    <label class="check"><input type="checkbox" name="soft" value="1"> Soft: serve the old version once more while the new one is fetched, so nobody waits (if <span class="mono">staleWhileRevalidate</span> allows)</label>
+<div class="purgebar">
+  <form method="post" action="/purge" id="purge">
+    <label for="url" class="mono label">PURGE</label>
+    <input id="url" name="url" type="text" placeholder="/hello-world/" required autocomplete="off" spellcheck="false">
+    <fieldset class="toggle">
+      <legend>What to purge</legend>
+      <label><input type="radio" name="prefix" value="" checked> Exact</label>
+      <label><input type="radio" name="prefix" value="1"> Everything under</label>
+    </fieldset>
+    <fieldset class="toggle">
+      <legend>How to purge</legend>
+      <label title="Serve the old version once more while the new one is fetched, so nobody waits (if staleWhileRevalidate allows)"><input type="radio" name="soft" value="1" checked> Soft</label>
+      <label title="Remove it now: the next visitor waits for the backend"><input type="radio" name="soft" value=""> Hard</label>
+    </fieldset>
+    <button type="submit" id="purge-button">Purge</button>
   </form>
   <form method="post" action="/purge" id="purge-all">
     <input type="hidden" name="url" value="/">
     <input type="hidden" name="prefix" value="1">
     <button type="submit" class="danger">Purge everything</button>
   </form>
-</section>
+</div>
 
-<footer class="muted">Counts are since Honey started.  Prometheus metrics are at <a href="/metrics">/metrics</a>.</footer>
+<div id="stats" aria-live="polite">
+{{template "stats" .}}
+</div>
+
+<footer class="muted">Counts are since Honey started. Prometheus metrics are at <a href="/metrics">/metrics</a>.</footer>
 </main>
 </body>
 </html>
 {{- end}}
 
 {{define "stats" -}}
-<div class="grid">
-  <div class="card">
-    <h2>Hit ratio</h2>
+<div class="tiles">
+  <section class="tile">
+    <h2>Served from cache</h2>
     <p class="big">{{if .Requests}}{{percent .HitRatio}}{{else}}–{{end}}</p>
-    <p class="muted">of {{count .Requests}} request{{if ne .Requests 1}}s{{end}} served from the cache, in {{duration .Uptime}}</p>
-  </div>
-  <div class="card">
-    <h2>Cache</h2>
-    <p class="big">{{bytes .Bytes}}</p>
-    <meter min="0" max="1" value="{{.Full}}" high="0.9" title="{{percent .Full}} full">{{percent .Full}}</meter>
-    <p class="muted">of {{bytes .MaxBytes}} · {{count .Entries}} entr{{if ne .Entries 1}}ies{{else}}y{{end}}</p>
-  </div>
-  <div class="card">
-    <h2>Backend</h2>
-    <p class="big">{{if .BackendReqs}}{{duration .AvgBackend}}{{else}}–{{end}}</p>
-    <p class="muted">average wait for {{count .BackendReqs}} request{{if ne .BackendReqs 1}}s{{end}} · {{count .Backend5xx}} failed · {{.InFlight}} in flight</p>
-  </div>
-</div>
-<div class="card">
-  <h2>Requests</h2>
-  <table>
-    <thead><tr><th scope="col">Result</th><th scope="col" class="num">Requests</th><th scope="col" class="num">Share</th></tr></thead>
-    <tbody>
-    {{- range .Results}}
-      <tr>
-        <th scope="row"><span class="mono">{{.Name}}</span><span class="help">{{.Help}}</span></th>
-        <td class="num">{{count .Count}}</td>
-        <td class="num share"><meter min="0" max="1" value="{{.Share}}">{{percent .Share}}</meter> {{percent .Share}}</td>
-      </tr>
+    {{- if .Trend.Enough}}
+    <svg class="trend" viewBox="0 0 240 48" preserveAspectRatio="none" role="img" aria-label="Each minute {{if .Trend.Hour}}of the last hour{{else}}since Honey started{{end}}, between {{percent .Trend.Min}} and {{percent .Trend.Max}} of each minute's requests">
+      {{- range .Trend.Lines}}<polyline points="{{.}}"></polyline>{{end -}}
+    </svg>
+    <p class="muted">each minute {{if .Trend.Hour}}of the last hour{{else}}since Honey started{{end}} · lowest {{percent .Trend.Min}}</p>
+    {{- else}}
+    <p class="muted">of {{count .Requests}} request{{if ne .Requests 1}}s{{end}} · a trend shows after two minutes of traffic</p>
     {{- end}}
-    </tbody>
-  </table>
+  </section>
+  <section class="tile">
+    <h2>Backend wait</h2>
+    <p class="big">{{if .BackendReqs}}{{.P50}}<span class="unit"> p50</span>{{else}}–{{end}}</p>
+    {{- if .BackendReqs}}
+    <p class="mono">{{.P95}} p95 · {{.P99}} p99</p>
+    {{- end}}
+    <p class="muted">{{count .BackendReqs}} backend request{{if ne .BackendReqs 1}}s{{end}} · {{.InFlight}} in flight</p>
+  </section>
+  <section class="tile">
+    <h2>Memory</h2>
+    <p class="big">{{bytes .Bytes}}<span class="unit"> / {{bytes .MaxBytes}}</span></p>
+    <svg class="meter" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label="{{percent .Full}} full"><rect class="track" width="100%" height="8" rx="4"></rect><rect class="fill" width="{{svg .Full}}" height="8" rx="4"></rect></svg>
+    <p class="muted">{{count .Entries}} entr{{if ne .Entries 1}}ies{{else}}y{{end}} · {{percent .Full}} full</p>
+  </section>
+  <section class="tile{{if .RecentError}} alert{{end}}">
+    <h2>Backend errors</h2>
+    <p class="big{{if .Backend5xx}} bad{{end}}">{{count .Backend5xx}}</p>
+    <p class="muted">{{with .LastError}}{{.}}{{else}}none since Honey started{{end}}</p>
+  </section>
 </div>
+
+<div class="split">
+  <section class="panel requests">
+    <div class="heading">
+      <h2>How {{count .Requests}} request{{if ne .Requests 1}}s were{{else}} was{{end}} served</h2>
+      <span class="muted">since start</span>
+    </div>
+    <svg class="stack" viewBox="0 0 100 14" preserveAspectRatio="none" role="img" aria-label="{{range $i, $r := .Results}}{{if $i}}, {{end}}{{percent $r.Share}} {{$r.Name}}{{end}}">
+      <rect class="track" width="100%" height="14"></rect>
+      {{- range .Results}}{{if .Count}}<rect class="r-{{.Class}}" x="{{svg .Offset}}" width="{{svg .Share}}" height="14"></rect>{{end}}{{end -}}
+    </svg>
+    <div class="scroll">
+      <table>
+        <thead><tr><th scope="col">Result</th><th scope="col">Meaning</th><th scope="col" class="num">Requests</th><th scope="col" class="num">Share</th></tr></thead>
+        <tbody>
+        {{- range .Results}}
+          <tr>
+            <th scope="row" class="mono r-{{.Class}}">{{.Name}}</th>
+            <td class="muted">{{.Help}}</td>
+            <td class="num mono">{{count .Count}}</td>
+            <td class="num mono">{{percent .Share}}</td>
+          </tr>
+        {{- end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel events">
+    <h2>Events</h2>
+    {{- if .Events}}
+    <ol>
+    {{- range .Events}}
+      <li class="e-{{.Kind}}"><time class="muted">{{.Time}}</time><span>{{.Text}}{{if gt .Count 1}} <span class="times">×{{count .Count}}</span>{{end}}</span></li>
+    {{- end}}
+    </ol>
+    {{- else}}
+    <p class="muted">Nothing yet. Purges, warming, backend errors and pages which can't be cached show here.</p>
+    {{- end}}
+  </section>
+</div>
+
+<section class="panel">
+  <div class="heading">
+    <h2>Backend response time</h2>
+    <span class="muted">time to first byte, all backend requests</span>
+  </div>
+  <svg class="histogram" viewBox="0 0 {{.HistogramWidth}} 100" preserveAspectRatio="none" role="img" aria-label="{{range $i, $b := .Histogram}}{{if $i}}, {{end}}{{count $b.Count}} {{$b.Range}}{{end}}">
+    {{- range .Histogram}}<rect class="{{if .Slow}}slow{{end}}" x="{{.X}}" y="{{svg .Top}}" width="8" height="{{svg .Height}}"><title>{{count .Count}} {{.Range}}</title></rect>{{end -}}
+  </svg>
+  <ol class="buckets mono muted">
+    {{- range .Histogram}}<li>{{.Label}}</li>{{end -}}
+  </ol>
+</section>
 {{- end}}

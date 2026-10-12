@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/davidjwilkins/honey/events"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -204,4 +205,20 @@ func TestInterval(t *testing.T) {
 	w.Run(ctx)
 	runs := len(s.pages()) / 4
 	assert.GreaterOrEqual(t, runs, 3, fmt.Sprint(runs))
+}
+
+func TestWarmingIsLogged(t *testing.T) {
+	logged := events.New(10)
+	s := &site{cached: map[string]bool{}}
+	newWarmer(t, s, Options{Events: logged}).Warm(context.Background())
+	recent := logged.Recent(1)
+	require.Len(t, recent, 1)
+	assert.Equal(t, events.Warm, recent[0].Kind)
+	assert.Contains(t, recent[0].Text, "warmed 4 pages from the sitemap in ")
+	assert.Contains(t, recent[0].Text, "· 0 already cached · 0 errors")
+
+	sitemap, _ := url.Parse("https://www.example.com/nope.xml")
+	New(http.NotFoundHandler(), Options{Sitemap: sitemap, Logger: log.New(io.Discard, "", 0), Events: logged}).Warm(context.Background())
+	assert.Equal(t, events.Error, logged.Recent(1)[0].Kind)
+	assert.Equal(t, "couldn't warm the cache: https://www.example.com/nope.xml: HTTP 404", logged.Recent(1)[0].Text)
 }

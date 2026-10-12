@@ -10,8 +10,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/events"
 	"github.com/davidjwilkins/honey/singleflight"
 	"github.com/davidjwilkins/honey/utilities"
 	"github.com/vulcand/oxy/forward"
@@ -62,6 +64,9 @@ type Options struct {
 	// the cache).  PURGE requests are allowed for any host, as purges
 	// apply to every host.
 	Hosts []string
+	// Events, if set, is where PURGE requests and requests for other
+	// hosts are logged, e.g. for the admin page.
+	Events *events.Log
 }
 
 // FetchWithOptions is like Fetch, configured by opts.
@@ -71,6 +76,10 @@ func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, op
 	return func(w http.ResponseWriter, r *http.Request) {
 		SwitchBackend(r, backend)
 		if opts.Hosts != nil && r.Method != MethodPurge && !HostAllowed(r.Host, opts.Hosts) {
+			host := r.Host
+			opts.Events.Add(events.Refused, "other hosts", 10*time.Minute, func(e *events.Event) {
+				e.Text = fmt.Sprintf("turned away requests for hosts other than %s, most recently %q", strings.Join(opts.Hosts, ", "), host)
+			})
 			http.Error(w, http.StatusText(http.StatusMisdirectedRequest), http.StatusMisdirectedRequest)
 			return
 		}
@@ -82,7 +91,7 @@ func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, op
 			// so that it matches the cache keys
 			filterQuery(r)
 		}
-		if opts.Control.applyControl(c, w, r, opts.OnPurge) {
+		if opts.Control.applyControl(c, w, r, opts.OnPurge, opts.Events) {
 			return
 		}
 		serve(w, r)
