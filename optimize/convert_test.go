@@ -371,10 +371,18 @@ func TestConvertedImagesAreBounded(t *testing.T) {
 	for p := range o.files {
 		fetchImage(h, p, chromeAccept)
 	}
-	time.Sleep(time.Second)
+	// Once they've all been converted, only the last is kept (those being
+	// converted aren't forgotten)
+	require.Eventually(t, func() bool {
+		opt.convert.mu.Lock()
+		defer opt.convert.mu.Unlock()
+		return opt.convert.converted == len(o.files) && len(opt.convert.images) == 1
+	}, 20*time.Second, 10*time.Millisecond)
 	opt.convert.mu.Lock()
 	defer opt.convert.mu.Unlock()
-	assert.LessOrEqual(t, len(opt.convert.images), 2, "only the latest is kept (with any being converted)")
+	for _, e := range opt.convert.images {
+		assert.Equal(t, opt.convert.bytes, e.size())
+	}
 }
 
 func TestCheckJPEGAndPNG(t *testing.T) {
