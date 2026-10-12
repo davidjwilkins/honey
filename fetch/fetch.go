@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -67,6 +68,11 @@ type Options struct {
 	// Events, if set, is where PURGE requests and requests for other
 	// hosts are logged, e.g. for the admin page.
 	Events *events.Log
+	// BackendGate, if set, says whether a request may be sent to the
+	// backend (e.g. by its address's rate limit), or else how long until
+	// it may: requests which can't are refused with a 429.  It isn't asked
+	// about requests the cache answers, or which wait for another's fetch.
+	BackendGate func(r *http.Request) (time.Duration, bool)
 	// EarlyHints is whether browsers are sent a 103 Early Hints response,
 	// with the stylesheets and scripts their page needs, while a request
 	// waits for the backend (see cache/hints.go)
@@ -76,7 +82,7 @@ type Options struct {
 // FetchWithOptions is like Fetch, configured by opts.
 func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, opts Options) http.HandlerFunc {
 	filterQuery := queryFilter(c, opts.QueryParams)
-	serve := serveFromCache(c, handler, filterQuery, opts.EarlyHints)
+	serve := serveFromCache(c, handler, filterQuery, opts.EarlyHints, opts.BackendGate)
 	var self http.HandlerFunc
 	purgeFragments := FragmentPurger(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { self(w, r) }))
 	self = func(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +182,18 @@ func queryFilter(c cache.Cacher, keep []string) func(*http.Request) {
 
 // serveFromCache returns a handler for requests which have already been
 // switched to the backend.
-func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http.Request), earlyHints bool) http.HandlerFunc {
+func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http.Request), earlyHints bool, gate func(*http.Request) (time.Duration, bool)) http.HandlerFunc {
+	// allowed returns whether r may go to the backend, refusing it if not
+	allowed := func(w http.ResponseWriter, r *http.Request) bool {
+		if gate == nil {
+			return true
+		}
+		wait, ok := gate(r)
+		if !ok {
+			refuseLimited(w, wait)
+		}
+		return ok
+	}
 	// hint sends Early Hints for r, which is going to wait for the backend
 	hint := func(w http.ResponseWriter, r *http.Request) {
 		if earlyHints && wantsEarlyHints(r) {
@@ -225,7 +242,9 @@ func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http
 			// anything else are handled like any other request, so that
 			// they can't be used to get around the cache.
 			if r.Header.Get("Range") != "" && utilities.IsStaticFile(r.URL.Path) {
-				handler.ServeHTTP(w, withBypass(r))
+				if allowed(w, r) {
+					handler.ServeHTTP(w, withBypass(r))
+				}
 				return
 			}
 			// If the same resource is already being fetched, wait for it
@@ -241,6 +260,10 @@ func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http
 			// responds (or errors); this makes sure nobody is left waiting
 			// whatever happens.
 			defer flights.Finish(hash, f, singleflight.Result{Retry: true})
+			if !allowed(w, r) {
+				// Anyone waiting tries again for themselves
+				return
+			}
 			handler.ServeHTTP(w, forBackend(r, hash, f))
 			return
 		}
@@ -249,11 +272,26 @@ func serveFromCache(c cache.Cacher, handler http.Handler, filterQuery func(*http
 		if serveESIPage(c, w, r, filterQuery, earlyHints) {
 			return
 		}
+		if !allowed(w, r) {
+			return
+		}
 		hint(w, r)
 		w.Header().Set("X-Honey-Cache", "NO-CACHE")
 		handler.ServeHTTP(w, r)
 	}
 	return serve
+}
+
+// refuseLimited refuses a request which may not go to the backend for wait
+func refuseLimited(w http.ResponseWriter, wait time.Duration) {
+	seconds := int(math.Ceil(wait.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	w.Header().Set("X-Honey-Cache", "BLOCKED")
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, "Too Many Requests: rate-limited by Honey (security.rateLimit)", http.StatusTooManyRequests)
 }
 
 // overrideHeaders make some backends (e.g. WordPress's REST API, or IIS)

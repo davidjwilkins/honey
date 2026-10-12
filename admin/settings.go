@@ -82,6 +82,67 @@ var sections = []section{
 			func(f *config.File) **bool { return &f.Security.Headers }),
 		text("security.hsts", "Strict-Transport-Security for HTTPS responses, or off", "max-age=31536000 if Honey redirects to HTTPS",
 			func(f *config.File) *string { return &f.Security.HSTS }),
+		{Key: "security.loginAttempts", Kind: kindText, Help: "Failed logins an address may make before it's locked out of logging in (0: never)", Default: strconv.Itoa(config.DefaultLoginAttempts),
+			get: func(f *config.File) string {
+				if f.Security.LoginAttempts == nil {
+					return ""
+				}
+				return strconv.Itoa(*f.Security.LoginAttempts)
+			},
+			set: func(f *config.File, v string) error {
+				if v == "" {
+					f.Security.LoginAttempts = nil
+					return nil
+				}
+				n, err := strconv.Atoi(v)
+				if err != nil {
+					return fmt.Errorf("a whole number")
+				}
+				f.Security.LoginAttempts = &n
+				return nil
+			}},
+		text("security.loginLockout", "How long it's locked out for (and the time the failures are counted over)", "15m",
+			func(f *config.File) *string { return &f.Security.LoginLockout }),
+		{Key: "security.rateLimit", Kind: kindText, Help: "Requests a second each address may send to WordPress: cache hits don't count (0: no limit)", Default: "no limit",
+			get: func(f *config.File) string {
+				if f.Security.RateLimit == nil {
+					return ""
+				}
+				return strconv.FormatFloat(*f.Security.RateLimit, 'f', -1, 64)
+			},
+			set: func(f *config.File, v string) error {
+				if v == "" {
+					f.Security.RateLimit = nil
+					return nil
+				}
+				n, err := strconv.ParseFloat(v, 64)
+				if err != nil {
+					return fmt.Errorf("a number")
+				}
+				f.Security.RateLimit = &n
+				return nil
+			}},
+		{Key: "security.rateBurst", Kind: kindText, Help: "How many it may send at once", Default: "10 times the rate",
+			get: func(f *config.File) string {
+				if f.Security.RateBurst == nil {
+					return ""
+				}
+				return strconv.Itoa(*f.Security.RateBurst)
+			},
+			set: func(f *config.File, v string) error {
+				if v == "" {
+					f.Security.RateBurst = nil
+					return nil
+				}
+				n, err := strconv.Atoi(v)
+				if err != nil {
+					return fmt.Errorf("a whole number")
+				}
+				f.Security.RateBurst = &n
+				return nil
+			}},
+		list("security.allowIPs", "Addresses (or networks) never locked out or rate-limited, as well as this host",
+			func(f *config.File) *[]string { return &f.Security.AllowIPs }),
 	}},
 	{"Backend", []*field{
 		text("backend.uri", "The web server running WordPress", "",

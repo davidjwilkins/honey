@@ -649,7 +649,8 @@ func TestParseSecurity(t *testing.T) {
 	const base = "[backend]\nuri = \"https://www.example.com\"\n"
 	cfg, err := Parse(base)
 	require.NoError(t, err)
-	assert.Equal(t, Security{BlockPaths: true, XMLRPC: "safe", Headers: true}, cfg.Security, "on by default, without HSTS")
+	assert.Equal(t, Security{BlockPaths: true, XMLRPC: "safe", Headers: true, LoginAttempts: DefaultLoginAttempts, LoginLockout: DefaultLoginLockout},
+		cfg.Security, "on by default, without HSTS or rate limiting")
 
 	cfg, err = Parse("hosts = [\"www.example.com\"]\n[tls]\nauto = true\n" + base)
 	require.NoError(t, err)
@@ -660,7 +661,7 @@ func TestParseSecurity(t *testing.T) {
 
 	cfg, err = Parse("[security]\nblockPaths = false\nxmlrpc = \"off\"\nheaders = false\nhsts = \"max-age=63072000; includeSubDomains; preload\"\n" + base)
 	require.NoError(t, err)
-	assert.Equal(t, Security{XMLRPC: "off", HSTS: "max-age=63072000; includeSubDomains; preload"}, cfg.Security)
+	assert.Equal(t, Security{XMLRPC: "off", HSTS: "max-age=63072000; includeSubDomains; preload", LoginAttempts: DefaultLoginAttempts, LoginLockout: DefaultLoginLockout}, cfg.Security)
 	cfg, err = Parse("hosts = [\"www.example.com\"]\n[tls]\nauto = true\n[security]\nhsts = \"off\"\n" + base)
 	require.NoError(t, err)
 	assert.Empty(t, cfg.Security.HSTS)
@@ -669,6 +670,35 @@ func TestParseSecurity(t *testing.T) {
 		{"[security]\nxmlrpc = \"partly\"", "security.xmlrpc"},
 		{"[security]\nhsts = \"1 year\"", "security.hsts"},
 		{"[security]\nhsts = \"max-age=1\\r\\nX-Evil: 1\"", "security.hsts"},
+	} {
+		_, err := Parse(tc.config + "\n" + base)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}
+
+func TestParseLimits(t *testing.T) {
+	const base = "[backend]\nuri = \"https://www.example.com\"\n"
+	cfg, err := Parse("[security]\nloginAttempts = 5\nloginLockout = \"1h\"\nrateLimit = 2.5\nrateBurst = 40\nallowIPs = [\"203.0.113.0/24\"]\n" + base)
+	require.NoError(t, err)
+	assert.Equal(t, 5, cfg.Security.LoginAttempts)
+	assert.Equal(t, time.Hour, cfg.Security.LoginLockout)
+	assert.Equal(t, 2.5, cfg.Security.RateLimit)
+	assert.Equal(t, 40, cfg.Security.RateBurst)
+	require.Len(t, cfg.Security.AllowIPs, 1)
+	assert.Equal(t, "203.0.113.0/24", cfg.Security.AllowIPs[0].String())
+
+	cfg, err = Parse("[security]\nloginAttempts = 0\n" + base)
+	require.NoError(t, err)
+	assert.Zero(t, cfg.Security.LoginAttempts, "0 turns lockouts off")
+
+	for _, tc := range []struct{ config, err string }{
+		{"[security]\nloginAttempts = -1", "security.loginAttempts"},
+		{"[security]\nloginLockout = \"10s\"", "security.loginLockout"},
+		{"[security]\nrateLimit = -1", "security.rateLimit"},
+		{"[security]\nrateBurst = 10", "security.rateBurst is set, but security.rateLimit isn't"},
+		{"[security]\nallowIPs = [\"nowhere\"]", "security.allowIPs"},
 	} {
 		_, err := Parse(tc.config + "\n" + base)
 		if assert.Error(t, err, tc.config) {

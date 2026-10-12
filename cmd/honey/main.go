@@ -289,6 +289,17 @@ func build(cfg *config.Config, started time.Time) *honey {
 		transport = recorder.Transport(transport)
 	}
 	h := &honey{metrics: recorder, cacher: c, events: eventLog}
+	// Addresses which keep failing to log in, and (if it's on) their
+	// requests to WordPress.  Requests from this host (e.g. WordPress's
+	// own) are never limited.
+	limits := guard.NewLimits(guard.LimitOptions{
+		LoginAttempts: cfg.Security.LoginAttempts,
+		LoginLockout:  cfg.Security.LoginLockout,
+		Rate:          cfg.Security.RateLimit,
+		Burst:         cfg.Security.RateBurst,
+		Allow:         append(loopback(), cfg.Security.AllowIPs...),
+		Events:        eventLog,
+	})
 	fetchOpts := fetch.Options{
 		Control:     control,
 		QueryParams: cfg.Cache.QueryParams,
@@ -296,6 +307,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 		Hosts:       cfg.Hosts,
 		Events:      eventLog,
 		EarlyHints:  cfg.Cache.EarlyHints,
+		BackendGate: limits.AllowBackend,
 		OnPurge: func(path string, prefix, soft bool) {
 			// Everything has been purged: fill the cache again
 			if h.warmer != nil && prefix && path == "/" {
@@ -323,6 +335,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 		XMLRPC:     cfg.Security.XMLRPC,
 		Headers:    cfg.Security.Headers,
 		HSTS:       cfg.Security.HSTS,
+		Limits:     limits,
 		Events:     eventLog,
 	}, h.handler)
 	if recorder != nil {
@@ -354,9 +367,21 @@ func build(cfg *config.Config, started time.Time) *honey {
 			Fragments:      c.Fragments,
 			PurgeFragments: fetch.FragmentPurger(c, proxy),
 			Settings:       cfg.File,
+			Lockouts:       limits.Lockouts,
+			Unblock:        limits.Unblock,
 		})
 	}
 	return h
+}
+
+// loopback returns the loopback networks
+func loopback() []*net.IPNet {
+	var networks []*net.IPNet
+	for _, cidr := range []string{"127.0.0.0/8", "::1/128"} {
+		_, n, _ := net.ParseCIDR(cidr)
+		networks = append(networks, n)
+	}
+	return networks
 }
 
 // siteOrigin guesses the site's scheme and host (e.g.

@@ -131,6 +131,11 @@ All the available settings:
 	xmlrpc = "safe"              # safe: block system.multicall and pingbacks | off: block XML-RPC | on
 	headers = true               # nosniff, referrer policy, no framing of the dashboard, hide software versions
 	hsts = "max-age=31536000"    # for HTTPS responses (default: this, if Honey redirects to HTTPS; "off")
+	loginAttempts = 10           # failed logins from an address before it's locked out of logging in ("0": never)
+	loginLockout = "15m"         # for this long (and failures are counted over this long)
+	rateLimit = 5                # requests a second each address may send to WordPress (off by default; see below)
+	rateBurst = 50               # in bursts of up to this many (default: 10 times rateLimit)
+	allowIPs = ["198.51.100.0/24"]   # never locked out or rate-limited (nor is this host)
 
 	# Serve HTTPS (HTTP/1.1 and HTTP/2) and HTTP/3 too (off unless auto or
 	# certFile is set; see below)
@@ -302,6 +307,18 @@ Honey sees every request before WordPress does, so it turns away the ones which 
 - **Security headers** (`headers`): responses get `X-Content-Type-Options: nosniff` and a `Referrer-Policy`, the dashboard and login page can't be framed by other sites (against clickjacking), and the headers which say what the site runs (`Server`, `X-Powered-By`, and `X-Pingback` unless `xmlrpc = "on"`) are removed.  Headers WordPress sets itself are kept.
 - **HSTS** (`hsts`): when Honey serves [HTTPS](#https-and-http3) and redirects plain HTTP to it, HTTPS responses get `Strict-Transport-Security: max-age=31536000`, so browsers only ever use HTTPS for the site.  Behind a proxy which handles HTTPS, set `hsts` to send it there too.
 
+### Password guessing
+
+An address which fails to log in `loginAttempts` times (10) within `loginLockout` (15 minutes) is locked out of logging in for `loginLockout`, with a `429` and `Retry-After` - even with the right password, so that guessing it doesn't work.  Failed logins are a login form which WordPress shows again (rather than logging the visitor in), an XML-RPC call which WordPress answers with "incorrect username or password", and a request with an `Authorization` header (e.g. the REST API with an application password) which gets a `401`.  Logging in successfully forgets an address's failures.  Only logging in is locked: the rest of the site still works for it.
+
+An IPv6 address is counted with the rest of its `/64` network, as one computer usually has a whole one.  `allowIPs` (e.g. your office) and this host are never locked out.  The admin page's dashboard lists the addresses locked out, with a button to unblock each.
+
+### Rate limiting
+
+With `rateLimit` set, each address may send that many requests a second to WordPress, in bursts of up to `rateBurst`; any more get a `429` with `Retry-After`.  Requests answered from the cache don't count, and are never refused, so visitors don't notice it while a single address can't keep WordPress busy with requests the cache can't answer (e.g. searches, or made-up URLs).  Logged in users' requests all go to WordPress, and the block editor sends dozens at once, so leave room for bursts.
+
+Both depend on Honey knowing visitors' real addresses.  Behind a proxy or CDN which isn't one of the `trustedProxies`, every request seems to come from the proxy - so one visitor's failed logins would lock everyone out, and the rate limit would be shared by everyone.  That's why rate limiting is off by default: set `trustedProxies` first (see [Proxies in front of Honey](#proxies-in-front-of-honey)).
+
 Purges, and the cache warmer's requests, aren't checked.  This is no substitute for keeping WordPress and its plugins up to date: Honey can't see what PHP does with the requests it lets through.
 
 ## Security
@@ -445,7 +462,7 @@ Things which might be worth doing next:
 
 - **Revalidating with the backend:** refresh expired responses with a conditional request (`If-None-Match` / `If-Modified-Since`), so that an unchanged page costs the backend a `304` rather than a full render.
 - **A shared cache** (e.g. Redis), so that several Honey instances behind a load balancer share one cache, and purges reach all of them.
-- **More protection for WordPress:** locking out addresses which keep failing to log in, rate-limiting each visitor's requests which reach WordPress (but not those served from the cache), only allowing the dashboard from some addresses, and blocking addresses which probe for known exploits.
+- **More protection for WordPress:** only allowing the dashboard from some addresses, and blocking addresses which probe for known exploits.
 - **DNS challenges**, so that Honey can get wildcard certificates (`*.example.com`) automatically.
 - **A login for the admin page**, so that it can be served somewhere other than a private address.
 - **Per-route compression settings** (brotli and gzip are site-wide for now).

@@ -102,7 +102,24 @@ type Security struct {
 	// HSTS is the Strict-Transport-Security header for HTTPS responses,
 	// or "" for none
 	HSTS string
+	// AllowIPs are never locked out or rate-limited
+	AllowIPs []*net.IPNet
+	// LoginAttempts is how many failed logins an address may make within
+	// LoginLockout before it's locked out for LoginLockout (0: never)
+	LoginAttempts int
+	LoginLockout  time.Duration
+	// RateLimit is how many requests a second an address may send to
+	// WordPress (0: no limit), in bursts of up to RateBurst
+	RateLimit float64
+	RateBurst int
 }
+
+// DefaultLoginAttempts and DefaultLoginLockout are the defaults for
+// security.loginAttempts and security.loginLockout
+const (
+	DefaultLoginAttempts = 10
+	DefaultLoginLockout  = 15 * time.Minute
+)
 
 // DefaultHSTS is the Strict-Transport-Security header sent when Honey
 // serves HTTPS and redirects plain HTTP to it, unless security.hsts says
@@ -264,10 +281,15 @@ type File struct {
 		SecretHeader string   `toml:"secretHeader,omitempty"`
 	} `toml:"control,omitempty"`
 	Security struct {
-		BlockPaths *bool  `toml:"blockPaths,omitempty"`
-		XMLRPC     string `toml:"xmlrpc,omitempty"`
-		Headers    *bool  `toml:"headers,omitempty"`
-		HSTS       string `toml:"hsts,omitempty"`
+		BlockPaths    *bool    `toml:"blockPaths,omitempty"`
+		XMLRPC        string   `toml:"xmlrpc,omitempty"`
+		Headers       *bool    `toml:"headers,omitempty"`
+		HSTS          string   `toml:"hsts,omitempty"`
+		AllowIPs      []string `toml:"allowIPs,omitempty"`
+		LoginAttempts *int     `toml:"loginAttempts,omitempty"`
+		LoginLockout  string   `toml:"loginLockout,omitempty"`
+		RateLimit     *float64 `toml:"rateLimit,omitempty"`
+		RateBurst     *int     `toml:"rateBurst,omitempty"`
 	} `toml:"security,omitempty"`
 	TLS struct {
 		Listen   string `toml:"listen,omitempty"`
@@ -338,6 +360,13 @@ func (f *File) Clone() *File {
 	c.TLS.HTTP3 = cloneBool(f.TLS.HTTP3)
 	c.Security.BlockPaths = cloneBool(f.Security.BlockPaths)
 	c.Security.Headers = cloneBool(f.Security.Headers)
+	c.Security.AllowIPs = append([]string(nil), f.Security.AllowIPs...)
+	c.Security.LoginAttempts = cloneInt(f.Security.LoginAttempts)
+	c.Security.RateBurst = cloneInt(f.Security.RateBurst)
+	if f.Security.RateLimit != nil {
+		rate := *f.Security.RateLimit
+		c.Security.RateLimit = &rate
+	}
 	c.TLS.Redirect = cloneBool(f.TLS.Redirect)
 	c.Cache.AllowedCookies = append([]string(nil), f.Cache.AllowedCookies...)
 	c.Cache.BypassCookies = cloneList(f.Cache.BypassCookies)
@@ -689,6 +718,14 @@ func parseWarm(cfg *Config, sitemap string, rate float64, maxPages int, interval
 // hostPattern is a host name, or "*." and a domain
 var hostPattern = regexp.MustCompile(`^(\*\.)?[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$`)
 
+func cloneInt(n *int) *int {
+	if n == nil {
+		return nil
+	}
+	c := *n
+	return &c
+}
+
 // parseSecurity validates the [security] settings, and fills in their
 // defaults: everything on, with XML-RPC's abused methods blocked, and
 // HSTS if Honey redirects plain HTTP to HTTPS
@@ -716,6 +753,35 @@ func parseSecurity(f *File, tls *TLS) (Security, error) {
 		sec.HSTS = s.HSTS
 	default:
 		return sec, fmt.Errorf("security.hsts must be \"off\", or a Strict-Transport-Security header, e.g. \"max-age=31536000; includeSubDomains\"")
+	}
+	var err error
+	if sec.AllowIPs, err = fetch.ParseIPs(s.AllowIPs); err != nil {
+		return sec, fmt.Errorf("security.allowIPs: %w", err)
+	}
+	sec.LoginAttempts = DefaultLoginAttempts
+	if s.LoginAttempts != nil {
+		if *s.LoginAttempts < 0 {
+			return sec, fmt.Errorf("security.loginAttempts must be 0 (off) or more")
+		}
+		sec.LoginAttempts = *s.LoginAttempts
+	}
+	sec.LoginLockout = DefaultLoginLockout
+	if s.LoginLockout != "" {
+		if sec.LoginLockout, err = parseDuration(s.LoginLockout); err != nil || sec.LoginLockout < time.Minute {
+			return sec, fmt.Errorf("security.loginLockout must be a duration of at least 1m, e.g. \"15m\"")
+		}
+	}
+	if s.RateLimit != nil {
+		sec.RateLimit = *s.RateLimit
+	}
+	if s.RateBurst != nil {
+		sec.RateBurst = *s.RateBurst
+	}
+	if sec.RateLimit < 0 || sec.RateBurst < 0 {
+		return sec, fmt.Errorf("security.rateLimit and security.rateBurst must be 0 (off, or the default) or more")
+	}
+	if sec.RateBurst > 0 && sec.RateLimit == 0 {
+		return sec, fmt.Errorf("security.rateBurst is set, but security.rateLimit isn't")
 	}
 	return sec, nil
 }

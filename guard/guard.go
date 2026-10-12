@@ -10,10 +10,12 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +54,9 @@ type Options struct {
 	// HSTS, if set, is the Strict-Transport-Security header sent with
 	// responses to requests which came over HTTPS
 	HSTS string
+	// Limits, if set, locks out addresses which keep failing to log in
+	// (and limits their requests to the backend: see Limits.AllowBackend)
+	Limits *Limits
 	// Events, if set, is where blocked requests are logged
 	Events *events.Log
 }
@@ -126,7 +131,24 @@ func Middleware(opts Options, next http.Handler) http.Handler {
 		if opts.Headers || opts.HSTS != "" {
 			w = &headerWriter{ResponseWriter: w, r: r, opts: opts}
 		}
-		next.ServeHTTP(w, r)
+		kind := loginKind(r)
+		if kind == "" || opts.Limits == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if left, locked := opts.Limits.LockedOut(r); locked {
+			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(left.Seconds()))))
+			block(w, r, opts, http.StatusTooManyRequests, "logins from locked out addresses", "security.loginAttempts")
+			return
+		}
+		lw := &loginWriter{ResponseWriter: w, kind: kind}
+		next.ServeHTTP(lw, r)
+		switch failed, succeeded := lw.outcome(); {
+		case failed:
+			opts.Limits.LoginFailed(r)
+		case succeeded:
+			opts.Limits.LoginSucceeded(r)
+		}
 	})
 }
 
