@@ -56,9 +56,11 @@ load() {
 row() {
   awk -v name="$1" '
     /^requests/ { rate = $5; sub(/,$/, "", rate); errors = $8 }
+    # Error statuses count as errors too
+    /^statuses/ { for (i = 2; i < NF; i += 2) { code = $i; n = $(i + 1); sub(/:$/, "", code); sub(/,$/, "", n); if (code + 0 >= 400) { errors += n; bad = bad " " code } } }
     /^latency/ { p50 = $3; p99 = $7; max = $9 }
     /^cache/ { $1 = ""; cache = $0 }
-    END { printf "| %s | %s | %s | %s | %s | %s |%s\n", name, rate, p50, p99, max, errors, cache }'
+    END { if (bad != "") errors = errors " (" substr(bad, 2) ")"; printf "| %s | %s | %s | %s | %s | %s |%s\n", name, rate, p50, p99, max, errors, cache }'
 }
 # edits edits post-1 every 2 seconds, n times, in the background
 edits() {
@@ -83,6 +85,7 @@ if [ "${WP_SUPER_CACHE:-1}" = 1 ]; then
   compose run --rm -T cli sh /wp-super-cache.sh debug >&2
   compose run --rm -T --entrypoint sh load -c "wget -S -O /tmp/page --header 'Host: localhost:8080' http://wordpress/post-1/ 2>&1 | grep -i 'HTTP/\|cache\|encoding'; tail -c 300 /tmp/page" > work/wpsc-check.txt 2>&1 || true
   compose run --rm -T cli sh -c "ls -R wp-content/cache | head -30; grep -E '^\\\$(cache_enabled|super_cache_enabled|wp_cache_mod_rewrite|cache_compression|wp_super_cache_late_init|wp_cache_not_logged_in|wp_super_cache_debug)' wp-content/wp-cache-config.php; tail -40 wp-content/cache/wpsc-debug.php 2>/dev/null" >> work/wpsc-check.txt 2>&1 || true
+  compose logs --no-color --no-log-prefix --tail 30 wordpress >> work/wpsc-check.txt 2>&1 || true
   tail="see the details below"
 fi
 load honey:8080 -d 3s -paths "$pages" >/dev/null
