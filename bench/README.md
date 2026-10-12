@@ -33,7 +33,9 @@ Two kinds:
   PHP-FPM), with WP Super Cache, and behind Honey - and sends each the same
   requests from inside Docker's network, then measures a page's speed in
   Chrome with Lighthouse, through Honey with and without
-  [`[optimize]`](../README.md#optimizing-pages).  It runs in GitHub Actions
+  [`[optimize]`](../README.md#optimizing-pages) - with WordPress's default
+  block theme, then with a classic theme (OceanWP, or `CLASSIC_THEME`),
+  whose stylesheets are linked rather than in the page.  It runs in GitHub Actions
   when it changes (see [`compare.yml`](../.github/workflows/compare.yml)),
   and puts its results in the run's summary.
 
