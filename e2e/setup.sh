@@ -15,7 +15,14 @@ wp user create editor editor@example.com --role=editor --user_pass=password
 
 # WooCommerce, if asked for (it's downloaded from wordpress.org)
 if [ -n "${HONEY_E2E_WOOCOMMERCE:-}" ]; then
-  wp plugin install woocommerce --version=11.2.1 --activate
+  # Downloads from wordpress.org fail now and then (e.g. if its address
+  # doesn't resolve for a moment), so try a few times
+  for attempt in 1 2 3 4; do
+    if wp plugin install woocommerce --version=11.2.1 --activate; then break; fi
+    if [ "$attempt" = 4 ]; then exit 1; fi
+    echo "retrying the WooCommerce download"
+    sleep $((attempt * 5))
+  done
   wp plugin list --name=woocommerce --fields=name,version
   # Skip the setup wizard, which the first admin page redirects to
   wp option update woocommerce_onboarding_profile '{"skipped":true}' --format=json
