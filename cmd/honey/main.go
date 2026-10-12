@@ -328,6 +328,9 @@ func build(cfg *config.Config, started time.Time) *honey {
 		if err != nil {
 			log.Printf("cdn: %v", err)
 		}
+		if cfg.Optimize.ConvertImages {
+			log.Printf("optimize: converted images have the same URLs as the originals, so the CDN must keep them apart by the Accept header (Vary: Accept), or serve images from Honey without caching them: see the README")
+		}
 	}
 	// Pages are changed as they're cached, so that browsers load them
 	// faster; once a page's main image is learned, or its stylesheets
@@ -335,19 +338,22 @@ func build(cfg *config.Config, started time.Time) *honey {
 	var refresh func(host, path string)
 	var fetchStylesheet func(*http.Request) (*http.Response, error)
 	optimizer := optimize.New(optimize.Options{
-		DelayScripts:     cfg.Optimize.DelayScripts,
-		DelayMatching:    cfg.Optimize.DelayScriptsMatching,
-		KeepMatching:     cfg.Optimize.KeepScriptsMatching,
-		DelayTimeout:     cfg.Optimize.DelayScriptsTimeout,
-		PreloadMainImage: cfg.Optimize.PreloadMainImage,
-		SelfHostFonts:    cfg.Optimize.SelfHostFonts,
-		RemoveUnusedCSS:  cfg.Optimize.RemoveUnusedCSS,
-		KeepCSSMatching:  cfg.Optimize.KeepCSSMatching,
-		Fetch:            func(r *http.Request) (*http.Response, error) { return fetchStylesheet(r) },
-		Hosts:            cfg.Hosts,
-		BackendHost:      cfg.BackendHost,
-		Events:           eventLog,
-		Refresh:          func(host, path string) { refresh(host, path) },
+		DelayScripts:         cfg.Optimize.DelayScripts,
+		DelayMatching:        cfg.Optimize.DelayScriptsMatching,
+		KeepMatching:         cfg.Optimize.KeepScriptsMatching,
+		DelayTimeout:         cfg.Optimize.DelayScriptsTimeout,
+		PreloadMainImage:     cfg.Optimize.PreloadMainImage,
+		SelfHostFonts:        cfg.Optimize.SelfHostFonts,
+		RemoveUnusedCSS:      cfg.Optimize.RemoveUnusedCSS,
+		KeepCSSMatching:      cfg.Optimize.KeepCSSMatching,
+		Fetch:                func(r *http.Request) (*http.Response, error) { return fetchStylesheet(r) },
+		Hosts:                cfg.Hosts,
+		ConvertImages:        cfg.Optimize.ConvertImages,
+		ConvertedImagesBytes: int(cfg.Optimize.ConvertedImagesBytes),
+		PrivateCookies:       cfg.Cache.BypassCookies,
+		BackendHost:          cfg.BackendHost,
+		Events:               eventLog,
+		Refresh:              func(host, path string) { refresh(host, path) },
 	})
 	var rewrite func(*http.Response, []byte) []byte
 	if optimizer != nil {
@@ -448,6 +454,8 @@ func build(cfg *config.Config, started time.Time) *honey {
 		ListPurged:  purger != nil,
 		OnPurge: func(p fetch.Purged) {
 			purger.Purge(p.Path, p.Prefix, p.Cached)
+			// Converted images are made again from what's there now
+			optimizer.Forget(p.Path, p.Prefix)
 			// Everything has been purged: fill the cache again
 			if h.warmer != nil && p.Prefix && p.Path == "/" {
 				h.warmer.Trigger()

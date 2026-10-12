@@ -88,6 +88,10 @@ stripCookies = []
 # Put the CSS each page uses in it, and load the site's whole stylesheets
 # once it's shown
 # removeUnusedCSS = true
+# Convert JPEGs and PNGs to AVIF and WebP for browsers which accept them
+# (if there's a CDN in front of Honey, it must keep them apart: see the
+# README)
+# convertImages = true
 
 # Don't cache previews, the RSS feed, or the admin and login pages.
 # regex = true matches against the path and query string; otherwise

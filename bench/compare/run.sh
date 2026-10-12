@@ -192,17 +192,36 @@ optimized() {
       sleep 1
     done
   esac
+  case "$2" in *convertImages*)
+    # Every size of the featured image, converted (as a browser which
+    # takes AVIF asks for it)
+    for image in $(curl -fsS "$page" 2>/dev/null | grep -o 'http://localhost:8080/wp-content/uploads/[^" ,]*\.jpg' | sort -u); do
+      for i in $(seq 1 30); do
+        type="$(curl -fsS -o /dev/null -w '%{content_type}' -H 'Accept: image/avif,image/webp,*/*' "$image" 2>/dev/null || true)"
+        if [ "$type" = image/avif ]; then break; fi
+        sleep 1
+      done
+      printf '%s\n' "- \`$(basename "$image")\`: $(curl -fsS -o /dev/null -w '%{size_download}' "$image") bytes as a JPEG, $(curl -fsS -o /dev/null -w '%{size_download}' -H 'Accept: image/avif' "$image") as $type" >> work/images.md
+    done
+  esac
   scores "$1" "$3"
 }
 all="delayScripts = true
 preloadMainImage = true
 selfHostFonts = true"
+: > work/images.md
 optimized on "$all" "Honey, with [optimize]: delayScripts, preloadMainImage, selfHostFonts"
 learned_on=$learned
-optimized css "$all
-removeUnusedCSS = true" "... and removeUnusedCSS"
+all="$all
+removeUnusedCSS = true"
+optimized css "$all" "... and removeUnusedCSS"
+all="$all
+convertImages = true"
+optimized images "$all" "... and convertImages"
 report ""
-report "The main image was learned before Lighthouse ran: $learned_on, then $learned."
+report "The main image was learned before Lighthouse ran: $learned_on, then $learned.  The featured image, converted:"
+report ""
+report "$(cat work/images.md)"
 report ""
 
 # With Chrome throttled for real, which is closer to what a phone sees:
@@ -214,7 +233,7 @@ report "| | Performance | First Contentful Paint | Largest Contentful Paint | To
 report "| --- | --- | --- | --- | --- | --- | --- |"
 LIGHTHOUSE_FLAGS=--throttling-method=devtools
 optimized devtools-off "" "Honey, throttled by Chrome"
-optimized devtools-on "$all" "Honey, with delayScripts, preloadMainImage, selfHostFonts, throttled by Chrome"
+optimized devtools-on "$all" "Honey, with all of [optimize], throttled by Chrome"
 LIGHTHOUSE_FLAGS=
 report ""
 report "<details><summary>What made up each Largest Contentful Paint (the median run's), and the fonts, images and stylesheets fetched</summary>"

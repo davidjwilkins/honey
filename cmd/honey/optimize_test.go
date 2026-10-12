@@ -1,6 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -151,4 +156,51 @@ removeUnusedCSS = true
 	mu.Lock()
 	assert.Equal(t, []string{"wordpress.internal"}, hosts, "it's fetched from the backend, as the page was")
 	mu.Unlock()
+}
+
+func TestHandlerConvertsImages(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 640, 360))
+	for y := 0; y < 360; y++ {
+		for x := 0; x < 640; x++ {
+			img.Set(x, y, color.RGBA{uint8(x / 3), uint8(y / 2), uint8(200 - y/3), 255})
+		}
+	}
+	var photo bytes.Buffer
+	require.NoError(t, jpeg.Encode(&photo, img, &jpeg.Options{Quality: 90}))
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(photo.Bytes())
+	}))
+	defer origin.Close()
+	for _, staticFiles := range []bool{false, true} {
+		cfg, err := config.Parse(`
+hosts = ["www.example.com"]
+[backend]
+uri = "` + origin.URL + `"
+[cache]
+staticFiles = ` + fmt.Sprint(staticFiles) + `
+[optimize]
+convertImages = true
+`)
+		require.NoError(t, err)
+		h := newHandler(cfg)
+		get := func() *httptest.ResponseRecorder {
+			r := httptest.NewRequest(http.MethodGet, "http://www.example.com/wp-content/uploads/2026/10/photo.jpg", nil)
+			r.Header.Set("Accept", "image/avif,image/webp,*/*")
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			return w
+		}
+		first := get()
+		assert.Equal(t, "image/jpeg", first.Header().Get("Content-Type"))
+		assert.Contains(t, first.Header().Values("Vary"), "Accept")
+		var w *httptest.ResponseRecorder
+		require.Eventually(t, func() bool {
+			w = get()
+			return w.Header().Get("Content-Type") == "image/avif"
+		}, 10e9, 1e7, "with static files cached: %v", staticFiles)
+		assert.Less(t, w.Body.Len(), photo.Len()/2)
+		assert.Equal(t, "public, max-age=86400", w.Header().Get("Cache-Control"))
+	}
 }

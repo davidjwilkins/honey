@@ -1,6 +1,6 @@
 module github.com/davidjwilkins/honey
 
-go 1.26.0
+go 1.26.4
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -15,6 +15,8 @@ require (
 )
 
 require (
+	github.com/SeriousBug/webp-go-pure v1.2.0 // indirect
+	github.com/gen2brain/gav1d v0.2.5 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect

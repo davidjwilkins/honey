@@ -114,3 +114,27 @@ func TestUnusedCSSIsRemoved(t *testing.T) {
 	assert.Less(t, len(used), len(whole.Body)/2, "the page has less than half of the whole stylesheet")
 	t.Logf("%s: %d of %d bytes used", href, len(used), len(whole.Body))
 }
+
+func TestImagesAreConverted(t *testing.T) {
+	// A photo which comes with WooCommerce
+	path := "/wp-content/plugins/woocommerce/assets/images/pattern-placeholders/girls-in-the-hills.jpg"
+	c := client(nil)
+	original := get(t, c, path)
+	require.Equal(t, http.StatusOK, original.StatusCode)
+	assert.Equal(t, "image/jpeg", original.Header.Get("Content-Type"), "browsers which don't say they take AVIF or WebP get the original")
+	assert.Contains(t, original.Header.Values("Vary"), "Accept")
+
+	var avif page
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		avif = get(t, c, path, "Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+		if avif.Header.Get("Content-Type") == "image/avif" || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	require.Equal(t, "image/avif", avif.Header.Get("Content-Type"), "it's converted, for browsers which take AVIF")
+	assert.Equal(t, "avif", avif.Header.Get("X-Honey-Image"))
+	assert.Less(t, len(avif.Body), len(original.Body)*2/3)
+	t.Logf("%s: %d bytes as a JPEG, %d as AVIF", path, len(original.Body), len(avif.Body))
+}
