@@ -20,10 +20,10 @@ compose up -d wordpress honey
 
 echo "waiting for WordPress"
 for i in $(seq 1 60); do
-  # the installer is served once WordPress has written its config (for
-  # localhost, the only host Honey serves, sent to 127.0.0.1 as localhost
-  # may resolve to ::1)
-  if curl -fsS -o /dev/null -H "Host: localhost:8080" http://127.0.0.1:8080/wp-admin/install.php; then break; fi
+  # the login page (or a redirect to the installer) is served once
+  # WordPress has written its config (for localhost, the only host Honey
+  # serves, sent to 127.0.0.1 as localhost may resolve to ::1)
+  if curl -fsS -o /dev/null -H "Host: localhost:8080" http://127.0.0.1:8080/wp-login.php; then break; fi
   sleep 2
 done
 # HONEY_E2E_WOOCOMMERCE=1 installs WooCommerce, for its tests

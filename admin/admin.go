@@ -299,6 +299,7 @@ var results = []result{
 	{Name: "STALE", Class: "stale", Help: "old copy, while it's refreshed or the backend fails"},
 	{Name: "MISS", Class: "miss", Help: "fetched from the backend, and cached"},
 	{Name: "NO-CACHE", Class: "bypass", Help: "logged in, admin, personal or uncacheable"},
+	{Name: "BLOCKED", Class: "blocked", Help: "turned away to protect WordPress"},
 	{Name: "OTHER", Class: "none", Help: "purges, other hosts and errors"},
 }
 

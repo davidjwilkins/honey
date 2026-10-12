@@ -69,6 +69,8 @@ type Config struct {
 	Warm                Warm
 	// TLS, if set, serves HTTPS and HTTP/3 too
 	TLS *TLS
+	// Security configures protecting WordPress (see the guard package)
+	Security Security
 	// File is the settings as they were written, e.g. to export them
 	File *File
 }
@@ -90,6 +92,22 @@ type TLS struct {
 	// Redirect is whether plain HTTP requests are redirected to HTTPS
 	Redirect bool
 }
+
+// Security configures protecting WordPress (see guard.Options)
+type Security struct {
+	BlockPaths bool
+	// XMLRPC is "safe", "off" or "on"
+	XMLRPC  string
+	Headers bool
+	// HSTS is the Strict-Transport-Security header for HTTPS responses,
+	// or "" for none
+	HSTS string
+}
+
+// DefaultHSTS is the Strict-Transport-Security header sent when Honey
+// serves HTTPS and redirects plain HTTP to it, unless security.hsts says
+// otherwise
+const DefaultHSTS = "max-age=31536000"
 
 // DefaultTLSListen is the address HTTPS is served on, if TLS is on and
 // tls.listen isn't set
@@ -245,6 +263,12 @@ type File struct {
 		Secret       string   `toml:"secret,omitempty"`
 		SecretHeader string   `toml:"secretHeader,omitempty"`
 	} `toml:"control,omitempty"`
+	Security struct {
+		BlockPaths *bool  `toml:"blockPaths,omitempty"`
+		XMLRPC     string `toml:"xmlrpc,omitempty"`
+		Headers    *bool  `toml:"headers,omitempty"`
+		HSTS       string `toml:"hsts,omitempty"`
+	} `toml:"security,omitempty"`
 	TLS struct {
 		Listen   string `toml:"listen,omitempty"`
 		Auto     bool   `toml:"auto,omitempty"`
@@ -312,6 +336,8 @@ func (f *File) Clone() *File {
 	c.TrustedProxies = cloneList(f.TrustedProxies)
 	c.Hosts = cloneList(f.Hosts)
 	c.TLS.HTTP3 = cloneBool(f.TLS.HTTP3)
+	c.Security.BlockPaths = cloneBool(f.Security.BlockPaths)
+	c.Security.Headers = cloneBool(f.Security.Headers)
 	c.TLS.Redirect = cloneBool(f.TLS.Redirect)
 	c.Cache.AllowedCookies = append([]string(nil), f.Cache.AllowedCookies...)
 	c.Cache.BypassCookies = cloneList(f.Cache.BypassCookies)
@@ -407,6 +433,9 @@ func FromFile(f *File) (*Config, error) {
 	}
 
 	if cfg.TLS, err = parseTLS(f, cfg); err != nil {
+		return nil, err
+	}
+	if cfg.Security, err = parseSecurity(f, cfg.TLS); err != nil {
 		return nil, err
 	}
 
@@ -659,6 +688,39 @@ func parseWarm(cfg *Config, sitemap string, rate float64, maxPages int, interval
 
 // hostPattern is a host name, or "*." and a domain
 var hostPattern = regexp.MustCompile(`^(\*\.)?[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$`)
+
+// parseSecurity validates the [security] settings, and fills in their
+// defaults: everything on, with XML-RPC's abused methods blocked, and
+// HSTS if Honey redirects plain HTTP to HTTPS
+func parseSecurity(f *File, tls *TLS) (Security, error) {
+	s := f.Security
+	sec := Security{
+		BlockPaths: s.BlockPaths == nil || *s.BlockPaths,
+		Headers:    s.Headers == nil || *s.Headers,
+		XMLRPC:     s.XMLRPC,
+	}
+	switch sec.XMLRPC {
+	case "":
+		sec.XMLRPC = "safe"
+	case "safe", "off", "on":
+	default:
+		return sec, fmt.Errorf("security.xmlrpc must be \"safe\", \"off\" or \"on\"")
+	}
+	switch {
+	case s.HSTS == "off":
+	case s.HSTS == "":
+		if tls != nil && tls.Redirect {
+			sec.HSTS = DefaultHSTS
+		}
+	case hstsValue.MatchString(s.HSTS):
+		sec.HSTS = s.HSTS
+	default:
+		return sec, fmt.Errorf("security.hsts must be \"off\", or a Strict-Transport-Security header, e.g. \"max-age=31536000; includeSubDomains\"")
+	}
+	return sec, nil
+}
+
+var hstsValue = regexp.MustCompile(`(?i)^max-age=\d{1,10}(\s*;\s*(includeSubDomains|preload))*$`)
 
 // parseTLS validates the [tls] settings, and returns nil if TLS is off
 func parseTLS(f *File, cfg *Config) (*TLS, error) {

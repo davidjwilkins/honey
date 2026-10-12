@@ -72,6 +72,17 @@ var sections = []section{
 		optBool("tls.redirect", "Redirect plain HTTP to HTTPS (except purges)", "yes",
 			func(f *config.File) **bool { return &f.TLS.Redirect }),
 	}},
+	{"Security", []*field{
+		optBool("security.blockPaths", "Block requests for wp-config.php and its backups, hidden files (.env, .git), logs and database dumps, PHP in uploads, and the installer", "yes",
+			func(f *config.File) **bool { return &f.Security.BlockPaths }),
+		{Key: "security.xmlrpc", Kind: kindSelect, Help: "XML-RPC: safe blocks password brute-forcing (system.multicall) and pingbacks", Options: []string{"", "safe", "off", "on"}, Default: "safe",
+			get: func(f *config.File) string { return f.Security.XMLRPC },
+			set: func(f *config.File, v string) error { f.Security.XMLRPC = v; return nil }},
+		optBool("security.headers", "Set security headers, and hide the software versions WordPress's server sends", "yes",
+			func(f *config.File) **bool { return &f.Security.Headers }),
+		text("security.hsts", "Strict-Transport-Security for HTTPS responses, or off", "max-age=31536000 if Honey redirects to HTTPS",
+			func(f *config.File) *string { return &f.Security.HSTS }),
+	}},
 	{"Backend", []*field{
 		text("backend.uri", "The web server running WordPress", "",
 			func(f *config.File) *string { return &f.Backend.URI }),

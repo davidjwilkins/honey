@@ -73,3 +73,56 @@ func TestOtherHostsAreTurnedAway(t *testing.T) {
 		assert.Equal(t, status, resp.StatusCode, host)
 	}
 }
+
+func TestSensitiveFilesAreBlocked(t *testing.T) {
+	c := client(nil)
+	// PHP which got into uploads, e.g. through a vulnerable plugin
+	wp(t, "eval", `wp_mkdir_p(WP_CONTENT_DIR . "/uploads"); file_put_contents(WP_CONTENT_DIR . "/uploads/e2e-shell.php", "<?php echo 'SHELL' . 'RAN';");`)
+	for _, p := range []string{"/wp-config.php", "/wp-config.php.bak", "/.env", "/.git/config", "/wp-content/debug.log",
+		"/wp-content/uploads/e2e-shell.php", "/wp-admin/install.php", "/readme.html"} {
+		resp := get(t, c, p)
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode, p)
+		assert.Equal(t, "BLOCKED", resp.Cache, p)
+		notContains(t, resp.Body, "SHELLRAN", p)
+	}
+	for _, p := range []string{"/", "/wp-login.php", "/wp-includes/css/dashicons.min.css"} {
+		assert.Equal(t, http.StatusOK, get(t, c, p).StatusCode, p)
+	}
+	contains(t, get(t, c, adminPage+"/").Body, "for PHP in uploads", "the admin page shows what was blocked")
+}
+
+func TestXMLRPCBruteForcingIsBlocked(t *testing.T) {
+	post := func(body string) *http.Response {
+		req, err := http.NewRequest(http.MethodPost, site+"/xmlrpc.php", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "text/xml")
+		resp, err := client(nil).Do(req)
+		require.NoError(t, err)
+		resp.Body.Close()
+		return resp
+	}
+	call := func(method, params string) string {
+		return `<?xml version="1.0"?><methodCall><methodName>` + method + `</methodName><params>` + params + `</params></methodCall>`
+	}
+	assert.Equal(t, http.StatusOK, post(call("system.listMethods", "")).StatusCode, "XML-RPC still works")
+	guess := `<value><struct><member><name>methodName</name><value><string>wp.getUsersBlogs</string></value></member>` +
+		`<member><name>params</name><value><array><data><value><string>admin</string></value><value><string>guess</string></value></data></array></value></member></struct></value>`
+	resp := post(call("system.multicall", `<param><value><array><data>`+strings.Repeat(guess, 50)+`</data></array></value></param>`))
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode, "50 password guesses in one request")
+	assert.Equal(t, "BLOCKED", resp.Header.Get("X-Honey-Cache"))
+	resp = post(call("pingback.ping", `<param><value><string>https://victim.example/</string></value></param><param><value><string>`+site+`/</string></value></param>`))
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode, "pingbacks")
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	c := client(nil)
+	page := get(t, c, "/")
+	assert.Equal(t, "nosniff", page.Header.Get("X-Content-Type-Options"))
+	assert.NotEmpty(t, page.Header.Get("Referrer-Policy"))
+	for _, name := range []string{"Server", "X-Powered-By", "X-Pingback"} {
+		assert.Empty(t, page.Header.Get(name), "%s gives away what the site runs", name)
+	}
+	login := get(t, c, "/wp-login.php")
+	assert.Equal(t, "SAMEORIGIN", login.Header.Get("X-Frame-Options"))
+	assert.Contains(t, login.Header.Get("Content-Security-Policy"), "frame-ancestors 'self'")
+}

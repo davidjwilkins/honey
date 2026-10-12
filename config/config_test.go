@@ -644,3 +644,35 @@ func TestParseTLS(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSecurity(t *testing.T) {
+	const base = "[backend]\nuri = \"https://www.example.com\"\n"
+	cfg, err := Parse(base)
+	require.NoError(t, err)
+	assert.Equal(t, Security{BlockPaths: true, XMLRPC: "safe", Headers: true}, cfg.Security, "on by default, without HSTS")
+
+	cfg, err = Parse("hosts = [\"www.example.com\"]\n[tls]\nauto = true\n" + base)
+	require.NoError(t, err)
+	assert.Equal(t, DefaultHSTS, cfg.Security.HSTS, "HSTS when Honey redirects to HTTPS")
+	cfg, err = Parse("hosts = [\"www.example.com\"]\n[tls]\nauto = true\nredirect = false\n" + base)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Security.HSTS, "but not if plain HTTP is still served")
+
+	cfg, err = Parse("[security]\nblockPaths = false\nxmlrpc = \"off\"\nheaders = false\nhsts = \"max-age=63072000; includeSubDomains; preload\"\n" + base)
+	require.NoError(t, err)
+	assert.Equal(t, Security{XMLRPC: "off", HSTS: "max-age=63072000; includeSubDomains; preload"}, cfg.Security)
+	cfg, err = Parse("hosts = [\"www.example.com\"]\n[tls]\nauto = true\n[security]\nhsts = \"off\"\n" + base)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Security.HSTS)
+
+	for _, tc := range []struct{ config, err string }{
+		{"[security]\nxmlrpc = \"partly\"", "security.xmlrpc"},
+		{"[security]\nhsts = \"1 year\"", "security.hsts"},
+		{"[security]\nhsts = \"max-age=1\\r\\nX-Evil: 1\"", "security.hsts"},
+	} {
+		_, err := Parse(tc.config + "\n" + base)
+		if assert.Error(t, err, tc.config) {
+			assert.Contains(t, err.Error(), tc.err)
+		}
+	}
+}
