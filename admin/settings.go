@@ -34,6 +34,8 @@ type field struct {
 	Options []string
 	get     func(f *config.File) string
 	set     func(f *config.File, value string) error
+	// secret is where a secret field's value is (see secret)
+	secret func(f *config.File) *string
 }
 
 type section struct {
@@ -170,6 +172,17 @@ var sections = []section{
 			get: func(f *config.File) string { return yesNo(f.Security.HideUsers) },
 			set: func(f *config.File, v string) error { f.Security.HideUsers = v == "yes"; return nil }},
 	}},
+	{"CDN", []*field{
+		{Key: "cdn.provider", Kind: kindSelect, Help: "The CDN in front of Honey, which purges are passed on to", Options: []string{"", "cloudflare", "bunny"}, Default: "none",
+			get: func(f *config.File) string { return f.CDN.Provider },
+			set: func(f *config.File, v string) error { f.CDN.Provider = v; return nil }},
+		text("cdn.zone", "Cloudflare's zone ID, from the zone's overview page", "",
+			func(f *config.File) *string { return &f.CDN.Zone }),
+		secret("cdn.token", "A Cloudflare API token which can purge the zone's cache, or Bunny's API key: it's never shown",
+			func(f *config.File) *string { return &f.CDN.Token }),
+		list("cdn.hosts", "The hosts the CDN serves, whose pages are purged (if not the hosts)",
+			func(f *config.File) *[]string { return &f.CDN.Hosts }),
+	}},
 	{"Optimize", []*field{
 		{Key: "optimize.delayScripts", Kind: kindBool, Help: "Run analytics, ad, chat and other third-party scripts when the visitor first interacts with the page",
 			get: func(f *config.File) string { return yesNo(f.Optimize.DelayScripts) },
@@ -278,9 +291,8 @@ var sections = []section{
 	{"Purging", []*field{
 		list("control.allowIPs", "Addresses (or networks) allowed to purge",
 			func(f *config.File) *[]string { return &f.Control.AllowIPs }),
-		{Key: "control.secret", Kind: kindSecret, Help: "A secret which allows purging from anywhere: it's never shown",
-			get: func(f *config.File) string { return "" },
-			set: func(f *config.File, v string) error { f.Control.Secret = v; return nil }},
+		secret("control.secret", "A secret which allows purging from anywhere: it's never shown",
+			func(f *config.File) *string { return &f.Control.Secret }),
 		text("control.secretHeader", "The header the secret is sent in", "X-Honey-Secret",
 			func(f *config.File) *string { return &f.Control.SecretHeader }),
 	}},
@@ -296,6 +308,14 @@ var sections = []section{
 			get: func(f *config.File) string { return f.Log.Format },
 			set: func(f *config.File, v string) error { f.Log.Format = v; return nil }},
 	}},
+}
+
+// secret is a field whose value is never shown, and kept unless it's
+// changed or removed
+func secret(key, help string, at func(*config.File) *string) *field {
+	return &field{Key: key, Kind: kindSecret, Help: help, secret: at,
+		get: func(f *config.File) string { return "" },
+		set: func(f *config.File, v string) error { *at(f) = v; return nil }}
 }
 
 func text(key, help, def string, at func(*config.File) *string) *field {
@@ -399,8 +419,6 @@ type settingsView struct {
 	chrome
 	Sections []sectionView
 	Preview  preview
-	// HasSecret is whether there is a secret, which the form keeps
-	HasSecret bool
 }
 
 type sectionView struct {
@@ -413,6 +431,8 @@ type fieldView struct {
 	Value   string
 	Problem string
 	Changed bool
+	// HasSecret is whether a secret field has a value, which the form keeps
+	HasSecret bool
 }
 
 // preview is the config file the form describes, compared with the
@@ -434,7 +454,7 @@ func (a *admin) edit(form url.Values) (*config.File, map[string]string) {
 			values, sent := form[fd.Key]
 			if fd.Kind == kindSecret {
 				if form.Get(fd.Key+secretRemove) != "" {
-					f.Control.Secret = ""
+					*fd.secret(f) = ""
 				} else if sent && strings.TrimSpace(values[0]) != "" {
 					fd.set(f, strings.TrimSpace(values[0]))
 				}
@@ -461,7 +481,7 @@ func (a *admin) settingsView(f *config.File, form url.Values, problems map[strin
 	if f == nil {
 		f = a.opts.Settings
 	}
-	v := settingsView{chrome: a.chrome("settings"), HasSecret: a.opts.Settings.Control.Secret != ""}
+	v := settingsView{chrome: a.chrome("settings")}
 	for _, s := range sections {
 		sv := sectionView{Title: s.Title}
 		for _, fd := range s.Fields {
@@ -470,10 +490,11 @@ func (a *admin) settingsView(f *config.File, form url.Values, problems map[strin
 				value = sent[0]
 			}
 			sv.Fields = append(sv.Fields, fieldView{
-				field:   fd,
-				Value:   value,
-				Problem: problems[fd.Key],
-				Changed: fd.Kind != kindSecret && fd.get(f) != fd.get(a.opts.Settings),
+				field:     fd,
+				Value:     value,
+				Problem:   problems[fd.Key],
+				Changed:   fd.Kind != kindSecret && fd.get(f) != fd.get(a.opts.Settings),
+				HasSecret: fd.secret != nil && *fd.secret(a.opts.Settings) != "",
 			})
 		}
 		v.Sections = append(v.Sections, sv)
@@ -511,17 +532,23 @@ func (a *admin) preview(f *config.File, problems map[string]string) preview {
 	return p
 }
 
-// hideSecret returns f with its secret replaced, saying whether it is the
-// same as current's
+// hideSecret returns f with its secrets replaced, saying whether each is
+// the same as current's
 func hideSecret(f, current *config.File) *config.File {
-	if f.Control.Secret == "" {
-		return f
-	}
 	f = f.Clone()
-	if f.Control.Secret == current.Control.Secret {
-		f.Control.Secret = "(hidden)"
-	} else {
-		f.Control.Secret = "(changed, hidden)"
+	for _, s := range sections {
+		for _, fd := range s.Fields {
+			if fd.secret == nil {
+				continue
+			}
+			switch value := fd.secret(f); {
+			case *value == "":
+			case *value == *fd.secret(current):
+				*value = "(hidden)"
+			default:
+				*value = "(changed, hidden)"
+			}
+		}
 	}
 	return f
 }

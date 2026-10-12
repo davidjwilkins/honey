@@ -142,6 +142,14 @@ All the available settings:
 	adminIPs = ["198.51.100.0/24"]   # if set, the only addresses the dashboard and login page are served to
 	hideUsers = true             # hide the site's users from visitors who aren't logged in (off by default)
 
+	# A CDN in front of Honey, which purges are passed on to (see below)
+	[cdn]
+	provider = "cloudflare"      # or "bunny"
+	zone = "023e105f4ecef8ad9ca31a8372d0c353"   # Cloudflare's zone ID (not for Bunny)
+	token = "..."                # a Cloudflare API token with Cache Purge permission for the zone, or Bunny's
+	                             # API key (or set the HONEY_CDN_TOKEN environment variable)
+	hosts = ["www.example.com"]  # the hosts the CDN serves (default: hosts)
+
 	# Changing pages as they're cached, so that browsers load them faster
 	# (off by default; see below)
 	[optimize]
@@ -424,6 +432,17 @@ A `PURGE` with an `X-Honey-Fragment` header purges [shared fragments](#shared-fr
 
 	curl -X PURGE -H "X-Honey-Secret: $SECRET" -H "X-Honey-Fragment: posts-*" https://www.example.com/
 
+## Behind a CDN
+
+A CDN (Cloudflare, Bunny) in front of Honey caches pages near visitors around the world, so that a visitor far from the server doesn't wait for the round trips to it.  But a CDN's copies go out of date when the site changes, unless it's told.  With a `[cdn]`, Honey passes its purges on - from the [WordPress plugin](#purging-from-wordpress), the admin page's Purge button, or any `PURGE` request - along with pages showing [shared fragments](#shared-fragments) when they're purged, and pages cached again with their [main image](#optimizing-pages) preloaded.  Purges are collected for 2 seconds and sent together, leaving out what's already covered (e.g. a post under a category being purged as a whole), so a post's purges are one or two API calls.  The admin page's events show what was purged, and any problems.
+
+- **Cloudflare** needs the zone's ID (on its overview page) and an [API token](https://dash.cloudflare.com/profile/api-tokens) with Zone, Cache Purge permission for it.  Pages are purged by URL (`https://` and each host), everything under a path by prefix, and everything by host.  Cloudflare only purges prefixes which are whole path segments (`/category/news/` purges everything under it, but `/wp-sitemap` wouldn't purge `/wp-sitemap.xml`), so other prefixes are purged as the URLs Honey had cached under them.
+- **Bunny** needs your account's API key (Account settings, API).  Everything under a path is purged with a `*` wildcard, and if more than 100 URLs are purged at once, the whole site is.
+
+A purge with Honey's soft mode leaves the old page to be served once more while the new one is fetched, which the CDN mustn't keep: so with a `[cdn]`, stale pages are sent with `Cache-Control: no-cache`.  Pages Honey doesn't cache - those WordPress renders for logged in users, commenters and shoppers, which it doesn't always mark as personal - are sent with `Cache-Control: private`, so that the CDN doesn't cache them either.
+
+The CDN has to be told to cache pages (CDNs usually only cache static files by default) - and, as it can't tell visitors apart, not to for visitors with WordPress's [bypass cookies](#logged-in-users-and-sessions).  It should respect the `Cache-Control` headers Honey sends.  With Cloudflare, add a Cache Rule which makes requests eligible for cache unless their cookies contain `wordpress_logged_in_`, `wp-postpass_`, `comment_author_`, `woocommerce_items_in_cart` or `wp_woocommerce_session_` (and leaves the Edge TTL to the origin's `Cache-Control`).  With Bunny, turn on Cache HTML (or set the Smart Cache), and add an Edge Rule which bypasses the cache for those cookies.  Visitors with them then reach Honey, which serves them as usual - with [Edge Side Includes](#edge-side-includes) for commenters and shoppers.
+
 ## Shared fragments
 
 Some parts of a page are the same on every page - a list of recent posts in a sidebar, say.  When one changes, every page showing it is out of date, but purging every page would make WordPress render the whole site again.  Instead, the backend can mark such a part as a shared fragment:
@@ -518,11 +537,10 @@ Things which might be worth doing next:
 - **Per-route compression settings** (brotli and gzip are site-wide for now).
 - **More Edge Side Includes:** commenters and shoppers on classic themes, and parts of pages for logged in users (e.g. the admin bar), so that their pages can mostly be served from the cache too.
 
-Cache plugins such as FlyingPress, LiteSpeed Cache and WP Rocket serve pages more slowly than Honey, and don't keep WordPress out of the way as well, but they also change pages so that browsers load them faster, which is most of what Core Web Vitals and PageSpeed measure.  Honey [delays third-party scripts and preloads pages' main images](#optimizing-pages), and could do more of it, once, when a page is cached, so that it costs nothing to serve:
+Cache plugins such as FlyingPress, LiteSpeed Cache and WP Rocket serve pages more slowly than Honey, and don't keep WordPress out of the way as well, but they also change pages so that browsers load them faster, which is most of what Core Web Vitals and PageSpeed measure.  Honey [delays third-party scripts and preloads pages' main images](#optimizing-pages), and [purges a CDN](#behind-a-cdn) in front of it, and could do more of it, once, when a page is cached, so that it costs nothing to serve:
 
 - **WebP and AVIF images:** convert JPEGs and PNGs the first time they're requested by a browser which accepts them, and cache the result, varying on `Accept`.
 - **Self-hosting Google Fonts:** fetch the stylesheets and fonts a page uses from Google, serve them from the site itself with `font-display: swap`, and preload them, saving a connection to another site (and not telling Google about visitors).
-- **Forwarding purges to a CDN** (Cloudflare, Bunny), so that Honey can be the origin behind a CDN which caches pages near visitors around the world, without pages going out of date there.
 - **Removing unused CSS and inlining critical CSS:** the biggest PageSpeed win, but it needs a headless browser to render each kind of page, so it's the heaviest to build.
 - **Benchmarks against them:** Honey against WP Super Cache, WP Fastest Cache and Nginx's FastCGI cache in the end-to-end tests' Docker setup, so that comparisons rest on numbers.
 

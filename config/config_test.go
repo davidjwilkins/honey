@@ -755,3 +755,34 @@ preloadMainImage = true
 		assert.Error(t, err, bad)
 	}
 }
+
+func TestParseCDN(t *testing.T) {
+	base := "hosts = [\"www.example.com\", \"*.example.org\"]\n[backend]\nuri = \"https://www.example.com\"\n"
+	cfg, err := Parse(base)
+	require.NoError(t, err)
+	assert.Nil(t, cfg.CDN, "none by default")
+
+	cfg, err = Parse(base + "[cdn]\nprovider = \"cloudflare\"\nzone = \"abc\"\ntoken = \"tok\"\n")
+	require.NoError(t, err)
+	assert.Equal(t, &CDN{Provider: "cloudflare", Zone: "abc", Token: "tok", Hosts: []string{"www.example.com"}}, cfg.CDN, "the hosts, less wildcards")
+
+	t.Setenv("HONEY_CDN_TOKEN", "from-env")
+	cfg, err = Parse(base + "[cdn]\nprovider = \"bunny\"\nhosts = [\"CDN.example.com\"]\n")
+	require.NoError(t, err)
+	assert.Equal(t, &CDN{Provider: "bunny", Token: "from-env", Hosts: []string{"cdn.example.com"}}, cfg.CDN)
+	t.Setenv("HONEY_CDN_TOKEN", "")
+
+	for _, bad := range []string{
+		"provider = \"akamai\"\ntoken = \"t\"",
+		"provider = \"cloudflare\"\ntoken = \"t\"",
+		"provider = \"bunny\"\nzone = \"z\"\ntoken = \"t\"",
+		"provider = \"bunny\"",
+		"provider = \"bunny\"\ntoken = \"t\"\nhosts = [\"https://www.example.com/\"]",
+		"token = \"t\"",
+	} {
+		_, err := Parse(base + "[cdn]\n" + bad + "\n")
+		assert.Error(t, err, bad)
+	}
+	_, err = Parse("[backend]\nuri = \"https://www.example.com\"\n[cdn]\nprovider = \"bunny\"\ntoken = \"t\"\n")
+	assert.ErrorContains(t, err, "cdn.hosts (or hosts) is needed")
+}

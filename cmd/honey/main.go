@@ -25,6 +25,7 @@ import (
 	"github.com/davidjwilkins/honey/accesslog"
 	"github.com/davidjwilkins/honey/admin"
 	"github.com/davidjwilkins/honey/cache"
+	"github.com/davidjwilkins/honey/cdn"
 	"github.com/davidjwilkins/honey/clientip"
 	"github.com/davidjwilkins/honey/config"
 	"github.com/davidjwilkins/honey/events"
@@ -140,6 +141,8 @@ func main() {
 	// progress to finish before saving the cache and exiting
 	<-drained
 	stopPersisting()
+	// Purges waiting to be passed on
+	h.cdn.Flush()
 	if cfg.Cache.Persist != "" {
 		saveCache(cacher, cfg.Cache.Persist)
 	}
@@ -248,6 +251,8 @@ type honey struct {
 	warmer *warm.Warmer
 	// events are what the admin page shows has happened, if it is on
 	events *events.Log
+	// cdn passes purges on to a CDN, if there is one
+	cdn *cdn.Purger
 }
 
 // newHandler builds the caching proxy described by cfg.
@@ -262,6 +267,16 @@ func build(cfg *config.Config, started time.Time) *honey {
 	var eventLog *events.Log
 	if cfg.AdminListen != "" {
 		eventLog = events.New(events.DefaultMax)
+	}
+	// Purges are passed on to the CDN in front of Honey, if there is one
+	var purger *cdn.Purger
+	if cfg.CDN != nil {
+		var err error
+		purger, err = cdn.New(cdn.Options{Provider: cfg.CDN.Provider, Zone: cfg.CDN.Zone, Token: cfg.CDN.Token,
+			Hosts: cfg.CDN.Hosts, Events: eventLog})
+		if err != nil {
+			log.Printf("cdn: %v", err)
+		}
 	}
 	// Pages are changed as they're cached, so that browsers load them
 	// faster; once a page's main image is learned, it's cached again with
@@ -298,7 +313,10 @@ func build(cfg *config.Config, started time.Time) *honey {
 		Events:               eventLog,
 		RewritePage:          rewrite,
 	})
-	refresh = func(host, path string) { c.Expire(&url.URL{Path: path}, false) }
+	refresh = func(host, path string) {
+		c.Expire(&url.URL{Path: path}, false)
+		purger.Purge(path, false, nil)
+	}
 	for _, name := range cfg.Cache.AllowedCookies {
 		c.AddAllowedCookie(name)
 	}
@@ -336,7 +354,7 @@ func build(cfg *config.Config, started time.Time) *honey {
 		recorder.LogTo(eventLog)
 		transport = recorder.Transport(transport)
 	}
-	h := &honey{metrics: recorder, cacher: c, events: eventLog}
+	h := &honey{metrics: recorder, cacher: c, events: eventLog, cdn: purger}
 	// Addresses which keep failing to log in, and (if it's on) their
 	// requests to WordPress.  Requests from this host (e.g. WordPress's
 	// own) are never limited.
@@ -359,12 +377,37 @@ func build(cfg *config.Config, started time.Time) *honey {
 		EarlyHints:  cfg.Cache.EarlyHints,
 		BackendGate: limits.AllowBackend,
 		HideUsers:   cfg.Security.HideUsers,
-		OnPurge: func(path string, prefix, soft bool) {
+		ListPurged:  purger != nil,
+		OnPurge: func(p fetch.Purged) {
+			purger.Purge(p.Path, p.Prefix, p.Cached)
 			// Everything has been purged: fill the cache again
-			if h.warmer != nil && prefix && path == "/" {
+			if h.warmer != nil && p.Prefix && p.Path == "/" {
 				h.warmer.Trigger()
 			}
 		},
+	}
+	if purger != nil {
+		// Pages showing purged shared fragments are updated in the cache
+		// without being purged, but the CDN's copies need purging
+		fetchOpts.OnFragmentPurge = func(names string) {
+			shows := func(fragments []string) bool {
+				for _, name := range strings.Split(names, ",") {
+					name = strings.TrimSpace(name)
+					prefix, isPrefix := strings.CutSuffix(name, "*")
+					for _, f := range fragments {
+						if name != "" && (f == name || (isPrefix && strings.HasPrefix(f, prefix))) {
+							return true
+						}
+					}
+				}
+				return false
+			}
+			for _, e := range c.Entries() {
+				if shows(e.Fragments) {
+					purger.Purge(e.Path, false, nil)
+				}
+			}
+		}
 	}
 	h.handler = fetch.FetchWithOptions(c, fetch.NewForwarder(c, transport), cfg.Backend, fetchOpts)
 	// The cache itself, without the metrics, access log and so on
@@ -382,6 +425,11 @@ func build(cfg *config.Config, started time.Time) *honey {
 	}
 	// Browsers report pages' main images to Honey itself
 	h.handler = optimizer.Middleware(h.handler)
+	if purger != nil {
+		// The CDN mustn't keep pages Honey doesn't, or a page Honey serves
+		// while it refreshes it
+		h.handler = cdn.Protect(h.handler)
+	}
 	// Visitors' requests are guarded; the warmer's and purges' aren't
 	h.handler = guard.Middleware(guard.Options{
 		BlockPaths: cfg.Security.BlockPaths,

@@ -169,6 +169,19 @@ func TestSettingsSecret(t *testing.T) {
 	form = settingsForm(t, h)
 	form.Set("control.secret.remove", "1")
 	assert.Empty(t, export(form).Control.Secret)
+
+	// The CDN's token is a secret too
+	form = settingsForm(t, h)
+	form.Set("cdn.provider", "cloudflare")
+	form.Set("cdn.zone", "zone1")
+	form.Set("cdn.token", "cdn-token-0123456789")
+	form.Set("cdn.hosts", "www.example.com")
+	preview = post(h, "/settings/preview", form).Body
+	assert.NotContains(t, preview, "cdn-token")
+	cfg := export(form)
+	require.NotNil(t, cfg.CDN)
+	assert.Equal(t, "cdn-token-0123456789", cfg.CDN.Token)
+	assert.Equal(t, "the-secret-0123456789", cfg.Control.Secret, "the other secret is kept")
 }
 
 func TestDiffLines(t *testing.T) {

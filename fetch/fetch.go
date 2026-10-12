@@ -57,8 +57,16 @@ type Options struct {
 	// name.
 	BackendHost string
 	// OnPurge, if set, is called after each purge, e.g. to warm the cache
-	// again (see the warm package).
+	// again (see the warm package), or purge a CDN too.
 	OnPurge PurgeHook
+	// ListPurged has OnPurge told the paths a prefix purge purged (see
+	// Purged.Cached)
+	ListPurged bool
+	// OnFragmentPurge, if set, is called after shared fragments are purged
+	// (with the name purged, which may end with "*" for every fragment
+	// whose name starts with what precedes it), e.g. to purge the pages
+	// showing them from a CDN
+	OnFragmentPurge func(name string)
 	// Hosts, if not nil, are the only hosts (see HostAllowed) which
 	// requests are handled for: requests for any other get a 421
 	// Misdirected Request, rather than being sent to the backend and
@@ -125,7 +133,7 @@ func FetchWithOptions(c cache.Cacher, handler http.Handler, backend *url.URL, op
 			// so that it matches the cache keys
 			filterQuery(r)
 		}
-		if opts.Control.applyControl(c, w, r, opts.OnPurge, opts.Events) {
+		if opts.Control.applyControl(c, w, r, purgeHook{opts.OnPurge, opts.ListPurged}, opts.Events) {
 			return
 		}
 		serve(w, r)

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/davidjwilkins/honey/cache"
 	"github.com/stretchr/testify/assert"
@@ -249,25 +250,29 @@ func TestOnPurge(t *testing.T) {
 	o := noHeadersOrigin()
 	backend, err := url.Parse(o.URL)
 	require.NoError(t, err)
-	type call struct {
-		path         string
-		prefix, soft bool
-	}
-	var calls []call
+	var calls []Purged
 	opts := Options{
-		Control: Control{Secret: secret},
-		OnPurge: func(path string, prefix, soft bool) { calls = append(calls, call{path, prefix, soft}) },
+		Control:    Control{Secret: secret},
+		OnPurge:    func(p Purged) { calls = append(calls, p) },
+		ListPurged: true,
 	}
-	c := cache.NewCacher(cache.Options{})
+	c := cache.NewCacher(cache.Options{DefaultTTL: time.Hour})
 	proxy := httptest.NewServer(FetchWithOptions(c, Forwarder(c), backend, opts))
 	t.Cleanup(proxy.Close)
 	t.Cleanup(o.Close)
+	for _, path := range []string{"/blog/a/", "/blog/b/?page=2", "/blogroll/", "/about/"} {
+		get(t, proxy.URL+path)
+	}
 
-	purgeRequest(t, proxy.URL, "/blog/*", false)
+	purgeRequest(t, proxy.URL, "/blog*", false)
 	purgeRequest(t, proxy.URL, "/page?p=1", true)
 	_, err = Purger(c, backend, opts)("/*", false, true)
 	require.NoError(t, err)
-	assert.Equal(t, []call{{"/blog/", true, false}, {"/page?p=1", false, true}, {"/", true, true}}, calls)
+	assert.Equal(t, []Purged{
+		{Path: "/blog", Prefix: true, Cached: []string{"/blog/a/", "/blog/b/?page=2", "/blogroll/"}},
+		{Path: "/page?p=1", Soft: true},
+		{Path: "/", Prefix: true, Soft: true, Cached: []string{"/about/"}},
+	}, calls, "prefix purges list what they purged")
 
 	req, _ := http.NewRequest(MethodPurge, proxy.URL+"/", nil)
 	resp, err := http.DefaultClient.Do(req)

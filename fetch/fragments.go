@@ -104,6 +104,9 @@ func handleFragmentPurge(w http.ResponseWriter, r *http.Request, opts Options, p
 		http.Error(w, err.Error(), http.StatusNotImplemented)
 		return
 	}
+	if opts.OnFragmentPurge != nil {
+		opts.OnFragmentPurge(name)
+	}
 	from := "a trusted request"
 	if ip := clientip.From(r); ip != nil {
 		from = ip.String()

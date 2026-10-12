@@ -652,6 +652,34 @@ func (c *defaultCacher) Expire(u *url.URL, prefix bool) int {
 	return responses
 }
 
+// CachedPaths returns the paths (with any query strings) of the cached
+// responses to GET requests whose paths start with prefix, for any host,
+// up to max of them - e.g. to purge them from a CDN too
+func (c *defaultCacher) CachedPaths(prefix string, max int) []string {
+	seen := map[string]bool{}
+	var paths []string
+	c.store.forEach(func(key string, value interface{}) {
+		if len(paths) >= max || strings.HasPrefix(key, varyKey("")) {
+			return
+		}
+		method, keyURL, found := strings.Cut(key, " :: ")
+		if !found || method != http.MethodGet {
+			return
+		}
+		p := withoutOrigin(keyURL)
+		// Variant keys are the URL followed by "::" and Vary values
+		if i := strings.Index(p, "::"); i >= 0 {
+			p = strings.TrimSpace(p[:i])
+		}
+		if strings.HasPrefix(p, prefix) && !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	})
+	sort.Strings(paths)
+	return paths
+}
+
 // purgeMatcher returns a function which says whether a store key is for
 // u (see Purge), and whether it is a Vary record rather than a response.
 func purgeMatcher(u *url.URL, prefix bool) func(key string) (matched, vary bool) {
