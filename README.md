@@ -142,6 +142,16 @@ All the available settings:
 	adminIPs = ["198.51.100.0/24"]   # if set, the only addresses the dashboard and login page are served to
 	hideUsers = true             # hide the site's users from visitors who aren't logged in (off by default)
 
+	# Changing pages as they're cached, so that browsers load them faster
+	# (off by default; see below)
+	[optimize]
+	delayScripts = true          # run analytics, ad, chat and other third-party scripts when the visitor
+	                             # first interacts with the page
+	delayScriptsMatching = ["my-widget.js"]   # more scripts to delay: text in their src, id or code
+	keepScriptsMatching = ["gtag("]           # scripts never to delay, the same way
+	delayScriptsTimeout = "0"    # run them after this long anyway ("0": only when the visitor interacts)
+	preloadMainImage = true      # learn each page's main image from visitors' browsers, and preload it
+
 	# Serve HTTPS (HTTP/1.1 and HTTP/2) and HTTP/3 too (off unless auto or
 	# certFile is set; see below)
 	[tls]
@@ -283,6 +293,16 @@ A browser can't start fetching a page's stylesheets, fonts and scripts until the
 Honey learns them from the `<head>` of the pages it caches: its stylesheets (not those for print), the scripts which hold it up (not `async` or `defer` ones), and its preloads (e.g. fonts), preconnects and module preloads - up to 10.  A request gets those of the page cached for its URL (for visitors without its cookies), or, for a page which isn't cached (e.g. a cart or checkout), those which every one of its host's recently cached pages have, which are usually the theme's.  Requests served from the cache, and those which don't accept HTML, don't get them.  The admin page's cache browser shows each page's.
 
 They're off by default, as browsers only use them over HTTP/2 or HTTP/3: if Honey serves [HTTPS](#https-and-http3) itself, turn them on.  Otherwise the proxy in front of Honey has to pass them on: Caddy does, and nginx does from 1.29, with its `early_hints` directive.  Check that yours does before turning them on, as older proxies may not expect them.
+
+## Optimizing pages
+
+Honey can change pages as it caches them, so that browsers show them sooner, at no cost to serving them.  Only whole HTML pages it caches are changed - not pages for logged in users (or anyone else WordPress renders a page for), includes, or pages with a `Content-Security-Policy` (as the scripts Honey adds would need to be allowed).
+
+**Delaying third-party scripts.**  Analytics, tag managers, ad and conversion pixels, chat widgets and the like don't help show a page, but compete with it for the browser's attention while it loads - often more than the page itself, on a phone - which shows in Total Blocking Time and Interaction to Next Paint.  With `delayScripts = true`, they're disabled (given the type `text/honey-delayed`, and their `src` moved to `data-honey-src`), and a small script runs them when the visitor first moves the mouse, touches the screen, scrolls or presses a key: in the page's order, waiting for each external one (unless it's `async`), as the browser would have.  Listeners they add for the page's `DOMContentLoaded` and `load` events, which have already happened, are called once they've all run, and `document.write` adds to the page rather than replacing it.
+
+The scripts delayed are those whose `src`, `id` or (for inline scripts) code contains any of a built-in list - Google Analytics and Tag Manager (including inline `gtag(` calls), Hotjar, Clarity, Segment, Mixpanel, Jetpack stats, Plausible, the Meta, TikTok, LinkedIn, X and Pinterest pixels, AdSense, Google Ad Manager, Amazon ads, Intercom, Crisp, Tawk.to, Drift, Zendesk, LiveChat, HubSpot, OneSignal, Klaviyo, Mailchimp, OptinMonster, AddThis, ShareThis and X's widgets (see [`optimize.DefaultDelayed`](optimize/scripts.go)) - or `delayScriptsMatching`, but not `keepScriptsMatching`, nor scripts with a `data-honey-keep` attribute.  Visitors who never interact with a page don't run them at all - so analytics doesn't count them - unless `delayScriptsTimeout` is set.  Code which uses a delayed script straight away (e.g. a button which calls `gtag()` when the page loads) needs delaying too, or the delayed script keeping.
+
+**Preloading the main image.**  A page's Largest Contentful Paint - when its largest element is shown, usually its featured or hero image - is held up if the browser finds the image late (e.g. it's a CSS background, or behind a slider's script) or waits to load it (it's lazy loaded, or the browser doesn't know it's important).  Which image it is depends on the page and the screen, and can't be told from the HTML, so with `preloadMainImage = true`, browsers tell Honey: until a page's main image is known, the page is cached with a small script which reports it (once, after the page loads) to `/.well-known/honey/main-image`, for phones and desktops separately.  Honey only believes it if it's one of the page's own images, and only for pages which have asked.  It then soft purges the page, which is cached again with a `<link rel="preload" as="image" fetchpriority="high">` for it at the top of its `<head>` (with the image's `srcset` and `sizes`, and a media query if it's only the main image on phones or desktops), which is sent as an [Early Hint](#early-hints) too when it can be (a plain image, for all screens).  If it's the same image on both, it also gets `fetchpriority="high"`, and isn't lazy loaded.  If a page's main image isn't an image (e.g. a heading), nothing is preloaded, and the script goes once both kinds of screen have said so.  If the image leaves the page, it's learned again.  What's learned is kept in memory for up to 10,000 pages.
 
 ## Routes
 
@@ -466,7 +486,7 @@ A cache hit takes Honey about 12µs of CPU, so a small server can answer tens of
 
 ## Testing
 
-`go test ./...` runs the unit tests.  [`e2e/run.sh`](e2e/run.sh) runs end-to-end tests against a real WordPress, with the purge plugin, behind Honey - checking that pages are cached, that logged in users, commenters and visitors to password-protected posts get their own pages, and that edits, comments and setting changes are purged.  It needs Docker and Go, and CI runs it on every pull request.  With `HONEY_E2E_WOOCOMMERCE=1`, it also installs WooCommerce (from wordpress.org) and checks that shop pages are cached, that adding to the cart starts each shopper's own session, that shoppers get cached pages with their own cart and notices, that Store API carts are their own, and that the cart and checkout are never cached; CI does this too.  `HONEY_E2E_KEEP=1 e2e/run.sh` leaves it all running afterwards, on http://localhost:8080/ (log in as `admin`, password `password`) with Honey's admin page on http://127.0.0.1:9090/.
+`go test ./...` runs the unit tests.  [`e2e/run.sh`](e2e/run.sh) runs end-to-end tests against a real WordPress, with the purge plugin, behind Honey - checking that pages are cached, that logged in users, commenters and visitors to password-protected posts get their own pages, that edits, comments and setting changes are purged, and that third-party scripts are delayed and main images preloaded.  It needs Docker and Go, and CI runs it on every pull request.  With `HONEY_E2E_WOOCOMMERCE=1`, it also installs WooCommerce (from wordpress.org) and checks that shop pages are cached, that adding to the cart starts each shopper's own session, that shoppers get cached pages with their own cart and notices, that Store API carts are their own, and that the cart and checkout are never cached; CI does this too.  `HONEY_E2E_KEEP=1 e2e/run.sh` leaves it all running afterwards, on http://localhost:8080/ (log in as `admin`, password `password`) with Honey's admin page on http://127.0.0.1:9090/.
 
 ## Using it as a library
 
@@ -498,10 +518,8 @@ Things which might be worth doing next:
 - **Per-route compression settings** (brotli and gzip are site-wide for now).
 - **More Edge Side Includes:** commenters and shoppers on classic themes, and parts of pages for logged in users (e.g. the admin bar), so that their pages can mostly be served from the cache too.
 
-Cache plugins such as FlyingPress, LiteSpeed Cache and WP Rocket serve pages more slowly than Honey, and don't keep WordPress out of the way as well, but they also change pages so that browsers load them faster, which is most of what Core Web Vitals and PageSpeed measure.  Honey could do much of that once, when a page is cached, so that it costs nothing to serve:
+Cache plugins such as FlyingPress, LiteSpeed Cache and WP Rocket serve pages more slowly than Honey, and don't keep WordPress out of the way as well, but they also change pages so that browsers load them faster, which is most of what Core Web Vitals and PageSpeed measure.  Honey [delays third-party scripts and preloads pages' main images](#optimizing-pages), and could do more of it, once, when a page is cached, so that it costs nothing to serve:
 
-- **Preloading the main image:** learn each page's largest above-the-fold image (its LCP element, usually the featured image), and add `<link rel="preload" fetchpriority="high">` for it, and an Early Hint.
-- **Delaying third-party JavaScript:** load analytics, chat, ad and embed scripts on the visitor's first interaction (scroll, tap, key press) rather than straight away, which helps Interaction to Next Paint and Total Blocking Time the most.  It needs a list of scripts which are safe to delay, and a way to exclude others.
 - **WebP and AVIF images:** convert JPEGs and PNGs the first time they're requested by a browser which accepts them, and cache the result, varying on `Accept`.
 - **Self-hosting Google Fonts:** fetch the stylesheets and fonts a page uses from Google, serve them from the site itself with `font-display: swap`, and preload them, saving a connection to another site (and not telling Google about visitors).
 - **Forwarding purges to a CDN** (Cloudflare, Bunny), so that Honey can be the origin behind a CDN which caches pages near visitors around the world, without pages going out of date there.

@@ -71,6 +71,9 @@ type Config struct {
 	TLS *TLS
 	// Security configures protecting WordPress (see the guard package)
 	Security Security
+	// Optimize configures changing pages so that browsers load them
+	// faster (see the optimize package)
+	Optimize Optimize
 	// File is the settings as they were written, e.g. to export them
 	File *File
 }
@@ -91,6 +94,22 @@ type TLS struct {
 	HTTP3 bool
 	// Redirect is whether plain HTTP requests are redirected to HTTPS
 	Redirect bool
+}
+
+// Optimize configures changing pages as they're cached, so that browsers
+// load them faster (see optimize.Options)
+type Optimize struct {
+	// DelayScripts delays third-party scripts until the visitor interacts
+	// with the page: those optimize.DefaultDelayed lists, and those
+	// matching DelayScriptsMatching, but not KeepScriptsMatching
+	DelayScripts         bool
+	DelayScriptsMatching []string
+	KeepScriptsMatching  []string
+	// DelayScriptsTimeout, if set, runs them anyway after this long
+	DelayScriptsTimeout time.Duration
+	// PreloadMainImage learns each page's main image from visitors'
+	// browsers, and preloads it
+	PreloadMainImage bool
 }
 
 // Security configures protecting WordPress (see guard.Options)
@@ -312,6 +331,13 @@ type File struct {
 		AdminIPs      []string `toml:"adminIPs,omitempty"`
 		HideUsers     bool     `toml:"hideUsers,omitempty"`
 	} `toml:"security,omitempty"`
+	Optimize struct {
+		DelayScripts         bool     `toml:"delayScripts,omitempty"`
+		DelayScriptsMatching []string `toml:"delayScriptsMatching,omitempty"`
+		KeepScriptsMatching  []string `toml:"keepScriptsMatching,omitempty"`
+		DelayScriptsTimeout  string   `toml:"delayScriptsTimeout,omitempty"`
+		PreloadMainImage     bool     `toml:"preloadMainImage,omitempty"`
+	} `toml:"optimize,omitempty"`
 	TLS struct {
 		Listen   string `toml:"listen,omitempty"`
 		Auto     bool   `toml:"auto,omitempty"`
@@ -401,6 +427,8 @@ func (f *File) Clone() *File {
 	c.Cache.Brotli = cloneBool(f.Cache.Brotli)
 	c.Cache.Gzip = cloneBool(f.Cache.Gzip)
 	c.Control.AllowIPs = append([]string(nil), f.Control.AllowIPs...)
+	c.Optimize.DelayScriptsMatching = append([]string(nil), f.Optimize.DelayScriptsMatching...)
+	c.Optimize.KeepScriptsMatching = append([]string(nil), f.Optimize.KeepScriptsMatching...)
 	c.Routes = nil
 	for _, r := range f.Routes {
 		r.Cache = cloneBool(r.Cache)
@@ -488,6 +516,9 @@ func FromFile(f *File) (*Config, error) {
 		return nil, err
 	}
 	if cfg.Security, err = parseSecurity(f, cfg.TLS); err != nil {
+		return nil, err
+	}
+	if cfg.Optimize, err = parseOptimize(f); err != nil {
 		return nil, err
 	}
 
@@ -747,6 +778,37 @@ func cloneInt(n *int) *int {
 	}
 	c := *n
 	return &c
+}
+
+// parseOptimize validates the [optimize] settings
+func parseOptimize(f *File) (Optimize, error) {
+	o := f.Optimize
+	opt := Optimize{
+		DelayScripts:     o.DelayScripts,
+		PreloadMainImage: o.PreloadMainImage,
+	}
+	for _, list := range []struct {
+		name string
+		from []string
+		to   *[]string
+	}{
+		{"delayScriptsMatching", o.DelayScriptsMatching, &opt.DelayScriptsMatching},
+		{"keepScriptsMatching", o.KeepScriptsMatching, &opt.KeepScriptsMatching},
+	} {
+		for _, s := range list.from {
+			if strings.TrimSpace(s) == "" {
+				return opt, fmt.Errorf("optimize.%s: empty text would match every script", list.name)
+			}
+			*list.to = append(*list.to, s)
+		}
+	}
+	if o.DelayScriptsTimeout != "" {
+		var err error
+		if opt.DelayScriptsTimeout, err = parseDuration(o.DelayScriptsTimeout); err != nil || opt.DelayScriptsTimeout < 0 {
+			return opt, fmt.Errorf("optimize.delayScriptsTimeout must be a duration, e.g. \"10s\", or \"0\" for none")
+		}
+	}
+	return opt, nil
 }
 
 // parseSecurity validates the [security] settings, and fills in their
