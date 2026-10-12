@@ -5,6 +5,7 @@ package e2e
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -80,11 +81,12 @@ func TestMainImagesArePreloaded(t *testing.T) {
 	report("desktop", image)
 	report("mobile", image)
 
-	// The page is cached again, with the image preloaded
-	eventually(t, c, path, "data-honey-main-image")
+	// The page is cached again, with the image loaded first (an <img> on
+	// every screen isn't preloaded: the browser finds it straight away)
+	eventually(t, c, path, `fetchpriority="high"`)
 	page = cached(t, c, path)
-	assert.Contains(t, page.Body, `<link rel="preload" as="image" href="`+image+`" fetchpriority="high" data-honey-main-image>`)
-	assert.Contains(t, page.Body, `fetchpriority="high"`)
+	assert.Regexp(t, `<img fetchpriority="high"[^>]* src="`+regexp.QuoteMeta(image)+`"`, page.Body)
+	notContains(t, page.Body, "data-honey-main-image")
 	notContains(t, page.Body, `<script id="honey-main-image">`, "nothing left to report")
 
 	// It's in the admin page's events
